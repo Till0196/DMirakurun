@@ -89,12 +89,19 @@ export class Tuner {
                 if (picked && !this._readyForJobPickedDeviceSet.has(picked.device)) {
                     const device = picked.device;
                     this._readyForJobPickedDeviceSet.add(device);
+                    log.debug("readyForJob: picked device: #%d (%s)", device.index, device.config.name);
                     setTimeout(() => {
                         this._readyForJobPickedDeviceSet.delete(device);
+                        log.debug("readyForJob: released device: #%d (%s)", device.index, device.config.name);
                     }, 1000 * 5);
                     return true;
                 }
             }
+            log.debug(
+                "readyForJob: no available tuners for channel type=%s route=%s",
+                channel.type,
+                channel.route
+            );
             await common.sleep(1000 * 10);
         }
     }
