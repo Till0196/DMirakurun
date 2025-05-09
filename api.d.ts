@@ -84,14 +84,7 @@ export interface Program {
     name?: string;
     description?: string;
     genres?: ProgramGenre[];
-    video?: {
-        type: ProgramVideoType;
-        resolution: ProgramVideoResolution;
-        streamContent: number;
-        componentType: number;
-        frameRate?: ProgramVideoFrameRate;
-        transferCharacteristics?: ProgramVideoTransferCharacteristics;
-    }
+    video?: ProgramVideo;
     audios?: ProgramAudio[];
 
     series?: ProgramSeries;
@@ -108,6 +101,15 @@ export interface ProgramGenre {
     lv2: number;
     un1: number;
     un2: number;
+}
+
+export interface ProgramVideo {
+    type: ProgramVideoType;
+    resolution: ProgramVideoResolution;
+    streamContent: number;
+    componentType: number;
+    frameRate?: ProgramVideoFrameRate;
+    transferCharacteristics?: ProgramVideoTransferCharacteristics;
 }
 
 export type ProgramVideoType = "mpeg2" | "h.264" | "h.265";
