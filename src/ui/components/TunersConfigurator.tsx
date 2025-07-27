@@ -90,7 +90,7 @@ const columns: IColumn[] = [
 
 const dummySelection = new Selection(); // dummy
 
-const typesIndex = ["GR", "BS", "CS", "SKY"];
+const typesIndex = ["GR", "BS", "CS", "SKY", "BS4K"];
 function sortTypes(types: ChannelType[]): ChannelType[] {
     return types.sort((a, b) => typesIndex.indexOf(a) - typesIndex.indexOf(b));
 }
@@ -153,7 +153,8 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                         { key: "GR", text: "GR" },
                         { key: "BS", text: "BS" },
                         { key: "CS", text: "CS" },
-                        { key: "SKY", text: "SKY" }
+                        { key: "SKY", text: "SKY" },
+                        { key: "BS4K", text: "BS4K" }
                     ]}
                     selectedKeys={tuner.types}
                     onChange={(ev, option) => {
@@ -257,6 +258,20 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                             }}
                         />
                     )}
+                    {(!tuner.remoteMirakurunHost) && (
+                        <TextField
+                            label="MMTS Decoder:"
+                            value={tuner.mmtsDecoder || ""}
+                            onChange={(ev, newValue) => {
+                                if (newValue === "") {
+                                    delete tuner.mmtsDecoder;
+                                } else {
+                                    tuner.mmtsDecoder = newValue;
+                                }
+                                setEditing([...editing]);
+                            }}
+                        />
+                    )}
                 </Stack>
             ),
             controls: (
@@ -326,6 +341,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                                     command: `dvbv5-zap -a ${i} -c ./config/dvbconf-for-isdb/conf/dvbv5_channels_isdbs.conf -r -P <channel>`,
                                     dvbDevicePath: `/dev/dvb/adapter${i}/dvr0`,
                                     decoder: "arib-b25-stream-test",
+                                    mmtsDecoder: "dantto4k - -",
                                     isDisabled: true
                                 });
                                 setEditing([...editing]);

@@ -317,7 +317,7 @@ export class Tuner {
             } else {
                 // found
                 let output: Writable;
-                if (user.disableDecoder === true || device.decoder === null) {
+                if (user.disableDecoder === true || device.decoder === null || setting.channel.type === "BS4K") {
                     output = dest;
                 } else {
                     output = new TSDecoder({

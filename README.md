@@ -1,3 +1,43 @@
+# DMirakurun
+dantto4kに対応するためにmmtsDecoderオプションを追加したMirakurunのforkです。
+
+## tuners.ymlの例
+```yaml
+- name: PT4K-0
+  types:
+    - BS
+    - CS
+    - BS4K
+  decoder: arib-b25-stream-test
+  mmtsDecoder: dantto4k - -
+  command: recdvb --lnb 15 --dev 0 <channel> - -
+- name: PT4K-1
+  types:
+    - BS
+    - CS
+    - BS4K
+  decoder: arib-b25-stream-test
+  mmtsDecoder: dantto4k - -
+  command: recdvb --lnb 15 --dev 1 <channel> - -
+```
+
+## recdvb
+- [otya128/recdvb](https://github.com/otya128/recdvb)
+
+本repositoryの`/recdvb/pt1_dev.h`に差し替えて下さい。
+
+## スキャン
+ＮＨＫ　ＢＳＰ８Ｋはスキャンされないため、`channels.yml`に手動で追加する必要があります。
+```yaml
+- name: ＮＨＫ　ＢＳＰ８Ｋ
+  type: BS4K
+  channel: '0xB0E0'
+  serviceId: 102
+  isDisabled: false
+```
+
+---
+
 [![Mirakurun](https://gist.githubusercontent.com/kanreisa/0ab27d7771e97edce5a24cc81b9b8ce6/raw/8e08d3d91390794b139ed593e3a834a8b41f651c/logo-mirakurun_2025-03-29.svg)](https://github.com/Chinachu/Mirakurun)
 
 # Mirakurun

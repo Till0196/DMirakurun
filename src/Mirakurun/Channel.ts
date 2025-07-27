@@ -96,7 +96,7 @@ export class Channel {
                 return;
             }
 
-            if (channel.type !== "GR" && channel.type !== "BS" && channel.type !== "CS" && channel.type !== "SKY") {
+            if (channel.type !== "GR" && channel.type !== "BS" && channel.type !== "CS" && channel.type !== "SKY" && channel.type !== "BS4K") {
                 log.error("invalid type of property `type` in channel#%d (%s) configuration", i, channel.name);
                 return;
             }

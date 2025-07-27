@@ -100,7 +100,7 @@ const columns: IColumn[] = [
 
 const dummySelection = new Selection(); // dummy
 
-const typesIndex = ["GR", "BS", "CS", "SKY"];
+const typesIndex = ["GR", "BS", "CS", "SKY", "BS4K"];
 function sortTypes(types: ChannelType[]): ChannelType[] {
     return types.sort((a, b) => typesIndex.indexOf(a) - typesIndex.indexOf(b));
 }
@@ -205,7 +205,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                 params.append("skipCh", expandedSkipCh);
             }
 
-            if (scanType === "BS" && scanUseSubCh) {
+            if ((scanType === "BS" || scanType === "BS4K") && scanUseSubCh) {
                 params.append("minSubCh", scanMinSubCh);
                 params.append("maxSubCh", scanMaxSubCh);
                 params.append("useSubCh", "true");
@@ -353,7 +353,8 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                         { key: "GR", text: "GR" },
                         { key: "BS", text: "BS" },
                         { key: "CS", text: "CS" },
-                        { key: "SKY", text: "SKY" }
+                        { key: "SKY", text: "SKY" },
+                        { key: "BS4K", text: "BS4K" }
                     ]}
                     selectedKey={ch.type}
                     onChange={(ev, option) => {
@@ -764,7 +765,8 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                         options={[
                             { key: "GR", text: "GR" },
                             { key: "BS", text: "BS" },
-                            { key: "CS", text: "CS" }
+                            { key: "CS", text: "CS" },
+                            { key: "BS4K", text: "BS4K" }
                         ]}
                         selectedKey={scanType}
                         onChange={(ev, option) => {
@@ -784,6 +786,10 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                                 case "CS":
                                     setScanMinCh("2");
                                     setScanMaxCh("24");
+                                    break;
+                                case "BS4K":
+                                    setScanMinCh("7");
+                                    setScanMaxCh("17");
                                     break;
                             }
                         }}
@@ -818,7 +824,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                         styles={{ root: { width: "100%" } }}
                     />
 
-                    {scanType === "BS" && (
+                    {(scanType === "BS" || scanType === "BS4K") && (
                         <>
                             <Toggle
                                 label="Use Subchannel Style (BS01_0)"

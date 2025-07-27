@@ -45,7 +45,7 @@ export interface Channel {
     services?: Service[];
 }
 
-export type ChannelType = "GR" | "BS" | "CS" | "SKY";
+export type ChannelType = "GR" | "BS" | "CS" | "SKY" | "BS4K";
 
 export interface Service {
     id: ServiceItemId;
@@ -311,6 +311,7 @@ export interface ConfigTunersItem {
     remoteMirakurunDecoder?: boolean;
     /** CAS processor command if needed. */
     decoder?: string;
+    mmtsDecoder?: string;
     /** `true` to **disable** this tuner. */
     isDisabled?: boolean;
 }
