@@ -1,8 +1,8 @@
 {
-  "name": "mirakurun",
-  "description": "DVR Tuner Server for Japanese TV.",
+  "name": "dmirakurun",
+  "description": "Fork of Mirakurun modified to work with dantto4k",
   "version": "4.0.0-beta.16",
-  "homepage": "https://github.com/Chinachu/Mirakurun",
+  "homepage": "https://github.com/nekohkr/DMirakurun/",
   "keywords": [
     "mirakurun",
     "chinachu",
@@ -15,18 +15,18 @@
     "tv"
   ],
   "author": {
-    "name": "kanreisa",
-    "url": "https://github.com/kanreisa"
+    "name": "nekohkr",
+    "url": "https://github.com/nekohkr"
   },
   "contributors": [
     "rndomhack"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Chinachu/Mirakurun.git"
+    "url": "https://github.com/nekohkr/DMirakurun.git"
   },
   "bugs": {
-    "url": "https://github.com/Chinachu/Mirakurun/issues"
+    "url": "https://github.com/nekohkr/DMirakurun/issues"
   },
   "license": "Apache-2.0",
   "bin": {
@@ -119,13 +119,5 @@
   "os": [
     "linux",
     "darwin"
-  ],
-  "funding": {
-    "type": "opencollective",
-    "url": "https://opencollective.com/Mirakurun"
-  },
-  "collective": {
-    "type": "opencollective",
-    "url": "https://opencollective.com/Mirakurun"
-  }
+  ]
 }
