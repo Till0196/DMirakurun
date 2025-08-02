@@ -25,6 +25,7 @@ import status from "./status";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
+import TLVConverter from "./TLVConverter";
 import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
@@ -281,7 +282,6 @@ export default class TunerDevice extends EventEmitter {
 
             cat.once("error", (err) => {
                 log.error("TunerDevice#%d cat process error `%s` (pid=%d)", this._index, err.name, cat.pid);
-
                 this._kill(false);
             });
 
@@ -298,43 +298,9 @@ export default class TunerDevice extends EventEmitter {
 
             this._process.once("exit", () => cat.kill("SIGKILL"));
 
-            this._stream = cat.stdout;
+            this._stream = ch.type === "BS4K" ? this._setupBS4KPipeline(cat.stdout, ch) : cat.stdout;
         } else {
-            if (ch.type === "BS4K") {
-                const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
-                const mmtsDecoder = child_process.spawn(parsed.command, parsed.args);
-
-                mmtsDecoder.once("error", (err) => {
-                    log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsDecoder.pid);
-
-                    this._kill(false);
-                });
-
-                mmtsDecoder.once("exit", () => {
-                    mmtsDecoder.stdin.end();
-                });
-
-                mmtsDecoder.once("close", (code, signal) => {
-                    log.debug(
-                        "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                        this._index, code, signal, mmtsDecoder.pid
-                    );
-
-                    if (this._exited === false) {
-                        this._kill(false);
-                    }
-                });
-
-                this._process.once("exit", () => {
-                    mmtsDecoder.stdin.end();
-                    mmtsDecoder.kill("SIGKILL");
-                });
-
-                this._process.stdout.pipe(mmtsDecoder.stdin);
-                this._stream = mmtsDecoder.stdout;
-            } else {
-                this._stream = this._process.stdout;
-            }
+            this._stream = ch.type === "BS4K" ? this._setupBS4KPipeline(this._process.stdout, ch) : this._process.stdout;
         }
 
         this._process.once("exit", () => this._exited = true);
@@ -469,5 +435,75 @@ export default class TunerDevice extends EventEmitter {
 
     private _updated(): void {
         Event.emit("tuner", "update", this.toJSON());
+    }
+
+    private _setupBS4KPipeline(inputStream: stream.Readable, ch: ChannelItem): stream.Readable {
+        const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
+        const mmtsDecoder = child_process.spawn(parsed.command, parsed.args);
+
+        mmtsDecoder.once("error", (err) => {
+            log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsDecoder.pid);
+            this._kill(false);
+        });
+
+        mmtsDecoder.once("exit", () => {
+            mmtsDecoder.stdin.end();
+        });
+
+        mmtsDecoder.once("close", (code, signal) => {
+            log.debug(
+                "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
+                this._index, code, signal, mmtsDecoder.pid
+            );
+
+            if (this._exited === false) {
+                this._kill(false);
+            }
+        });
+
+        this._process.once("exit", () => {
+            mmtsDecoder.stdin.end();
+            mmtsDecoder.kill("SIGKILL");
+        });
+
+        mmtsDecoder.stderr.on("data", (data) => {
+            log.debug("TunerDevice#%d mmtsDecoder stderr: %s", this._index, data.toString().trim());
+        });
+
+        // TLV processing or direct pipe based on tsmfRelTs
+        if (ch.tsmfRelTs === 0) {
+            log.info("TunerDevice#%d Channel tsmfRelTs=0 converting TLV packets", this._index);
+
+            const tlvConverter = new TLVConverter(this._index, mmtsDecoder.stdin);
+
+            tlvConverter.once("error", (err) => {
+                log.error("TunerDevice#%d TLVconverter error `%s`", this._index, err.name);
+                this._kill(false);
+            });
+
+            tlvConverter.once("close", () => {
+                log.debug("TunerDevice#%d TLVconverter closed", this._index);
+            });
+
+            log.info("TunerDevice#%d Connecting pipeline: input -> TLV converter -> mmtsDecoder", this._index);
+
+            inputStream.on("data", (chunk) => {
+                if (!tlvConverter.closed) {
+                    tlvConverter.write(chunk);
+                }
+            });
+
+            this._process.once("exit", () => {
+                if (!tlvConverter.closed) {
+                    tlvConverter.end();
+                }
+            });
+
+            log.info("TunerDevice#%d Pipeline connected successfully", this._index);
+        } else {
+            inputStream.pipe(mmtsDecoder.stdin);
+        }
+
+        return mmtsDecoder.stdout;
     }
 }
