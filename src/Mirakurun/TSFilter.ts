@@ -57,7 +57,7 @@ const DSMCC_BLOCK_SIZE = 4066; // ARIB TR-B15
 
 const LOGO_DATA_NAME_BS = Buffer.from("LOGO-05"); // ARIB STD-B21, ARIB TR-B15
 const LOGO_DATA_NAME_CS = Buffer.from("CS_LOGO-05"); // ARIB STD-B21, ARIB TR-B15
-const LOGO_DATA_NAME_JCHITS = Buffer.from("JCHITS_LOGO-05"); // ? CATV
+const LOGO_DATA_NAME_JCHITS = Buffer.from("JCHITS_LOGO-05"); // ...? JC-HITS and JCC ACAS
 
 interface BasicExtState {
     basic: {
@@ -208,7 +208,7 @@ export default class TSFilter extends EventEmitter {
         }
 
         if (this._targetNetworkId) {
-            if (this._targetNetworkId === 4 || this._targetNetworkId === 65527 || this._targetNetworkId === 65533 ) { // ARIB TR-B15 (BS/CS or JC-HITS JCC ACAS)
+            if (this._targetNetworkId === 4 || this._targetNetworkId === 65527 || this._targetNetworkId === 65533) { // ARIB TR-B15 (BS/CS or JCC ACAS or JC-HITS)
                 this._enableParseDSMCC = true;
             } else {
                 this._enableParseCDT = true;
