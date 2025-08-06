@@ -57,6 +57,7 @@ const DSMCC_BLOCK_SIZE = 4066; // ARIB TR-B15
 
 const LOGO_DATA_NAME_BS = Buffer.from("LOGO-05"); // ARIB STD-B21, ARIB TR-B15
 const LOGO_DATA_NAME_CS = Buffer.from("CS_LOGO-05"); // ARIB STD-B21, ARIB TR-B15
+const LOGO_DATA_NAME_JCHITS = Buffer.from("JCHITS_LOGO-05"); // ? CATV
 
 interface BasicExtState {
     basic: {
@@ -207,7 +208,7 @@ export default class TSFilter extends EventEmitter {
         }
 
         if (this._targetNetworkId) {
-            if (this._targetNetworkId === 4) { // ARIB TR-B15 (BS/CS)
+            if (this._targetNetworkId === 4 || this._targetNetworkId === 65527 || this._targetNetworkId === 65533 ) { // ARIB TR-B15 (BS/CS or JC-HITS JCC ACAS)
                 this._enableParseDSMCC = true;
             } else {
                 this._enableParseCDT = true;
@@ -428,7 +429,9 @@ export default class TSFilter extends EventEmitter {
             if (
                 // for future use
                 // (this._targetNetworkId !== 4 && serviceId >= 0xFFF0 && serviceId <= 0xFFF5) || // ARIB TR-B14 (GR)
-                (this._targetNetworkId === 4 && serviceId === 929) // ARIB TR-B15 (BS/CS)
+                (this._targetNetworkId === 4 && serviceId === 929) || // ARIB TR-B15 (BS/CS)
+                (this._targetNetworkId === 65527 && serviceId === 297) || // ARIB TR-B15 (JCC ACAS)
+                (this._targetNetworkId === 65533 && serviceId === 299) // ARIB TR-B15 (JC-HITS)
             ) {
                 const essPmtPid = program.program_map_PID;
                 this._essMap.set(serviceId, essPmtPid);
@@ -511,7 +514,8 @@ export default class TSFilter extends EventEmitter {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
                         if (
                             descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS)
-                            descriptor.component_tag === 0x7A // ...? (CS)
+                            descriptor.component_tag === 0x7A || // ...? (CS)
+                            descriptor.component_tag === 0x48 // ...? (CATV)
                         ) {
                             this._parsePids.add(stream.elementary_PID);
                             this._essEsPids.add(stream.elementary_PID);
@@ -769,7 +773,8 @@ export default class TSFilter extends EventEmitter {
                     // find LOGO-05 or CS_LOGO-05
                     if (
                         !LOGO_DATA_NAME_BS.equals(descriptor.text_char) &&
-                        !LOGO_DATA_NAME_CS.equals(descriptor.text_char)
+                        !LOGO_DATA_NAME_CS.equals(descriptor.text_char) &&
+                        !LOGO_DATA_NAME_JCHITS.equals(descriptor.text_char)
                     ) {
                         continue;
                     }
@@ -821,11 +826,19 @@ export default class TSFilter extends EventEmitter {
             targetServices.push(..._.service.findByNetworkId(this._targetNetworkId));
         } else if (this._enableParseCDT) {
             targetServices.push(_.service.get(this._targetNetworkId, this._provideServiceId));
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 4) {
+        } else if (this._enableParseDSMCC && this._targetNetworkId === 4 ) {
             targetServices.push(
                 ..._.service.findByNetworkId(4),
                 ..._.service.findByNetworkId(6),
                 ..._.service.findByNetworkId(7)
+            );
+        } else if (this._enableParseDSMCC && this._targetNetworkId === 65527) {
+            targetServices.push(
+                ..._.service.findByNetworkId(65527) // JCC ACAS
+            );
+        } else if (this._enableParseDSMCC && this._targetNetworkId === 65533) {
+            targetServices.push(
+                ..._.service.findByNetworkId(65533) // JC-HITS
             );
         }
 
@@ -874,7 +887,7 @@ export default class TSFilter extends EventEmitter {
 
                         log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=%d, logoId=%d)", this._targetNetworkId, logoId);
                     } else if (this._enableParseDSMCC) {
-                        // for BS/CS
+                        // for BS/CS/CATV
                         for (const essPmtPid of this._essMap.values()) {
                             this._parsePids.add(essPmtPid); // ESS PMT PID
                         }
@@ -891,10 +904,22 @@ export default class TSFilter extends EventEmitter {
                             }
                             this._parser.removeAllListeners("dsmcc");
 
-                            log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[4,6,7])");
+                            if (this._targetNetworkId === 4) {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[4,6,7])");
+                            } else if (this._targetNetworkId === 65527) {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65527])");
+                            } else if (this._targetNetworkId === 65533) {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65533])");
+                            }
                         }, 1000 * 60 * 30); // 30 mins
 
-                        log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[4,6,7])");
+                        if (this._targetNetworkId === 4) {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[4,6,7])");
+                        } else if (this._targetNetworkId === 65527) {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65527])");
+                        } else if (this._targetNetworkId === 65533) {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65533])");
+                        }
                     }
 
                     return; // break all loops
