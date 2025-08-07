@@ -12,7 +12,7 @@ dantto4kに対応するためにmmtsDecoderオプションを追加したMirakur
   mmtsDecoder: dantto4k - -
   command: recdvb --lnb 15 --dev 0 <channel> - -
 ```
-## dantto4kのオプションを指定したtuners.ymlの例
+## dantto4kにオプションを指定したtuners.ymlの例
 ```yaml
 - name: PT4K-0
   types:
