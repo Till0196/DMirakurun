@@ -11,14 +11,17 @@ dantto4kに対応するためにmmtsDecoderオプションを追加したMirakur
   decoder: arib-b25-stream-test
   mmtsDecoder: dantto4k - -
   command: recdvb --lnb 15 --dev 0 <channel> - -
-- name: PT4K-1
+```
+## dantto4kのオプションを指定したtuners.ymlの例
+```
+- name: PT4K-0
   types:
     - BS
     - CS
     - BS4K
   decoder: arib-b25-stream-test
-  mmtsDecoder: dantto4k - -
-  command: recdvb --lnb 15 --dev 1 <channel> - -
+  mmtsDecoder: dantto4k - - --smartCardReaderName="Generic Smart Card Reader Interface 0" --disableADTSConversion
+  command: recdvb --lnb 15 --dev 0 <channel> - -
 ```
 
 ## recdvb
