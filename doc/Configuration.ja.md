@@ -82,11 +82,12 @@
 ```yaml
 # 配列
 - name: チューナー識別名 # String
-  types: # (GR|BS|CS|SKY)[]
+  types: # (GR|BS|CS|SKY|BS4K)[]
     - GR
     - BS
     - CS
     - SKY
+    - BS4K
   # chardev/dvb用
   # "<template>"は`commandVars[template]`または"(空)"に置き換えられます *@4.0.0~
   command: cmd <channel> --arg1 --arg2 <exampleArg1> <exampleArg2>... # String

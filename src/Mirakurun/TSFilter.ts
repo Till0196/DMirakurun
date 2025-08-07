@@ -1003,8 +1003,13 @@ export default class TSFilter extends EventEmitter {
             this._epgReady = true;
             this._clearEpgState();
 
-            for (const service of _.service.findByNetworkId(this._targetNetworkId)) {
+            const service = _.service.get(this._targetNetworkId, serviceId);
+            if (service.channel.type === "BS4K") {
                 service.epgReady = true;
+            } else {
+                for (const serviceItem of _.service.findByNetworkId(this._targetNetworkId)) {
+                    serviceItem.epgReady = true;
+                }
             }
 
             process.nextTick(() => this.emit("epgReady"));
