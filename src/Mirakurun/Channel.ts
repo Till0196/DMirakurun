@@ -181,18 +181,10 @@ export class Channel {
             this._startup = false;
         }
 
-        const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
-
-        for (const networkId of networkIds) {
-            const services = _.service.findByNetworkId(networkId);
-            if (services.length === 0) {
-                continue;
-            }
-            const service = services[0];
-
+        const addEPGJob = (networkId, service) => {
             _.job.add({
-                key: `EPG.Gather.NID.${networkId}`,
-                name: `EPG Gather Network#${networkId}`,
+                key: `EPG.Gather.NID.${networkId}` + (service.channel.type === "BS4K" ? `.SID.${service.id}` : ""),
+                name: `EPG Gather Network#${networkId}` + (service.channel.type === "BS4K" ? ` Service#${service.id}` : ""),
                 isRerunnable: true,
                 fn: async () => {
                     log.info("Network#%d EPG gathering has started", networkId);
@@ -232,11 +224,32 @@ export class Channel {
                                 service.epgReady = false;
                             }
                         }
+                        return _.tuner.readyForJob(service.channel);
+                    }
 
+                    if (service.channel.type === "BS4K") {
                         return _.tuner.readyForJob(service.channel);
                     }
                 }
             });
+        };
+
+        const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
+        for (const networkId of networkIds) {
+            const services = _.service.findByNetworkId(networkId);
+            if (services.length === 0) {
+                continue;
+            }
+
+            const service = services[0];
+            if (service.channel.type === "BS4K") {
+                for (const serviceItem of services) {
+                    addEPGJob(networkId, serviceItem);
+                }
+            } else {
+                addEPGJob(networkId, service);
+            }
+
         }
     }
 }
