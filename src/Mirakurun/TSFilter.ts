@@ -514,8 +514,7 @@ export default class TSFilter extends EventEmitter {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
                         if (
                             descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS)
-                            descriptor.component_tag === 0x7A || // ...? (CS)
-                            descriptor.component_tag === 0x48 // ...? (CATV)
+                            descriptor.component_tag === 0x7A // ...? (CS)
                         ) {
                             this._parsePids.add(stream.elementary_PID);
                             this._essEsPids.add(stream.elementary_PID);
