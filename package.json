@@ -1,7 +1,7 @@
 {
   "name": "dmirakurun",
   "description": "Fork of Mirakurun modified to work with dantto4k",
-  "version": "4.0.0-beta.16",
+  "version": "4.0.0-beta.16-d1",
   "homepage": "https://github.com/nekohkr/DMirakurun/",
   "keywords": [
     "mirakurun",
@@ -18,9 +18,6 @@
     "name": "nekohkr",
     "url": "https://github.com/nekohkr"
   },
-  "contributors": [
-    "rndomhack"
-  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/nekohkr/DMirakurun.git"

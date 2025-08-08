@@ -82,11 +82,12 @@
 ```yaml
 # Array
 - name: TunerIdentificationName # String
-  types: # (GR|BS|CS|SKY)[]
+  types: # (GR|BS|CS|SKY|BS4K)[]
     - GR
     - BS
     - CS
     - SKY
+    - BS4K
   # For chardev/dvb
   # "<template>" will be replaced with `commandVars[template]` or "(empty)" *@4.0.0~
   command: cmd <channel> --arg1 --arg2 <exampleArg1> <exampleArg2>... # String

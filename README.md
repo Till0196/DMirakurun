@@ -10,6 +10,7 @@ dantto4kに対応するためにmmtsDecoderオプションを追加したMirakur
     - BS4K
   decoder: arib-b25-stream-test
   mmtsDecoder: dantto4k - -
+  # mmtsDecoder: dantto4k - - --smartCardReaderName="Generic USB2.0-CRW [Smart Card Reader Interface] (20070818000000000) 00 00" --disableADTSConversion
   command: recdvb --lnb 15 --dev 0 <channel> - -
 - name: PT4K-1
   types:
