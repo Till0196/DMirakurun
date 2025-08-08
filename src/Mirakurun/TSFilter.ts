@@ -57,6 +57,7 @@ const DSMCC_BLOCK_SIZE = 4066; // ARIB TR-B15
 
 const LOGO_DATA_NAME_BS = Buffer.from("LOGO-05"); // ARIB STD-B21, ARIB TR-B15
 const LOGO_DATA_NAME_CS = Buffer.from("CS_LOGO-05"); // ARIB STD-B21, ARIB TR-B15
+const LOGO_DATA_NAME_CATV = Buffer.from("CATV_LOGO-05"); // ..? J:COM
 const LOGO_DATA_NAME_JCHITS = Buffer.from("JCHITS_LOGO-05"); // ...? JC-HITS and JCC ACAS
 
 interface BasicExtState {
@@ -430,8 +431,10 @@ export default class TSFilter extends EventEmitter {
                 // for future use
                 // (this._targetNetworkId !== 4 && serviceId >= 0xFFF0 && serviceId <= 0xFFF5) || // ARIB TR-B14 (GR)
                 (this._targetNetworkId === 4 && serviceId === 929) || // ARIB TR-B15 (BS/CS)
-                (this._targetNetworkId === 65527 && serviceId === 297) || // ARIB TR-B15 (JCC ACAS)
-                (this._targetNetworkId === 65533 && serviceId === 299) // ARIB TR-B15 (JC-HITS)
+                (this._targetNetworkId === 65527 && serviceId === 297) || // ..? (JCC ACAS)
+                (this._targetNetworkId === 65527 && serviceId === 97) || // ..? (J:COM)
+                (this._targetNetworkId === 65533 && serviceId === 299) || // ..? (JC-HITS)
+                (this._targetNetworkId === 65534 && serviceId === 99) // ..? (J:COM)
             ) {
                 const essPmtPid = program.program_map_PID;
                 this._essMap.set(serviceId, essPmtPid);
@@ -769,10 +772,11 @@ export default class TSFilter extends EventEmitter {
                     if (descriptor.descriptor_tag !== 0x02) {
                         continue;
                     }
-                    // find LOGO-05 or CS_LOGO-05
+                    // find LOGO-05 or CS_LOGO-05 or CATV_LOGO-05 or JCHITS_LOGO-05
                     if (
                         !LOGO_DATA_NAME_BS.equals(descriptor.text_char) &&
                         !LOGO_DATA_NAME_CS.equals(descriptor.text_char) &&
+                        !LOGO_DATA_NAME_CATV.equals(descriptor.text_char) &&
                         !LOGO_DATA_NAME_JCHITS.equals(descriptor.text_char)
                     ) {
                         continue;
@@ -833,11 +837,15 @@ export default class TSFilter extends EventEmitter {
             );
         } else if (this._enableParseDSMCC && this._targetNetworkId === 65527) {
             targetServices.push(
-                ..._.service.findByNetworkId(65527) // JCC ACAS
+                ..._.service.findByNetworkId(65527) // JCC ACAS or J:COM
             );
         } else if (this._enableParseDSMCC && this._targetNetworkId === 65533) {
             targetServices.push(
                 ..._.service.findByNetworkId(65533) // JC-HITS
+            );
+        } else if (this._enableParseDSMCC && this._targetNetworkId === 65534) {
+            targetServices.push(
+                ..._.service.findByNetworkId(65534) // J:COM
             );
         }
 
@@ -909,6 +917,8 @@ export default class TSFilter extends EventEmitter {
                                 log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65527])");
                             } else if (this._targetNetworkId === 65533) {
                                 log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65533])");
+                            } else if (this._targetNetworkId === 65534) {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65534])");
                             }
                         }, 1000 * 60 * 30); // 30 mins
 
@@ -918,6 +928,8 @@ export default class TSFilter extends EventEmitter {
                             log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65527])");
                         } else if (this._targetNetworkId === 65533) {
                             log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65533])");
+                        } else if (this._targetNetworkId === 65534) {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65534])");
                         }
                     }
 
