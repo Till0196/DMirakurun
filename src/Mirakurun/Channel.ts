@@ -183,8 +183,8 @@ export class Channel {
 
         const addEPGJob = (networkId, service) => {
             _.job.add({
-                key: `EPG.Gather.NID.${networkId}` + (service.channel.type === "BS4K" ? `.SID.${service.id}` : ""),
-                name: `EPG Gather Network#${networkId}` + (service.channel.type === "BS4K" ? ` Service#${service.id}` : ""),
+                key: `EPG.Gather.NID.${networkId}`,
+                name: `EPG Gather Network#${networkId}`,
                 isRerunnable: true,
                 fn: async () => {
                     log.info("Network#%d EPG gathering has started", networkId);
@@ -226,8 +226,49 @@ export class Channel {
                         }
                         return _.tuner.readyForJob(service.channel);
                     }
+                }
+            });
+        };
 
-                    if (service.channel.type === "BS4K") {
+        const addBS4KEPGJob = (networkId, service) => {
+            _.job.add({
+                key: `EPG.Gather.NID.${networkId}.SID.${service.id}`,
+                name: `EPG Gather Network#${networkId} Service#${service.id}`,
+                isRerunnable: true,
+                fn: async () => {
+                    log.info("Network#%d Service#%d EPG gathering has started", networkId, service.id);
+                    try {
+                        await _.tuner.getEPG(service.channel);
+                        log.info("Network#%d Service#%d EPG gathering has finished", networkId, service.id);
+                    } catch (e) {
+                        log.warn("Network#%d Service#%d EPG gathering has failed [%s]", networkId, service.id, e);
+                        throw new Error("EPG gathering failed");
+                    }
+                },
+                readyFn: async () => {
+                    await common.sleep(100);
+
+                    if (service.epgReady === true) {
+                        const now = Date.now();
+                        if (startup && now - service.epgUpdatedAt < 1000 * 60 * 10) { // 10 mins
+                            log.info("Network#%d Service#%d EPG gathering has skipped because EPG is already up to date (in 10 mins)", networkId, service.id);
+                            return false;
+                        }
+                        if (now - service.epgUpdatedAt > 1000 * 60 * 60 * 12) { // 12 hours
+                            log.info("Network#%d Service#%d EPG gathering is resuming forcibly because reached maximum pause time (12 hours)", networkId, service.id);
+                            service.epgReady = false;
+                        } else {
+                            const currentPrograms = _.program.findByNetworkIdAndServiceIdAndTime(networkId, service.id, now)
+                                .filter(program => !!program.name && program.name !== "放送休止");
+                            if (currentPrograms.length === 0) {
+                                const networkServicePrograms = _.program.findByNetworkIdServiceId(networkId, service.id);
+                                if (networkServicePrograms.length > 0) {
+                                    log.info("Network#%d Service#%d EPG gathering has skipped because broadcast is off", networkId, service.id);
+                                    return false;
+                                }
+                                service.epgReady = false;
+                            }
+                        }
                         return _.tuner.readyForJob(service.channel);
                     }
                 }
@@ -244,7 +285,7 @@ export class Channel {
             const service = services[0];
             if (service.channel.type === "BS4K") {
                 for (const serviceItem of services) {
-                    addEPGJob(networkId, serviceItem);
+                    addBS4KEPGJob(networkId, serviceItem);
                 }
             } else {
                 addEPGJob(networkId, service);
