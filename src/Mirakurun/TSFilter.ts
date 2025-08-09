@@ -57,8 +57,18 @@ const DSMCC_BLOCK_SIZE = 4066; // ARIB TR-B15
 
 const LOGO_DATA_NAME_BS = Buffer.from("LOGO-05"); // ARIB STD-B21, ARIB TR-B15
 const LOGO_DATA_NAME_CS = Buffer.from("CS_LOGO-05"); // ARIB STD-B21, ARIB TR-B15
-const LOGO_DATA_NAME_CATV = Buffer.from("CATV_LOGO-05"); // ..? J:COM
+const LOGO_DATA_NAME_CATV = Buffer.from("CATV_LOGO-05"); // ..? J:COM etc.
 const LOGO_DATA_NAME_JCHITS = Buffer.from("JCHITS_LOGO-05"); // ...? JC-HITS and JCC ACAS
+
+// Cable Television Network IDs (ARIB STD-B10)
+const catvNetworkIds = [
+    65527, // Advanced cable independent network (JCC ACAS, J:COM etc.)
+    65529, // Advanced JC-HITS (JCC ACAS)
+    65530, // Digital broadcasting advanced ReMUX
+    65533, // JC-HITS Trans-Modulation (JC-HITS)
+    65534, // Digital broadcasting ReMUX (J:COM etc.)
+    65535  // Kagoshima Cable Television
+];
 
 interface BasicExtState {
     basic: {
@@ -209,7 +219,7 @@ export default class TSFilter extends EventEmitter {
         }
 
         if (this._targetNetworkId) {
-            if (this._targetNetworkId === 4 || this._targetNetworkId === 65527 || this._targetNetworkId === 65533) { // ARIB TR-B15 (BS/CS or JCC ACAS or JC-HITS)
+            if (this._targetNetworkId === 4 || catvNetworkIds.includes(this._targetNetworkId)) { // ARIB TR-B15 (BS/CS/CATV)
                 this._enableParseDSMCC = true;
             } else {
                 this._enableParseCDT = true;
@@ -430,11 +440,7 @@ export default class TSFilter extends EventEmitter {
             if (
                 // for future use
                 // (this._targetNetworkId !== 4 && serviceId >= 0xFFF0 && serviceId <= 0xFFF5) || // ARIB TR-B14 (GR)
-                (this._targetNetworkId === 4 && serviceId === 929) || // ARIB TR-B15 (BS/CS)
-                (this._targetNetworkId === 65527 && serviceId === 297) || // ..? (JCC ACAS)
-                (this._targetNetworkId === 65527 && serviceId === 97) || // ..? (J:COM)
-                (this._targetNetworkId === 65533 && serviceId === 299) || // ..? (JC-HITS)
-                (this._targetNetworkId === 65534 && serviceId === 99) // ..? (J:COM)
+                (this._essMap.has(serviceId) && this._essMap.get(serviceId) === -1)
             ) {
                 const essPmtPid = program.program_map_PID;
                 this._essMap.set(serviceId, essPmtPid);
@@ -516,7 +522,7 @@ export default class TSFilter extends EventEmitter {
                 for (const descriptor of stream.ES_info) {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
                         if (
-                            descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS)
+                            descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS, CATV)
                             descriptor.component_tag === 0x7A // ...? (CS)
                         ) {
                             this._parsePids.add(stream.elementary_PID);
@@ -614,6 +620,12 @@ export default class TSFilter extends EventEmitter {
                 if (name !== "" && logoId !== -1) {
                     break;
                 }
+            }
+
+            // detect ESS service and add to ESS map
+            if (this._enableParseDSMCC && type === 0xA4 && !this._essMap.has(service.service_id)) {
+                this._essMap.set(service.service_id, -1);
+                log.info("TSFilter#_onSDT: detected and added Engineering Service (serviceId=%d, name=%s)", service.service_id, name);
             }
 
             if (_services.some(_service => _service.id === service.service_id) === false) {
@@ -835,18 +847,12 @@ export default class TSFilter extends EventEmitter {
                 ..._.service.findByNetworkId(6),
                 ..._.service.findByNetworkId(7)
             );
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 65527) {
-            targetServices.push(
-                ..._.service.findByNetworkId(65527) // JCC ACAS or J:COM
-            );
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 65533) {
-            targetServices.push(
-                ..._.service.findByNetworkId(65533) // JC-HITS
-            );
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 65534) {
-            targetServices.push(
-                ..._.service.findByNetworkId(65534) // J:COM
-            );
+        } else if (this._enableParseDSMCC) {
+            if (catvNetworkIds.includes(this._targetNetworkId)) {
+                targetServices.push(
+                    ..._.service.findByNetworkId(this._targetNetworkId)
+                );
+            }
         }
 
         const logoIdNetworkMap: { [networkId: number]: Set<number> } = {};
@@ -913,23 +919,15 @@ export default class TSFilter extends EventEmitter {
 
                             if (this._targetNetworkId === 4) {
                                 log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[4,6,7])");
-                            } else if (this._targetNetworkId === 65527) {
-                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65527])");
-                            } else if (this._targetNetworkId === 65533) {
-                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65533])");
-                            } else if (this._targetNetworkId === 65534) {
-                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65534])");
+                            } else {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[%d])", this._targetNetworkId);
                             }
                         }, 1000 * 60 * 30); // 30 mins
 
                         if (this._targetNetworkId === 4) {
                             log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[4,6,7])");
-                        } else if (this._targetNetworkId === 65527) {
-                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65527])");
-                        } else if (this._targetNetworkId === 65533) {
-                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65533])");
-                        } else if (this._targetNetworkId === 65534) {
-                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65534])");
+                        } else {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[%d])", this._targetNetworkId);
                         }
                     }
 
