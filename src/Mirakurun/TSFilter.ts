@@ -60,6 +60,17 @@ const LOGO_DATA_NAME_CS = Buffer.from("CS_LOGO-05"); // ARIB STD-B21, ARIB TR-B1
 const LOGO_DATA_NAME_CATV = Buffer.from("CATV_LOGO-05"); // ..? J:COM
 const LOGO_DATA_NAME_JCHITS = Buffer.from("JCHITS_LOGO-05"); // ...? JC-HITS and JCC ACAS
 
+// Cable Television Network IDs (ARIB STD-B10)
+const catvNetworkIds = [
+    65527, // Advanced cable independent network (JCC ACAS, J:COM etc.)
+    65529, // Advanced JC-HITS (JCC ACAS)
+    65530, // Digital broadcasting advanced ReMUX
+    65533, // JC-HITS Trans-Modulation (JC-HITS)
+    65534, // Digital broadcasting ReMUX (J:COM etc.)
+    65535  // Kagoshima Cable Television
+];
+
+
 interface BasicExtState {
     basic: {
         flags: FlagState[];
@@ -135,10 +146,13 @@ export default class TSFilter extends EventEmitter {
     private _pmtPid = -1;
     private _pmtTimer: NodeJS.Timeout;
     private _streamTime: number = null;
+    private _patMap = new Map<number, number>(); // <serviceId, pmtPid>
     private _essMap = new Map<number, number>(); // <serviceId, pid>
     private _essEsPids = new Set<number>();
     private _dlDataMap = new Map<number, DownloadData>();
+    private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
+    private _logoDataRetryTimer: NodeJS.Timeout;
     private _provideEventLastDetectedAt = -1;
     private _provideEventTimeout: NodeJS.Timeout = null;
 
@@ -211,6 +225,7 @@ export default class TSFilter extends EventEmitter {
         if (this._targetNetworkId) {
             if (this._targetNetworkId === 4 || this._targetNetworkId === 65527 || this._targetNetworkId === 65533) { // ARIB TR-B15 (BS/CS or JCC ACAS or JC-HITS)
                 this._enableParseDSMCC = true;
+                this._parseNIT = true;
             } else {
                 this._enableParseCDT = true;
             }
@@ -409,6 +424,7 @@ export default class TSFilter extends EventEmitter {
 
     private _onPAT(pid: number, data: any): void {
         this._tsid = data.transport_stream_id;
+        this._patMap = new Map<number, number>();
         this._serviceIds = new Set();
         this._parseServiceIds = new Set();
 
@@ -426,22 +442,8 @@ export default class TSFilter extends EventEmitter {
                 continue;
             }
 
-            // detect ESS PMT PID
-            if (
-                // for future use
-                // (this._targetNetworkId !== 4 && serviceId >= 0xFFF0 && serviceId <= 0xFFF5) || // ARIB TR-B14 (GR)
-                (this._targetNetworkId === 4 && serviceId === 929) || // ARIB TR-B15 (BS/CS)
-                (this._targetNetworkId === 65527 && serviceId === 297) || // ..? (JCC ACAS)
-                (this._targetNetworkId === 65527 && serviceId === 97) || // ..? (J:COM)
-                (this._targetNetworkId === 65533 && serviceId === 299) || // ..? (JC-HITS)
-                (this._targetNetworkId === 65534 && serviceId === 99) // ..? (J:COM)
-            ) {
-                const essPmtPid = program.program_map_PID;
-                this._essMap.set(serviceId, essPmtPid);
-
-                log.debug("TSFilter#_onPAT: detected ESS PMT PID=%d as serviceId=%d", essPmtPid, serviceId);
-                continue;
-            }
+            // for detecting ESS PMT PID
+            this._patMap.set(serviceId, program.program_map_PID);
 
             this._serviceIds.add(serviceId);
 
@@ -516,7 +518,7 @@ export default class TSFilter extends EventEmitter {
                 for (const descriptor of stream.ES_info) {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
                         if (
-                            descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS)
+                            descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS, CATV)
                             descriptor.component_tag === 0x7A // ...? (CS)
                         ) {
                             this._parsePids.add(stream.elementary_PID);
@@ -560,24 +562,50 @@ export default class TSFilter extends EventEmitter {
     private _onNIT(pid: number, data: any): void {
         const _network = {
             networkId: data.network_id,
+            name: "",
             areaCode: -1,
-            remoteControlKeyId: -1
+            remoteControlKeyId: -1,
+            essServiceIds: []
         };
 
-        if (data.transport_streams[0]) {
-            for (const desc of data.transport_streams[0].transport_descriptors) {
-                switch (desc.descriptor_tag) {
-                    case 0xFA:
-                        _network.areaCode = desc.area_code;
-                        break;
-                    case 0xCD:
-                        _network.remoteControlKeyId = desc.remote_control_key_id;
-                        break;
+        // Parse network descriptors (Network Name, etc.)
+        if (data.network_descriptors) {
+            for (const desc of data.network_descriptors) {
+                if (desc.descriptor_tag === 0x40) {
+                    _network.name = new TsChar(desc.network_name_char).decode();
+                }
+            }
+        }
+
+        // Parse transport descriptors (Area Code, Remote Control Key ID, ESS Service IDs)
+        if (data.transport_streams) {
+            if (this._tsid !== -1) {
+                const targetTS = data.transport_streams.find(ts => ts.transport_stream_id === this._tsid);
+                if (targetTS?.transport_descriptors) {
+                    for (const desc of targetTS.transport_descriptors) {
+                        switch (desc.descriptor_tag) {
+                            case 0xFA:
+                                _network.areaCode = desc.area_code;
+                                break;
+                            case 0xCD:
+                                _network.remoteControlKeyId = desc.remote_control_key_id;
+                                break;
+                            case 0x41:
+                                for (const service of desc.services) {
+                                    if (service.service_type === 0xA4) {
+                                        _network.essServiceIds.push(service.service_id);
+                                    }
+                                }
+                                break;
+                        }
+                    }
                 }
             }
         }
 
         this.emit("network", _network);
+
+        this._resolveEssServices(_network.essServiceIds, _network.name);
 
         if (this._parsePids.has(pid)) {
             this._parsePids.delete(pid);
@@ -675,6 +703,7 @@ export default class TSFilter extends EventEmitter {
                 this._epg = new EPG();
 
                 // Logo
+                this._logoDataReady = true;
                 this._standbyLogoData();
             }
 
@@ -812,8 +841,33 @@ export default class TSFilter extends EventEmitter {
         this._close();
     }
 
+    private _resolveEssServices(essServiceIds?: number[], networkName?: string): void {
+        if (essServiceIds && networkName) {
+            for (const sid of essServiceIds) {
+                if (!this._essMap.has(sid)) {
+                    const pmtPid = this._patMap.get(sid);
+                    if (pmtPid !== undefined) {
+                        this._essMap.set(sid, pmtPid);
+                        this._parsePids.add(pmtPid);
+                        log.info("TSFilter#_resolveEssServices: resolved ESS service (serviceId=%d, PMT PID=%d, network='%s')", sid, pmtPid, networkName);
+                    } else {
+                        log.debug("TSFilter#_resolveEssServices: resolved ESS service but PMT PID not found yet (serviceId=%d, network='%s')", sid, networkName);
+                    }
+                }
+            }
+
+            if (this._logoDataReady && this._essMap.size > 0) {
+                log.debug("TSFilter#_resolveEssServices: ESS services detected, starting logo data standby");
+                this._standbyLogoData();
+            }
+        }
+    }
+
     private async _standbyLogoData(): Promise<void> {
         if (this._closed) {
+            return;
+        }
+        if (!this._logoDataReady) {
             return;
         }
         if (this._logoDataTimer) {
@@ -835,18 +889,12 @@ export default class TSFilter extends EventEmitter {
                 ..._.service.findByNetworkId(6),
                 ..._.service.findByNetworkId(7)
             );
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 65527) {
-            targetServices.push(
-                ..._.service.findByNetworkId(65527) // JCC ACAS or J:COM
-            );
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 65533) {
-            targetServices.push(
-                ..._.service.findByNetworkId(65533) // JC-HITS
-            );
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 65534) {
-            targetServices.push(
-                ..._.service.findByNetworkId(65534) // J:COM
-            );
+        } else if (this._enableParseDSMCC) {
+            if (catvNetworkIds.includes(this._targetNetworkId)) {
+                targetServices.push(
+                    ..._.service.findByNetworkId(this._targetNetworkId)
+                );
+            }
         }
 
         const logoIdNetworkMap: { [networkId: number]: Set<number> } = {};
