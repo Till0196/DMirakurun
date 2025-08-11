@@ -222,7 +222,7 @@ export default class TSFilter extends EventEmitter {
         }
 
         if (this._targetNetworkId) {
-            if (this._targetNetworkId === 4 || this._targetNetworkId === 65527 || this._targetNetworkId === 65533) { // ARIB TR-B15 (BS/CS or JCC ACAS or JC-HITS)
+            if (this._targetNetworkId === 4 || catvNetworkIds.includes(this._targetNetworkId)) { // ARIB TR-B15 (BS/CS or CATV)
                 this._enableParseDSMCC = true;
                 this._parseNIT = true;
             } else {
