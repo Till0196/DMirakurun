@@ -485,7 +485,7 @@ export default class TunerDevice extends EventEmitter {
 
             tlvConverter.once("error", (err) => {
                 log.error("TunerDevice#%d TLVconverter error `%s`", this._index, err.name);
-                this._kill(false;
+                this._kill(false);
             });
 
             tlvConverter.once("close", () => {
