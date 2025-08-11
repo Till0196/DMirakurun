@@ -70,7 +70,6 @@ const catvNetworkIds = [
     65535  // Kagoshima Cable Television
 ];
 
-
 interface BasicExtState {
     basic: {
         flags: FlagState[];
