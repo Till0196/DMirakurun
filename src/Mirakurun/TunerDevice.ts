@@ -443,7 +443,7 @@ export default class TunerDevice extends EventEmitter {
 
         mmtsDecoder.once("error", (err) => {
             log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsDecoder.pid);
-            this._kill(false);
+            this._kill(true);
         });
 
         mmtsDecoder.once("exit", () => {
@@ -456,8 +456,8 @@ export default class TunerDevice extends EventEmitter {
                 this._index, code, signal, mmtsDecoder.pid
             );
 
-            if (this._exited === false) {
-                this._kill(false);
+            if (this._exited === false && !this._closing) {
+                this._kill(true);
             }
         });
 
@@ -478,10 +478,13 @@ export default class TunerDevice extends EventEmitter {
 
             tlvConverter.once("error", (err) => {
                 log.error("TunerDevice#%d TLVconverter error `%s`", this._index, err.name);
-                this._kill(false);
+                this._kill(true);
             });
 
             tlvConverter.once("close", () => {
+                if (!mmtsDecoder.killed) {
+                    mmtsDecoder.stdin.end();
+                }
                 log.debug("TunerDevice#%d TLVconverter closed", this._index);
             });
 
@@ -499,9 +502,21 @@ export default class TunerDevice extends EventEmitter {
                 }
             });
 
+            inputStream.once("error", (err) => {
+                log.error("TunerDevice#%d inputStream error `%s`", this._index, err.name);
+                if (!tlvConverter.closed) {
+                    tlvConverter.end();
+                }
+            });
+
             log.info("TunerDevice#%d Pipeline connected successfully", this._index);
         } else {
             inputStream.pipe(mmtsDecoder.stdin);
+
+            inputStream.once("error", (err) => {
+                log.error("TunerDevice#%d inputStream pipe error `%s`", this._index, err.name);
+                mmtsDecoder.stdin.end();
+            });
         }
 
         return mmtsDecoder.stdout;

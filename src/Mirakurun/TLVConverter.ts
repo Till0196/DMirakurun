@@ -14,11 +14,18 @@ export default class TLVConverter extends EventEmitter {
     private _processedPackets = 0;
     private _tlvPackets = 0;
     private _closed = false;
+    private _closing = false;
 
     constructor(tunerIndex: number, output: Writable) {
         super();
         this._tunerIndex = tunerIndex;
         this._output = output;
+
+        this._output.once("error", (err) => {
+            log.error("TunerDevice#%d TLVConverter output error: %s", this._tunerIndex, err.message);
+            this.emit("error", err);
+            this._close();
+        });
 
         this._output.once("finish", this._close.bind(this));
         this._output.once("close", this._close.bind(this));
@@ -31,8 +38,14 @@ export default class TLVConverter extends EventEmitter {
     }
 
     write(chunk: Buffer): void {
-        if (this._closed) {
+        if (this._closed || this._closing) {
             throw new Error("TLVConverter has closed already");
+        }
+
+        if (!this._output || this._output.destroyed) {
+            log.warn("TunerDevice#%d TLVConverter output stream is destroyed", this._tunerIndex);
+            this._close();
+            return;
         }
 
         let offset = 0;
@@ -81,11 +94,15 @@ export default class TLVConverter extends EventEmitter {
     }
 
     end(): void {
-        this._close();
+        if (!this._closed && !this._closing) {
+            this._close();
+        }
     }
 
     close(): void {
-        this._close();
+        if (!this._closed && !this._closing) {
+            this._close();
+        }
     }
 
     private _processPackets(packets: Buffer[]): void {
@@ -115,10 +132,12 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _close(): void {
-        if (this._closed) {
+        if (this._closed || this._closing) {
             return;
         }
-        this._closed = true;
+
+        this._closing = true;
+        log.debug("TunerDevice#%d TLVConverter starting close process", this._tunerIndex);
 
         // clear buffer
         setImmediate(() => {
@@ -134,6 +153,12 @@ export default class TLVConverter extends EventEmitter {
             this._output.removeAllListeners();
             delete this._output;
         }
+
+        this._closed = true;
+        this._closing = false;
+
+        log.debug("TunerDevice#%d TLVConverter closed (processed: %d, TLV: %d)",
+                this._tunerIndex, this._processedPackets, this._tlvPackets);
 
         // close
         this.emit("close");
