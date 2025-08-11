@@ -162,6 +162,5 @@ export default class TLVConverter extends EventEmitter {
 
         // close
         this.emit("close");
-        this.emit("end");
     }
 }

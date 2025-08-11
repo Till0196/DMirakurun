@@ -282,7 +282,13 @@ export default class TunerDevice extends EventEmitter {
 
             cat.once("error", (err) => {
                 log.error("TunerDevice#%d cat process error `%s` (pid=%d)", this._index, err.name, cat.pid);
-                this._kill(false);
+                if (ch.type === "BS4K") {
+                    if (!this._closing) {
+                        this._kill(true);
+                    }
+                } else {
+                    this._kill(false);
+                }
             });
 
             cat.once("close", (code, signal) => {
@@ -292,7 +298,13 @@ export default class TunerDevice extends EventEmitter {
                 );
 
                 if (this._exited === false) {
-                    this._kill(false);
+                    if (ch.type === "BS4K") {
+                        if (!this._closing) {
+                            this._kill(true);
+                        }
+                    } else {
+                        this._kill(false);
+                    }
                 }
             });
 
@@ -443,7 +455,9 @@ export default class TunerDevice extends EventEmitter {
 
         mmtsDecoder.once("error", (err) => {
             log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsDecoder.pid);
-            this._kill(false);
+            if (!this._closing) {
+                this._kill(true);
+            }
         });
 
         mmtsDecoder.once("exit", () => {
@@ -457,7 +471,7 @@ export default class TunerDevice extends EventEmitter {
             );
 
             if (this._exited === false && !this._closing) {
-                this._kill(false);
+                this._kill(true);
             }
         });
 
@@ -485,7 +499,9 @@ export default class TunerDevice extends EventEmitter {
 
             tlvConverter.once("error", (err) => {
                 log.error("TunerDevice#%d TLVconverter error `%s`", this._index, err.name);
-                this._kill(false);
+                if (!this._closing) {
+                    this._kill(true);
+                }
             });
 
             tlvConverter.once("close", () => {
