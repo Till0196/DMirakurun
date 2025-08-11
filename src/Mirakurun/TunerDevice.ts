@@ -298,7 +298,7 @@ export default class TunerDevice extends EventEmitter {
 
             this._process.once("exit", () => cat.kill("SIGKILL"));
 
-            this._stream = ch.type === "BS4K" ? this._setupBS4KPipeline(cat.stdout, ch) : cat.stdout;
+            this._stream = ch.type === "BS4K" ? this._setupBS4KPipeline(cat.stdout, ch, cat) : cat.stdout;
         } else {
             this._stream = ch.type === "BS4K" ? this._setupBS4KPipeline(this._process.stdout, ch) : this._process.stdout;
         }
@@ -437,13 +437,13 @@ export default class TunerDevice extends EventEmitter {
         Event.emit("tuner", "update", this.toJSON());
     }
 
-    private _setupBS4KPipeline(inputStream: stream.Readable, ch: ChannelItem): stream.Readable {
+    private _setupBS4KPipeline(inputStream: stream.Readable, ch: ChannelItem, catProcess?: child_process.ChildProcess): stream.Readable {
         const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
         const mmtsDecoder = child_process.spawn(parsed.command, parsed.args);
 
         mmtsDecoder.once("error", (err) => {
             log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsDecoder.pid);
-            this._kill(true);
+            this._kill(false);
         });
 
         mmtsDecoder.once("exit", () => {
@@ -457,14 +457,21 @@ export default class TunerDevice extends EventEmitter {
             );
 
             if (this._exited === false && !this._closing) {
-                this._kill(true);
+                this._kill(false);
             }
         });
 
-        this._process.once("exit", () => {
-            mmtsDecoder.stdin.end();
-            mmtsDecoder.kill("SIGKILL");
-        });
+        if (catProcess) {
+            catProcess.once("exit", () => {
+                mmtsDecoder.stdin.end();
+                mmtsDecoder.kill("SIGKILL");
+            });
+        } else {
+            this._process.once("exit", () => {
+                mmtsDecoder.stdin.end();
+                mmtsDecoder.kill("SIGKILL");
+            });
+        }
 
         mmtsDecoder.stderr.on("data", (data) => {
             log.debug("TunerDevice#%d mmtsDecoder stderr: %s", this._index, data.toString().trim());
@@ -478,7 +485,7 @@ export default class TunerDevice extends EventEmitter {
 
             tlvConverter.once("error", (err) => {
                 log.error("TunerDevice#%d TLVconverter error `%s`", this._index, err.name);
-                this._kill(true);
+                this._kill(false;
             });
 
             tlvConverter.once("close", () => {
@@ -496,7 +503,8 @@ export default class TunerDevice extends EventEmitter {
                 }
             });
 
-            this._process.once("exit", () => {
+            const processToWatch = catProcess || this._process;
+            processToWatch.once("exit", () => {
                 if (!tlvConverter.closed) {
                     tlvConverter.end();
                 }
