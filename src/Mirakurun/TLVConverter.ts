@@ -39,7 +39,8 @@ export default class TLVConverter extends EventEmitter {
 
     write(chunk: Buffer): void {
         if (this._closed || this._closing) {
-            throw new Error("TLVConverter has closed already");
+            log.warn("TunerDevice#%d TLVConverter write called on closed converter", this._tunerIndex);
+            return;
         }
 
         if (!this._output || this._output.destroyed) {
@@ -147,20 +148,27 @@ export default class TLVConverter extends EventEmitter {
 
         // clear output stream
         if (this._output) {
-            if (this._output.writableEnded === false) {
-                this._output.end();
+            try {
+                if (!this._output.destroyed && !this._output.writableEnded) {
+                    this._output.end();
+                }
+            } catch (err) {
+                log.warn("TunerDevice#%d TLVConverter output end error: %s", this._tunerIndex, err.message);
             }
+
             this._output.removeAllListeners();
-            delete this._output;
+            this._output = null;
         }
 
         this._closed = true;
         this._closing = false;
 
-        log.debug("TunerDevice#%d TLVConverter closed (processed: %d, TLV: %d)",
-                this._tunerIndex, this._processedPackets, this._tlvPackets);
+        log.debug("TunerDevice#%d TLVConverter closed", this._tunerIndex);
 
         // close
-        this.emit("close");
+        process.nextTick(() => {
+            this.emit("close");
+            this.removeAllListeners();
+        });
     }
 }

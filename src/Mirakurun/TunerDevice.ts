@@ -508,7 +508,6 @@ export default class TunerDevice extends EventEmitter {
                 if (!mmtsDecoder.killed) {
                     mmtsDecoder.stdin.end();
                 }
-                log.debug("TunerDevice#%d TLVconverter closed", this._index);
             });
 
             log.info("TunerDevice#%d Connecting pipeline: input -> TLV converter -> mmtsDecoder", this._index);
@@ -536,6 +535,13 @@ export default class TunerDevice extends EventEmitter {
             log.info("TunerDevice#%d Pipeline connected successfully", this._index);
         } else {
             inputStream.pipe(mmtsDecoder.stdin);
+
+            const processToWatch = catProcess || this._process;
+            processToWatch.once("exit", () => {
+                if (!mmtsDecoder.killed) {
+                    mmtsDecoder.stdin.end();
+                }
+            });
 
             inputStream.once("error", (err) => {
                 log.error("TunerDevice#%d inputStream pipe error `%s`", this._index, err.name);
