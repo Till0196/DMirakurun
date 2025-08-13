@@ -51,6 +51,8 @@ export default class TunerDevice extends EventEmitter {
     private _command: string = null;
     private _process: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
+    private _mmtsDecoder: child_process.ChildProcess = null;
+    private _tlvConverter: any = null;
 
     private _users = new Set<User>();
 
@@ -282,13 +284,8 @@ export default class TunerDevice extends EventEmitter {
 
             cat.once("error", (err) => {
                 log.error("TunerDevice#%d cat process error `%s` (pid=%d)", this._index, err.name, cat.pid);
-                if (ch.type === "BS4K") {
-                    if (!this._closing) {
-                        this._kill(true);
-                    }
-                } else {
-                    this._kill(false);
-                }
+
+                this._kill(false);
             });
 
             cat.once("close", (code, signal) => {
@@ -298,13 +295,7 @@ export default class TunerDevice extends EventEmitter {
                 );
 
                 if (this._exited === false) {
-                    if (ch.type === "BS4K") {
-                        if (!this._closing) {
-                            this._kill(true);
-                        }
-                    } else {
-                        this._kill(false);
-                    }
+                    this._kill(false);
                 }
             });
 
@@ -386,6 +377,27 @@ export default class TunerDevice extends EventEmitter {
         this._isAvailable = false;
         this._closing = close;
 
+        if (this._mmtsDecoder || this._tlvConverter) {
+            log.info("TunerDevice#%d BS4K pipeline detected, killing all processes immediately", this._index);
+
+            if (this._tlvConverter && !this._tlvConverter.closed) {
+                await new Promise<void>(resolve => {
+                    this._tlvConverter.once("close", resolve);
+                    this._tlvConverter.end();
+                });
+                this._tlvConverter = null;
+            }
+
+            if (this._mmtsDecoder && !this._mmtsDecoder.killed) {
+                await new Promise<void>(resolve => {
+                    this._mmtsDecoder.once("close", resolve);
+                    this._mmtsDecoder.stdin.end();
+                    this._mmtsDecoder.kill("SIGKILL");
+                });
+                this._mmtsDecoder = null;
+            }
+        }
+
         this._updated();
 
         await new Promise<void>(resolve => {
@@ -418,6 +430,8 @@ export default class TunerDevice extends EventEmitter {
         this._command = null;
         this._process = null;
         this._stream = null;
+        this._mmtsDecoder = null;
+        this._tlvConverter = null;
 
         if (this._closing === false && this._users.size !== 0) {
             log.warn("TunerDevice#%d respawning because request has not closed", this._index);
@@ -451,23 +465,25 @@ export default class TunerDevice extends EventEmitter {
 
     private _setupBS4KPipeline(inputStream: stream.Readable, ch: ChannelItem, catProcess?: child_process.ChildProcess): stream.Readable {
         const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
-        const mmtsDecoder = child_process.spawn(parsed.command, parsed.args);
+        this._mmtsDecoder = child_process.spawn(parsed.command, parsed.args);
 
-        mmtsDecoder.once("error", (err) => {
-            log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsDecoder.pid);
+        this._mmtsDecoder.once("error", (err) => {
+            log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, this._mmtsDecoder.pid);
             if (!this._closing) {
                 this._kill(true);
             }
         });
 
-        mmtsDecoder.once("exit", () => {
-            mmtsDecoder.stdin.end();
+        this._mmtsDecoder.once("exit", () => {
+            if (this._mmtsDecoder && this._mmtsDecoder.stdin) {
+                this._mmtsDecoder.stdin.end();
+            }
         });
 
-        mmtsDecoder.once("close", (code, signal) => {
+        this._mmtsDecoder.once("close", (code, signal) => {
             log.debug(
                 "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                this._index, code, signal, mmtsDecoder.pid
+                this._index, code, signal, this._mmtsDecoder.pid
             );
 
             if (this._exited === false && !this._closing) {
@@ -477,78 +493,84 @@ export default class TunerDevice extends EventEmitter {
 
         if (catProcess) {
             catProcess.once("exit", () => {
-                mmtsDecoder.stdin.end();
-                mmtsDecoder.kill("SIGKILL");
+                if (this._mmtsDecoder && this._mmtsDecoder.stdin) {
+                    this._mmtsDecoder.stdin.end();
+                    this._mmtsDecoder.kill("SIGKILL");
+                }
             });
         } else {
             this._process.once("exit", () => {
-                mmtsDecoder.stdin.end();
-                mmtsDecoder.kill("SIGKILL");
+                if (this._mmtsDecoder && this._mmtsDecoder.stdin) {
+                    this._mmtsDecoder.stdin.end();
+                    this._mmtsDecoder.kill("SIGKILL");
+                }
             });
         }
 
-        mmtsDecoder.stderr.on("data", (data) => {
+        this._mmtsDecoder.stderr.on("data", (data) => {
             log.debug("TunerDevice#%d mmtsDecoder stderr: %s", this._index, data.toString().trim());
         });
 
         // TLV processing or direct pipe based on tsmfRelTs
-        if (ch.tsmfRelTs === 0) {
-            log.info("TunerDevice#%d Channel tsmfRelTs=0 converting TLV packets", this._index);
+        if (ch.tsmfRelTs !== undefined && ch.tsmfRelTs !== null) {
+            log.info("TunerDevice#%d Channel tsmfRelTs=%d converting TLV packets", this._index, ch.tsmfRelTs);
 
-            const tlvConverter = new TLVConverter(this._index, mmtsDecoder.stdin);
+            this._tlvConverter = new TLVConverter(this._index, this._mmtsDecoder.stdin, ch.tsmfRelTs);
 
-            tlvConverter.once("error", (err) => {
+            this._tlvConverter.once("error", (err) => {
                 log.error("TunerDevice#%d TLVconverter error `%s`", this._index, err.name);
                 if (!this._closing) {
                     this._kill(true);
                 }
             });
 
-            tlvConverter.once("close", () => {
-                if (!mmtsDecoder.killed) {
-                    mmtsDecoder.stdin.end();
+            this._tlvConverter.once("close", () => {
+                if (this._mmtsDecoder && !this._mmtsDecoder.killed) {
+                    this._mmtsDecoder.stdin.end();
                 }
             });
 
             log.info("TunerDevice#%d Connecting pipeline: input -> TLV converter -> mmtsDecoder", this._index);
 
             inputStream.on("data", (chunk) => {
-                if (!tlvConverter.closed) {
-                    tlvConverter.write(chunk);
+                if (this._tlvConverter && !this._tlvConverter.closed) {
+                    this._tlvConverter.write(chunk);
                 }
             });
 
             const processToWatch = catProcess || this._process;
             processToWatch.once("exit", () => {
-                if (!tlvConverter.closed) {
-                    tlvConverter.end();
+                if (this._tlvConverter && !this._tlvConverter.closed) {
+                    this._tlvConverter.end();
                 }
             });
 
             inputStream.once("error", (err) => {
                 log.error("TunerDevice#%d inputStream error `%s`", this._index, err.name);
-                if (!tlvConverter.closed) {
-                    tlvConverter.end();
+                if (this._tlvConverter && !this._tlvConverter.closed) {
+                    this._tlvConverter.end();
                 }
             });
 
             log.info("TunerDevice#%d Pipeline connected successfully", this._index);
         } else {
-            inputStream.pipe(mmtsDecoder.stdin);
+            inputStream.pipe(this._mmtsDecoder.stdin);
 
             const processToWatch = catProcess || this._process;
             processToWatch.once("exit", () => {
-                if (!mmtsDecoder.killed) {
-                    mmtsDecoder.stdin.end();
+                if (this._mmtsDecoder && !this._mmtsDecoder.killed) {
+                    this._mmtsDecoder.stdin.end();
                 }
             });
 
             inputStream.once("error", (err) => {
                 log.error("TunerDevice#%d inputStream pipe error `%s`", this._index, err.name);
-                mmtsDecoder.stdin.end();
+                if (this._mmtsDecoder && this._mmtsDecoder.stdin) {
+                    this._mmtsDecoder.stdin.end();
+                }
             });
         }
 
-        return mmtsDecoder.stdout;
+        return this._mmtsDecoder.stdout;
     }
 }
