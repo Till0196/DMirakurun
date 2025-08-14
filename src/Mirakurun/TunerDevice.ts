@@ -301,9 +301,9 @@ export default class TunerDevice extends EventEmitter {
 
             this._process.once("exit", () => cat.kill("SIGKILL"));
 
-            this._stream = ch.type === "BS4K" ? this._setupBS4KPipeline(cat.stdout, ch, cat) : cat.stdout;
+            this._stream = ch.type === "BS4K" ? this._initMmts(cat.stdout, ch, cat) : cat.stdout;
         } else {
-            this._stream = ch.type === "BS4K" ? this._setupBS4KPipeline(this._process.stdout, ch) : this._process.stdout;
+            this._stream = ch.type === "BS4K" ? this._initMmts(this._process.stdout, ch) : this._process.stdout;
         }
 
         this._process.once("exit", () => this._exited = true);
@@ -377,27 +377,6 @@ export default class TunerDevice extends EventEmitter {
         this._isAvailable = false;
         this._closing = close;
 
-        if (this._mmtsDecoder || this._tlvConverter) {
-            log.info("TunerDevice#%d BS4K pipeline detected, killing all processes immediately", this._index);
-
-            if (this._tlvConverter && !this._tlvConverter.closed) {
-                await new Promise<void>(resolve => {
-                    this._tlvConverter.once("close", resolve);
-                    this._tlvConverter.end();
-                });
-                this._tlvConverter = null;
-            }
-
-            if (this._mmtsDecoder && !this._mmtsDecoder.killed) {
-                await new Promise<void>(resolve => {
-                    this._mmtsDecoder.once("close", resolve);
-                    this._mmtsDecoder.stdin.end();
-                    this._mmtsDecoder.kill("SIGKILL");
-                });
-                this._mmtsDecoder = null;
-            }
-        }
-
         this._updated();
 
         await new Promise<void>(resolve => {
@@ -463,7 +442,7 @@ export default class TunerDevice extends EventEmitter {
         Event.emit("tuner", "update", this.toJSON());
     }
 
-    private _setupBS4KPipeline(inputStream: stream.Readable, ch: ChannelItem, catProcess?: child_process.ChildProcess): stream.Readable {
+    private _initMmts(inputStream: stream.Readable, ch: ChannelItem, catProcess?: child_process.ChildProcess): stream.Readable {
         const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
         this._mmtsDecoder = child_process.spawn(parsed.command, parsed.args);
 
