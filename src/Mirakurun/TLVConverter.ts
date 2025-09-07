@@ -233,7 +233,7 @@ export default class TLVConverter extends EventEmitter {
 
             // --- スロット情報解析 ---
             this._tsmfRelativeStreamNumber = [];
-            const slotInfoOffset = 69;
+            const slotInfoOffset = 79;
             for (let i = 0; i < 26; i++) {
                 const byteOffset = slotInfoOffset + i;
                 if (byteOffset >= payload.length) {
@@ -358,8 +358,8 @@ export default class TLVConverter extends EventEmitter {
                 targetSlots.map(s => s.slot).join(","));
 
             // 実際のスロット配列内容を一時的に確認
-            log.debug("TunerDevice#%d First 10 slot contents: %s", this._tunerIndex,
-                this._tsmfRelativeStreamNumber.slice(0, 10).join(","));
+            log.debug("TunerDevice#%d Full slot contents: %s", this._tunerIndex,
+                this._tsmfRelativeStreamNumber.join(","));
 
             this._isTlvStream = targetStreamIsTlv;
             this._tsmfHeaderParsed = true;
