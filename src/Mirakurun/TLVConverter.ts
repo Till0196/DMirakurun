@@ -23,6 +23,7 @@ export default class TLVConverter extends EventEmitter {
     private _tsmfTsNumber = 1;
     private _numberOfCarriers = 0;
     private _carrierSequence = 0;
+    private _tlvBuffer: Buffer = Buffer.alloc(0);
 
     constructor(tunerIndex: number, output: Writable, tsmfRelTs?: number) {
         super();
@@ -156,45 +157,54 @@ export default class TLVConverter extends EventEmitter {
                 }
 
                 let payloadOffset = 4;
+
                 if (hasAdaptationField) {
                     const adaptationFieldLength = packet[4];
+
+                    if (1 + adaptationFieldLength > 184) {
+                        return;
+                    }
                     payloadOffset += 1 + adaptationFieldLength;
                 }
 
                 const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
 
                 if (payload_unit_start_indicator) {
+                    if (payloadOffset >= PACKET_SIZE) {
+                        continue;
+                    }
                     const pointerField = packet[payloadOffset];
+                    if (1 + pointerField > PACKET_SIZE - payloadOffset) {
+                        return;
+                    }
                     payloadOffset += 1 + pointerField;
                 }
-
                 if (payloadOffset >= PACKET_SIZE) {
                     continue;
                 }
 
-                let tlvOffset = 0;
-                const tlvPacket = packet.slice(payloadOffset);
+                const tlvChunk = packet.slice(payloadOffset);
 
-                while (tlvOffset < tlvPacket.length) {
-                    if (tlvOffset + 3 > tlvPacket.length) {
+                this._tlvBuffer = Buffer.concat([this._tlvBuffer, tlvChunk]);
+
+                while (this._tlvBuffer.length > 0) {
+                    if (this._tlvBuffer.length < 3) {
                         break;
                     }
 
-                    const packetLength = tlvPacket.readUInt16BE(tlvOffset + 1);
-                    const valueOffset = tlvOffset + 3;
+                    const packetLength = this._tlvBuffer.readUInt16BE(1);
+                    const totalPacketLength = 3 + packetLength;
 
-                    if (valueOffset + packetLength > tlvPacket.length) {
-                        log.warn("TunerDevice#%d Invalid TLV packet length", this._tunerIndex);
+                    if (this._tlvBuffer.length < totalPacketLength) {
                         break;
                     }
 
-                    const value = tlvPacket.slice(valueOffset, valueOffset + packetLength);
-
+                    const value = this._tlvBuffer.slice(3, totalPacketLength);
                     if (value.length > 0) {
                         this._buffer.push(value);
                     }
 
-                    tlvOffset = valueOffset + packetLength;
+                    this._tlvBuffer = this._tlvBuffer.slice(totalPacketLength);
                 }
             }
         }
