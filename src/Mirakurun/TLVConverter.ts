@@ -156,7 +156,7 @@ export default class TLVConverter extends EventEmitter {
                 if (slotIndex < this._tsmfRelativeStreamNumber.length) {
                     const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[slotIndex];
 
-                    if (streamNumberInThisSlot === this._tsmfTsNumber) {
+                    if (Number(streamNumberInThisSlot) === Number(this._tsmfTsNumber)) {
                         this._handleTLVPacket(packet);
                     }
                 }
