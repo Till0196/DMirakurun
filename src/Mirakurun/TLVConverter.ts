@@ -381,13 +381,13 @@ export default class TLVConverter extends EventEmitter {
 
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
+        const tlvPayload = this._extractTSMFPayload(packet);
 
-        const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
-        const tlvChunk = payload_unit_start_indicator ? packet.slice(4) : packet.slice(3);
-
-        if (tlvChunk.length > 0) {
-            this._buffer.push(tlvChunk);
+        if (!tlvPayload || tlvPayload.length === 0) {
+            return;
         }
+
+        this._buffer.push(tlvPayload);
     }
 
     private _close(): void {
