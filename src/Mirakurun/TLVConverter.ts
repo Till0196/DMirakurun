@@ -24,7 +24,6 @@ export default class TLVConverter extends EventEmitter {
     private _numberOfCarriers = 0;
     private _carrierSequence = 0;
     private _tsmfFrameCounter = 0;
-    private _tlvBuffer: Buffer = Buffer.alloc(0);
 
     constructor(tunerIndex: number, output: Writable, tsmfRelTs?: number) {
         super();
@@ -148,9 +147,14 @@ export default class TLVConverter extends EventEmitter {
 
             } else if (pid === TLV_PID) {
                 if (this._tsmfHeaderParsed && this._tsmfFrameCounter > 0) {
-                    const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[this._tsmfFrameCounter - 1];
-                    if (streamNumberInThisSlot === this._tsmfTsNumber) {
-                        this._handleTLVPacket(packet);
+                    const currentSlot = this._tsmfFrameCounter - 1;
+
+                    if (currentSlot < this._tsmfRelativeStreamNumber.length) {
+                        const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[currentSlot];
+
+                        if (streamNumberInThisSlot === this._tsmfTsNumber) {
+                            this._handleTLVPacket(packet);
+                        }
                     }
                 }
                 this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
@@ -347,36 +351,10 @@ export default class TLVConverter extends EventEmitter {
         this._tlvPackets++;
 
         const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
-        const payloadOffset = payload_unit_start_indicator ? 4 : 3;
-
-        if (payloadOffset >= PACKET_SIZE) {
-            return;
-        }
-
-        const tlvChunk = packet.slice(payloadOffset);
+        const tlvChunk = payload_unit_start_indicator ? packet.slice(4) : packet.slice(3);
 
         if (tlvChunk.length > 0) {
-            this._tlvBuffer = Buffer.concat([this._tlvBuffer, tlvChunk]);
-            this._processTLVBuffer();
-        }
-    }
-
-    private _processTLVBuffer(): void {
-        while (this._tlvBuffer.length >= 3) {
-
-            const packetLength = this._tlvBuffer.readUInt16BE(1);
-            const totalPacketLength = 3 + packetLength;
-
-            if (this._tlvBuffer.length < totalPacketLength) {
-                break;
-            }
-
-            const value = this._tlvBuffer.slice(3, totalPacketLength);
-            if (value.length > 0) {
-                this._buffer.push(value);
-            }
-
-            this._tlvBuffer = this._tlvBuffer.slice(totalPacketLength);
+            this._buffer.push(tlvChunk);
         }
     }
 
