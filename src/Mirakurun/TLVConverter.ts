@@ -347,7 +347,7 @@ export default class TLVConverter extends EventEmitter {
         this._tlvPackets++;
 
         log.debug("TunerDevice#%d TLV packet received, slot=%d, target=%d",
-            this._tunerIndex, this._tsmfFrameCounter-1, this._tsmfTsNumber);
+            this._tunerIndex, this._tsmfFrameCounter - 1, this._tsmfTsNumber);
 
         const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
         const payloadOffset = payload_unit_start_indicator ? 4 : 3;
