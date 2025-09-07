@@ -136,29 +136,28 @@ export default class TLVConverter extends EventEmitter {
         for (const packet of packets) {
             this._processedPackets++;
 
-            if (this._tsmfFrameCounter === 0) {
-                const pid = ((packet[1] & 0x1F) << 8) | packet[2];
-                if (pid === TSMF_PID) {
+            const pid = ((packet[1] & 0x1F) << 8) | packet[2];
+
+            if (pid === TSMF_PID) {
+                if (this._tsmfFrameCounter === 0) {
                     if (!this._tsmfHeaderParsed) {
                         this._handleTSMFPacket(packet);
                     }
-                } else {
-                    this._tsmfHeaderParsed = false;
-                    continue;
                 }
+                this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
+
+            } else if (pid === TLV_PID) {
+                if (this._tsmfHeaderParsed && this._tsmfFrameCounter > 0) {
+                    const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[this._tsmfFrameCounter - 1];
+                    if (streamNumberInThisSlot === this._tsmfTsNumber) {
+                        this._handleTLVPacket(packet);
+                    }
+                }
+                this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
+
             } else {
-                if (!this._tsmfHeaderParsed) {
-                    continue;
-                }
-
-                const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[this._tsmfFrameCounter - 1];
-
-                if (streamNumberInThisSlot === this._tsmfTsNumber) {
-                    this._handleTLVPacket(packet);
-                }
+                continue;
             }
-
-            this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
         }
     }
 
@@ -293,6 +292,7 @@ export default class TLVConverter extends EventEmitter {
             // スロット情報解析
             this._tsmfRelativeStreamNumber = [];
             const slotInfoOffset = 69;
+
             for (let i = 0; i < 26; i++) {
                 const byte = payload[slotInfoOffset + i];
                 const upperNibble = (byte & 0xf0) >> 4;
@@ -300,10 +300,6 @@ export default class TLVConverter extends EventEmitter {
                 this._tsmfRelativeStreamNumber.push(upperNibble);
                 this._tsmfRelativeStreamNumber.push(lowerNibble);
 
-                if (i < 3) { // 最初の3バイトのみデバッグ出力
-                    log.debug("TunerDevice#%d Slot byte[%d]=0x%02x: upper=%d, lower=%d",
-                        this._tunerIndex, slotInfoOffset + i, byte, upperNibble, lowerNibble);
-                }
             }
 
             log.debug("TunerDevice#%d Total slots parsed: %d", this._tunerIndex, this._tsmfRelativeStreamNumber.length);
@@ -314,8 +310,14 @@ export default class TLVConverter extends EventEmitter {
                 slotStats.set(val, (slotStats.get(val) || 0) + 1);
             });
 
-            log.debug("TunerDevice#%d Slot statistics: %s", this._tunerIndex,
-                Array.from(slotStats.entries()).map(([stream, count]) => `stream${stream}:${count}`).join(", "));
+            // 単一ストリームが全スロットを占有している場合の情報出力を簡潔に
+            if (slotStats.size === 1) {
+                const [stream, count] = Array.from(slotStats.entries())[0];
+                log.debug("TunerDevice#%d Single stream %d occupies all %d slots", this._tunerIndex, stream, count);
+            } else {
+                log.debug("TunerDevice#%d Slot statistics: %s", this._tunerIndex,
+                    Array.from(slotStats.entries()).map(([stream, count]) => `stream${stream}:${count}`).join(", "));
+            }
 
             // ターゲットストリーム番号がスロットに含まれているかチェック
             const targetSlots = this._tsmfRelativeStreamNumber.map((val, idx) => ({ slot: idx, stream: val }))
@@ -343,6 +345,9 @@ export default class TLVConverter extends EventEmitter {
 
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
+
+        log.debug("TunerDevice#%d TLV packet received, slot=%d, target=%d",
+            this._tunerIndex, this._tsmfFrameCounter-1, this._tsmfTsNumber);
 
         const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
         const payloadOffset = payload_unit_start_indicator ? 4 : 3;
