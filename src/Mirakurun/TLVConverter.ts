@@ -198,7 +198,9 @@ export default class TLVConverter extends EventEmitter {
         const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
 
         if (payload_unit_start_indicator) {
-            if (payloadOffset >= PACKET_SIZE) return;
+            if (payloadOffset >= PACKET_SIZE) {
+                return;
+            }
             const pointerField = packet[payloadOffset];
             payloadOffset += 1 + pointerField;
         }
