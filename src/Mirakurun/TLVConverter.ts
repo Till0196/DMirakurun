@@ -139,9 +139,7 @@ export default class TLVConverter extends EventEmitter {
 
             if (pid === TSMF_PID) {
                 if (this._tsmfFrameCounter === 0) {
-                    if (!this._tsmfHeaderParsed) {
-                        this._handleTSMFPacket(packet);
-                    }
+                    this._handleTSMFPacket(packet);
                 }
                 this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
 
