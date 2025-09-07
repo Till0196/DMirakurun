@@ -356,7 +356,7 @@ export default class TLVConverter extends EventEmitter {
 
             log.debug("TunerDevice#%d Target stream %d found in slots: %s", this._tunerIndex, this._tsmfTsNumber,
                 targetSlots.map(s => s.slot).join(","));
-            
+
             // 実際のスロット配列内容を一時的に確認
             log.debug("TunerDevice#%d First 10 slot contents: %s", this._tunerIndex,
                 this._tsmfRelativeStreamNumber.slice(0, 10).join(","));
