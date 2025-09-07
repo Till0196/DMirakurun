@@ -143,7 +143,6 @@ export default class TLVConverter extends EventEmitter {
                 if (!this._tsmfHeaderParsed) {
                     this._handleTSMFPacket(packet);
                 } else {
-                    // 既に解析済みの場合はframeSyncをチェックしてカウンタリセット
                     if (this._isValidTSMFFrame(packet)) {
                         this._tlvPacketCount = 0;
                     }
@@ -153,7 +152,7 @@ export default class TLVConverter extends EventEmitter {
 
             // TLV処理（ヘッダー解析後）
             if (this._tsmfHeaderParsed && pid === TLV_PID) {
-                const slotIndex = this._tlvPacketCount % 52;
+                const slotIndex = this._tlvPacketCount;
 
                 if (slotIndex < this._tsmfRelativeStreamNumber.length) {
                     const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[slotIndex];
@@ -196,34 +195,6 @@ export default class TLVConverter extends EventEmitter {
                     return null;
                 }
                 payloadOffset += 1 + pointerField;
-            }
-
-            if (payloadOffset >= PACKET_SIZE) {
-                return null;
-            }
-
-            return packet.slice(payloadOffset);
-        } catch (err) {
-            return null;
-        }
-    }
-
-    private _extractTLVFromPacket(packet: Buffer): Buffer | null {
-        try {
-            const hasAdaptationField = (packet[3] & 0x20) !== 0;
-            const hasPayload = (packet[3] & 0x10) !== 0;
-
-            if (!hasPayload) {
-                return null;
-            }
-
-            let payloadOffset = 4;
-            if (hasAdaptationField) {
-                const adaptationFieldLength = packet[4];
-                if (adaptationFieldLength < 0 || adaptationFieldLength > PACKET_SIZE - 5) {
-                    return null;
-                }
-                payloadOffset += 1 + adaptationFieldLength;
             }
 
             if (payloadOffset >= PACKET_SIZE) {
@@ -409,50 +380,13 @@ export default class TLVConverter extends EventEmitter {
 
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
+        const tlvPayload = this._extractTSMFPayload(packet);
 
-        const pid = (((packet[1] & 0x1F) << 8) | packet[2]).toString(16);
-        const pusi = (packet[1] & 0x40) !== 0;
-
-        const tlvChunk = this._extractTLVFromPacket(packet);
-
-        if (!tlvChunk || tlvChunk.length === 0) {
-            log.debug("TunerDevice#%d TLV packet with PID=0x%s has no payload (PUSI=%s)", this._tunerIndex, pid, pusi);
+        if (!tlvPayload || tlvPayload.length === 0) {
             return;
         }
 
-        this._buffer.push(tlvChunk);
-
-        let totalBuffered = 0;
-        for (const b of this._buffer) {
-            totalBuffered += b.length;
-        }
-
-        log.debug("TunerDevice#%d TLV packet PID=0x%s PUSI=%s payloadLen=%d bufferTotal=%d",
-            this._tunerIndex, pid, pusi, tlvChunk.length, totalBuffered);
-
-        if (this._output && this._output.writableLength < this._output.writableHighWaterMark) {
-            try {
-                const outputData = Buffer.concat(this._buffer);
-                this._output.write(outputData);
-                this._buffer.length = 0;
-                log.debug("TunerDevice#%d wrote %d bytes to output", this._tunerIndex, outputData.length);
-            } catch (err) {
-                log.error("TunerDevice#%d failed to write TLV output: %s", this._tunerIndex, (err && (err as Error).message) || err);
-            }
-            return;
-        }
-
-        const FLUSH_LIMIT = PACKET_SIZE * 32;
-        if (totalBuffered > FLUSH_LIMIT) {
-            try {
-                const outputData = Buffer.concat(this._buffer);
-                this._output.write(outputData);
-                this._buffer.length = 0;
-                log.debug("TunerDevice#%d forced write %d bytes to output (buffer too large)", this._tunerIndex, outputData.length);
-            } catch (err) {
-                log.error("TunerDevice#%d failed to forced-write TLV output: %s", this._tunerIndex, (err && (err as Error).message) || err);
-            }
-        }
+        this._buffer.push(tlvPayload);
     }
 
     private _close(): void {
