@@ -155,14 +155,12 @@ export default class TLVConverter extends EventEmitter {
 
                 if (payload_unit_start_indicator) {
                     const pointer = packet[3];
-                    let chunk;
 
-                    if (4 + pointer < PACKET_SIZE) {
-                        chunk = packet.slice(4 + pointer);
+                    if (4 + pointer >= PACKET_SIZE) {
+                        tlvChunk = Buffer.alloc(0);
                     } else {
-                        chunk = Buffer.alloc(0);
+                        tlvChunk = packet.slice(4 + pointer);
                     }
-                    tlvChunk = chunk;
                 } else {
                     tlvChunk = packet.slice(3);
                 }
