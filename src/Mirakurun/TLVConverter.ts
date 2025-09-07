@@ -134,67 +134,17 @@ export default class TLVConverter extends EventEmitter {
     private _processPackets(packets: Buffer[]): void {
         for (const packet of packets) {
             this._processedPackets++;
-            const pid = ((packet[1] & 0b0001_1111) << 8) | packet[2];
+            const pid = ((packet[1] & 0x1F) << 8) | packet[2];
 
-            // TSMFヘッダー解析
             if (!this._tsmfHeaderParsed && pid === TSMF_PID) {
-                try {
-                    this._parseTSMFHeader(packet);
-                } catch (err) {
-                    log.warn("TunerDevice#%d TSMF header parse error: %s", this._tunerIndex, err.message);
-                }
-                continue;
-            }
-
-            if (this._tsmfHeaderParsed && pid === TLV_PID) {
-                this._tlvPackets++;
-
-                const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
-
-                let tlvChunk: Buffer;
-
-                const getTlvChunk = (): Buffer => {
-                    if (payload_unit_start_indicator) {
-                        const pointer = packet[3];
-                        if (4 + pointer >= PACKET_SIZE) {
-                            return Buffer.alloc(0);
-                        } else {
-                            return packet.slice(4 + pointer);
-                        }
-                    } else {
-                        return packet.slice(3);
-                    }
-                };
-
-                tlvChunk = getTlvChunk();
-
-                this._tlvBuffer = Buffer.concat([this._tlvBuffer, tlvChunk]);
-
-                while (this._tlvBuffer.length > 0) {
-                    if (this._tlvBuffer.length < 3) {
-                        break;
-                    }
-
-                    const packetLength = this._tlvBuffer.readUInt16BE(1);
-                    const totalPacketLength = 3 + packetLength;
-
-                    if (this._tlvBuffer.length < totalPacketLength) {
-                        break;
-                    }
-
-                    const value = this._tlvBuffer.slice(3, totalPacketLength);
-
-                    if (value.length > 0) {
-                        this._buffer.push(value);
-                    }
-
-                    this._tlvBuffer = this._tlvBuffer.slice(totalPacketLength);
-                }
+                this._handleTSMFPacket(packet);
+            } else if (this._tsmfHeaderParsed && pid === TLV_PID) {
+                this._handleTLVPacket(packet);
             }
         }
     }
 
-    private _parseTSMFHeader(packet: Buffer): void {
+    private _handleTSMFPacket(packet: Buffer): void {
         const hasAdaptationField = (packet[3] & 0x20) !== 0;
         const hasPayload = (packet[3] & 0x10) !== 0;
 
@@ -352,6 +302,43 @@ export default class TLVConverter extends EventEmitter {
 
         } catch (err) {
             log.error("TunerDevice#%d Failed to parse TSMF header: %s", this._tunerIndex, err.message);
+        }
+    }
+
+    private _handleTLVPacket(packet: Buffer): void {
+        this._tlvPackets++;
+
+        const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
+        const payloadOffset = payload_unit_start_indicator ? 4 : 3;
+
+        if (payloadOffset >= PACKET_SIZE) {
+            return;
+        }
+
+        const tlvChunk = packet.slice(payloadOffset);
+
+        if (tlvChunk.length > 0) {
+            this._tlvBuffer = Buffer.concat([this._tlvBuffer, tlvChunk]);
+            this._processTLVBuffer();
+        }
+    }
+
+    private _processTLVBuffer(): void {
+        while (this._tlvBuffer.length >= 3) {
+
+            const packetLength = this._tlvBuffer.readUInt16BE(1);
+            const totalPacketLength = 3 + packetLength;
+
+            if (this._tlvBuffer.length < totalPacketLength) {
+                break;
+            }
+
+            const value = this._tlvBuffer.slice(3, totalPacketLength);
+            if (value.length > 0) {
+                this._buffer.push(value);
+            }
+
+            this._tlvBuffer = this._tlvBuffer.slice(totalPacketLength);
         }
     }
 
