@@ -208,6 +208,34 @@ export default class TLVConverter extends EventEmitter {
         }
     }
 
+    private _extractTLVFromPacket(packet: Buffer): Buffer | null {
+        try {
+            const hasAdaptationField = (packet[3] & 0x20) !== 0;
+            const hasPayload = (packet[3] & 0x10) !== 0;
+
+            if (!hasPayload) {
+                return null;
+            }
+
+            let payloadOffset = 4;
+            if (hasAdaptationField) {
+                const adaptationFieldLength = packet[4];
+                if (adaptationFieldLength < 0 || adaptationFieldLength > PACKET_SIZE - 5) {
+                    return null;
+                }
+                payloadOffset += 1 + adaptationFieldLength;
+            }
+
+            if (payloadOffset >= PACKET_SIZE) {
+                return null;
+            }
+
+            return packet.slice(payloadOffset);
+        } catch (err) {
+            return null;
+        }
+    }
+
     private _isValidTSMFFrame(packet: Buffer): boolean {
         const payload = this._extractTSMFPayload(packet);
         if (!payload || payload.length < 2) {
@@ -382,15 +410,17 @@ export default class TLVConverter extends EventEmitter {
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
 
-        const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
-        const tlvPayload = this._extractTSMFPayload(packet);
+        const pid = (((packet[1] & 0x1F) << 8) | packet[2]).toString(16);
+        const pusi = (packet[1] & 0x40) !== 0;
 
-        if (!tlvPayload || tlvPayload.length === 0) {
-            log.debug("TunerDevice#%d TLV packet with PID=0x%s has no payload (PUSI=%s)", this._tunerIndex, (((packet[1] & 0x1F) << 8) | packet[2]).toString(16), payload_unit_start_indicator);
+        const tlvChunk = this._extractTLVFromPacket(packet);
+
+        if (!tlvChunk || tlvChunk.length === 0) {
+            log.debug("TunerDevice#%d TLV packet with PID=0x%s has no payload (PUSI=%s)", this._tunerIndex, pid, pusi);
             return;
         }
 
-        this._buffer.push(tlvPayload);
+        this._buffer.push(tlvChunk);
 
         let totalBuffered = 0;
         for (const b of this._buffer) {
@@ -398,7 +428,7 @@ export default class TLVConverter extends EventEmitter {
         }
 
         log.debug("TunerDevice#%d TLV packet PID=0x%s PUSI=%s payloadLen=%d bufferTotal=%d",
-            this._tunerIndex, (((packet[1] & 0x1F) << 8) | packet[2]).toString(16), payload_unit_start_indicator, tlvPayload.length, totalBuffered);
+            this._tunerIndex, pid, pusi, tlvChunk.length, totalBuffered);
 
         if (this._output && this._output.writableLength < this._output.writableHighWaterMark) {
             try {
@@ -409,7 +439,11 @@ export default class TLVConverter extends EventEmitter {
             } catch (err) {
                 log.error("TunerDevice#%d failed to write TLV output: %s", this._tunerIndex, (err && (err as Error).message) || err);
             }
-        } else if (totalBuffered > PACKET_SIZE * 32) {
+            return;
+        }
+
+        const FLUSH_LIMIT = PACKET_SIZE * 32;
+        if (totalBuffered > FLUSH_LIMIT) {
             try {
                 const outputData = Buffer.concat(this._buffer);
                 this._output.write(outputData);
