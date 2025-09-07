@@ -23,6 +23,7 @@ export default class TLVConverter extends EventEmitter {
     private _tsmfTsNumber = 1;
     private _numberOfCarriers = 0;
     private _carrierSequence = 0;
+    private _tsmfFrameCounter = 0;
     private _tlvBuffer: Buffer = Buffer.alloc(0);
 
     constructor(tunerIndex: number, output: Writable, tsmfRelTs?: number) {
@@ -134,13 +135,32 @@ export default class TLVConverter extends EventEmitter {
     private _processPackets(packets: Buffer[]): void {
         for (const packet of packets) {
             this._processedPackets++;
-            const pid = ((packet[1] & 0x1F) << 8) | packet[2];
 
-            if (!this._tsmfHeaderParsed && pid === TSMF_PID) {
-                this._handleTSMFPacket(packet);
-            } else if (this._tsmfHeaderParsed && pid === TLV_PID) {
-                this._handleTLVPacket(packet);
+            if (this._tsmfFrameCounter === 0) {
+                const pid = ((packet[1] & 0x1F) << 8) | packet[2];
+                if (pid === TSMF_PID) {
+                    // TSMFヘッダを解析
+                    this._handleTSMFPacket(packet);
+                } else {
+                    continue;
+                }
+            } else {
+                if (!this._tsmfHeaderParsed) {
+                    continue;
+                }
+
+                const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[this._tsmfFrameCounter - 1];
+
+                if (streamNumberInThisSlot === this._tsmfTsNumber) {
+                    const pid = ((packet[1] & 0x1F) << 8) | packet[2];
+
+                    if (pid === TLV_PID) {
+                        this._handleTLVPacket(packet);
+                    }
+                }
             }
+
+            this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
         }
     }
 
