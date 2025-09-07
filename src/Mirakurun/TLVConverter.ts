@@ -153,17 +153,20 @@ export default class TLVConverter extends EventEmitter {
 
                 let tlvChunk: Buffer;
 
-                if (payload_unit_start_indicator) {
-                    const pointer = packet[3];
-
-                    if (4 + pointer >= PACKET_SIZE) {
-                        tlvChunk = Buffer.alloc(0);
+                const getTlvChunk = (): Buffer => {
+                    if (payload_unit_start_indicator) {
+                        const pointer = packet[3];
+                        if (4 + pointer >= PACKET_SIZE) {
+                            return Buffer.alloc(0);
+                        } else {
+                            return packet.slice(4 + pointer);
+                        }
                     } else {
-                        tlvChunk = packet.slice(4 + pointer);
+                        return packet.slice(3);
                     }
-                } else {
-                    tlvChunk = packet.slice(3);
-                }
+                };
+
+                tlvChunk = getTlvChunk();
 
                 this._tlvBuffer = Buffer.concat([this._tlvBuffer, tlvChunk]);
 
