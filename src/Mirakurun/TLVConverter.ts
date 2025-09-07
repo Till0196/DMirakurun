@@ -147,8 +147,31 @@ export default class TLVConverter extends EventEmitter {
 
             if (this._tsmfHeaderParsed && pid === TLV_PID) {
                 this._tlvPackets++;
-                const payload_unit_start_indicator = (packet[1] & 0b0100_0000) >> 6;
-                const tlvChunk = payload_unit_start_indicator === 1 ? packet.slice(4) : packet.slice(3);
+
+                const hasAdaptationField = (packet[3] & 0x20) !== 0;
+                const hasPayload = (packet[3] & 0x10) !== 0;
+
+                if (!hasPayload) {
+                    continue;
+                }
+
+                let payloadOffset = 4;
+                if (hasAdaptationField) {
+                    const adaptationFieldLength = packet[4];
+                    payloadOffset += 1 + adaptationFieldLength;
+                }
+
+                const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
+                if (payload_unit_start_indicator) {
+                    const pointerField = packet[payloadOffset];
+                    payloadOffset += 1 + pointerField;
+                }
+
+                if (payloadOffset >= PACKET_SIZE) {
+                    continue;
+                }
+
+                const tlvChunk = packet.slice(payloadOffset);
 
                 if (tlvChunk.length > 0) {
                     this._buffer.push(tlvChunk);
