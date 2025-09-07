@@ -346,7 +346,6 @@ export default class TLVConverter extends EventEmitter {
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
 
-
         const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
         const payloadOffset = payload_unit_start_indicator ? 4 : 3;
 
