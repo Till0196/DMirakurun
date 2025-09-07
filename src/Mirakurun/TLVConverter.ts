@@ -29,7 +29,7 @@ export default class TLVConverter extends EventEmitter {
         super();
         this._tunerIndex = tunerIndex;
         this._output = output;
-        this._tsmfTsNumber = tsmfRelTs;
+        this._tsmfTsNumber = (typeof tsmfRelTs === "number") ? tsmfRelTs : 0;
 
         this._output.once("error", (err) => {
             log.error("TunerDevice#%d TLVConverter output error: %s", this._tunerIndex, err.message);
@@ -229,6 +229,8 @@ export default class TLVConverter extends EventEmitter {
         }
 
         try {
+            log.debug("TunerDevice#%d _handleTSMFPacket: initial tsmfTsNumber=%o", this._tunerIndex, this._tsmfTsNumber);
+
             // byte 2: version(3bit) + mode(1bit) + type(4bit)
             const byte2 = payload[2];
             const frameType = byte2 & 0b1111;
@@ -381,11 +383,18 @@ export default class TLVConverter extends EventEmitter {
 
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
+
+        const pid = ((packet[1] & 0x1F) << 8) | packet[2];
+        const pusi = (packet[1] & 0x40) !== 0;
+
         const tlvPayload = this._extractTSMFPayload(packet);
 
         if (!tlvPayload || tlvPayload.length === 0) {
+            log.debug("TunerDevice#%d TLV packet with PID=0x%s has no payload (PUSI=%s)", this._tunerIndex, pid.toString(16), pusi);
             return;
         }
+
+        log.debug("TunerDevice#%d TLV packet PID=0x%s PUSI=%s payloadLen=%d", this._tunerIndex, pid.toString(16), pusi, tlvPayload.length);
 
         this._buffer.push(tlvPayload);
     }
