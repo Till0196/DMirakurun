@@ -142,6 +142,7 @@ export default class TLVConverter extends EventEmitter {
                     // TSMFヘッダを解析
                     this._handleTSMFPacket(packet);
                 } else {
+                    this._tsmfHeaderParsed = false;
                     continue;
                 }
             } else {
@@ -152,11 +153,7 @@ export default class TLVConverter extends EventEmitter {
                 const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[this._tsmfFrameCounter - 1];
 
                 if (streamNumberInThisSlot === this._tsmfTsNumber) {
-                    const pid = ((packet[1] & 0x1F) << 8) | packet[2];
-
-                    if (pid === TLV_PID) {
-                        this._handleTLVPacket(packet);
-                    }
+                    this._handleTLVPacket(packet);
                 }
             }
 
