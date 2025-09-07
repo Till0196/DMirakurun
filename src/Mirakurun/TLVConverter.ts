@@ -21,6 +21,7 @@ export default class TLVConverter extends EventEmitter {
     private _frameTypeValid = false;
     private _tsmfRelativeStreamNumber: number[] = [];
     private _tsmfTsNumber = 1;
+    private _pendingPusi = false;
     private _numberOfCarriers = 0;
     private _carrierSequence = 0;
     private _tlvPacketCount = 0;
@@ -180,7 +181,7 @@ export default class TLVConverter extends EventEmitter {
             let payloadOffset = 4;
             if (hasAdaptationField) {
                 const adaptationFieldLength = packet[4];
-                if (1 + adaptationFieldLength > PACKET_SIZE - 4) {
+                if (adaptationFieldLength < 0 || adaptationFieldLength > PACKET_SIZE - 5) {
                     return null;
                 }
                 payloadOffset += 1 + adaptationFieldLength;
@@ -192,7 +193,7 @@ export default class TLVConverter extends EventEmitter {
                     return null;
                 }
                 const pointerField = packet[payloadOffset];
-                if (1 + pointerField > PACKET_SIZE - payloadOffset) {
+                if (pointerField < 0 || 1 + pointerField > PACKET_SIZE - payloadOffset) {
                     return null;
                 }
                 payloadOffset += 1 + pointerField;
@@ -386,17 +387,52 @@ export default class TLVConverter extends EventEmitter {
 
         const pid = ((packet[1] & 0x1F) << 8) | packet[2];
         const pusi = (packet[1] & 0x40) !== 0;
+        const hasAdapt = (packet[3] & 0x20) !== 0;
+        const adaptLen = hasAdapt ? packet[4] : 0;
 
         const tlvPayload = this._extractTSMFPayload(packet);
 
         if (!tlvPayload || tlvPayload.length === 0) {
-            log.debug("TunerDevice#%d TLV packet with PID=0x%s has no payload (PUSI=%s)", this._tunerIndex, pid.toString(16), pusi);
+            if (pusi) {
+                this._pendingPusi = true;
+                log.debug("TunerDevice#%d TLV PID=0x%s PUSI=true but no payload; marking pendingPusi", this._tunerIndex, pid.toString(16));
+            } else {
+                log.debug("TunerDevice#%d TLV PID=0x%s no payload (PUSI=false, adaptLen=%d)", this._tunerIndex, pid.toString(16), adaptLen);
+            }
             return;
         }
 
-        log.debug("TunerDevice#%d TLV packet PID=0x%s PUSI=%s payloadLen=%d", this._tunerIndex, pid.toString(16), pusi, tlvPayload.length);
+        if (this._pendingPusi) {
+            this._pendingPusi = false;
+            log.debug("TunerDevice#%d TLV PID=0x%s payload arrived after pending PUSI; treating as frame start", this._tunerIndex, pid.toString(16));
+            const dumpLen = Math.min(32, tlvPayload.length);
+            const headHex = tlvPayload.slice(0, dumpLen).toString('hex').match(/.{1,2}/g)?.join(' ') || '';
+            log.debug("TunerDevice#%d TLV head=%s", this._tunerIndex, headHex);
+        } else if (pusi) {
+            const dumpLen = Math.min(32, tlvPayload.length);
+            const headHex = tlvPayload.slice(0, dumpLen).toString('hex').match(/.{1,2}/g)?.join(' ') || '';
+            log.debug("TunerDevice#%d TLV PID=0x%s PUSI=true payloadLen=%d head=%s", this._tunerIndex, pid.toString(16), tlvPayload.length, headHex);
+        } else {
+            log.debug("TunerDevice#%d TLV PID=0x%s PUSI=false payloadLen=%d (adaptLen=%d)", this._tunerIndex, pid.toString(16), tlvPayload.length, adaptLen);
+        }
 
         this._buffer.push(tlvPayload);
+
+        let totalBuffered = 0;
+        for (const b of this._buffer) totalBuffered += b.length;
+
+        const FLUSH_THRESHOLD = 188 * 32;
+
+        if (pusi || totalBuffered >= FLUSH_THRESHOLD) {
+            try {
+                const out = Buffer.concat(this._buffer);
+                this._output.write(out);
+                log.debug("TunerDevice#%d flushed %d bytes to output (trigger: PUSI=%s or threshold)", this._tunerIndex, out.length, pusi);
+            } catch (err) {
+                log.error("TunerDevice#%d failed to write TLV output: %s", this._tunerIndex, (err && (err as Error).message) || err);
+            }
+            this._buffer.length = 0;
+        }
     }
 
     private _close(): void {
