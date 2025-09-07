@@ -21,7 +21,6 @@ export default class TLVConverter extends EventEmitter {
     private _frameTypeValid = false;
     private _tsmfRelativeStreamNumber: number[] = [];
     private _tsmfTsNumber = 1;
-    private _pendingPusi = false;
     private _numberOfCarriers = 0;
     private _carrierSequence = 0;
     private _tlvPacketCount = 0;
@@ -230,8 +229,6 @@ export default class TLVConverter extends EventEmitter {
         }
 
         try {
-            log.debug("TunerDevice#%d _handleTSMFPacket: initial tsmfTsNumber=%o", this._tunerIndex, this._tsmfTsNumber);
-
             // byte 2: version(3bit) + mode(1bit) + type(4bit)
             const byte2 = payload[2];
             const frameType = byte2 & 0b1111;
@@ -385,53 +382,42 @@ export default class TLVConverter extends EventEmitter {
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
 
-        const pid = ((packet[1] & 0x1F) << 8) | packet[2];
-        const pusi = (packet[1] & 0x40) !== 0;
-        const hasAdapt = (packet[3] & 0x20) !== 0;
-        const adaptLen = hasAdapt ? packet[4] : 0;
-
+        const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
         const tlvPayload = this._extractTSMFPayload(packet);
 
         if (!tlvPayload || tlvPayload.length === 0) {
-            if (pusi) {
-                this._pendingPusi = true;
-                log.debug("TunerDevice#%d TLV PID=0x%s PUSI=true but no payload; marking pendingPusi", this._tunerIndex, pid.toString(16));
-            } else {
-                log.debug("TunerDevice#%d TLV PID=0x%s no payload (PUSI=false, adaptLen=%d)", this._tunerIndex, pid.toString(16), adaptLen);
-            }
+            log.debug("TunerDevice#%d TLV packet with PID=0x%s has no payload (PUSI=%s)", this._tunerIndex, (((packet[1] & 0x1F) << 8) | packet[2]).toString(16), payload_unit_start_indicator);
             return;
-        }
-
-        if (this._pendingPusi) {
-            this._pendingPusi = false;
-            log.debug("TunerDevice#%d TLV PID=0x%s payload arrived after pending PUSI; treating as frame start", this._tunerIndex, pid.toString(16));
-            const dumpLen = Math.min(32, tlvPayload.length);
-            const headHex = tlvPayload.slice(0, dumpLen).toString('hex').match(/.{1,2}/g)?.join(' ') || '';
-            log.debug("TunerDevice#%d TLV head=%s", this._tunerIndex, headHex);
-        } else if (pusi) {
-            const dumpLen = Math.min(32, tlvPayload.length);
-            const headHex = tlvPayload.slice(0, dumpLen).toString('hex').match(/.{1,2}/g)?.join(' ') || '';
-            log.debug("TunerDevice#%d TLV PID=0x%s PUSI=true payloadLen=%d head=%s", this._tunerIndex, pid.toString(16), tlvPayload.length, headHex);
-        } else {
-            log.debug("TunerDevice#%d TLV PID=0x%s PUSI=false payloadLen=%d (adaptLen=%d)", this._tunerIndex, pid.toString(16), tlvPayload.length, adaptLen);
         }
 
         this._buffer.push(tlvPayload);
 
         let totalBuffered = 0;
-        for (const b of this._buffer) totalBuffered += b.length;
+        for (const b of this._buffer) {
+            totalBuffered += b.length;
+        }
 
-        const FLUSH_THRESHOLD = 188 * 32;
+        log.debug("TunerDevice#%d TLV packet PID=0x%s PUSI=%s payloadLen=%d bufferTotal=%d",
+            this._tunerIndex, (((packet[1] & 0x1F) << 8) | packet[2]).toString(16), payload_unit_start_indicator, tlvPayload.length, totalBuffered);
 
-        if (pusi || totalBuffered >= FLUSH_THRESHOLD) {
+        if (this._output && this._output.writableLength < this._output.writableHighWaterMark) {
             try {
-                const out = Buffer.concat(this._buffer);
-                this._output.write(out);
-                log.debug("TunerDevice#%d flushed %d bytes to output (trigger: PUSI=%s or threshold)", this._tunerIndex, out.length, pusi);
+                const outputData = Buffer.concat(this._buffer);
+                this._output.write(outputData);
+                this._buffer.length = 0;
+                log.debug("TunerDevice#%d wrote %d bytes to output", this._tunerIndex, outputData.length);
             } catch (err) {
                 log.error("TunerDevice#%d failed to write TLV output: %s", this._tunerIndex, (err && (err as Error).message) || err);
             }
-            this._buffer.length = 0;
+        } else if (totalBuffered > PACKET_SIZE * 32) {
+            try {
+                const outputData = Buffer.concat(this._buffer);
+                this._output.write(outputData);
+                this._buffer.length = 0;
+                log.debug("TunerDevice#%d forced write %d bytes to output (buffer too large)", this._tunerIndex, outputData.length);
+            } catch (err) {
+                log.error("TunerDevice#%d failed to forced-write TLV output: %s", this._tunerIndex, (err && (err as Error).message) || err);
+            }
         }
     }
 
