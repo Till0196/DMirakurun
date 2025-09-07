@@ -2,19 +2,24 @@ ARG ARCH=
 FROM ${ARCH}node:22.14.0-bookworm AS build
 WORKDIR /app
 ENV DOCKER=YES NODE_ENV=production
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get upgrade -y && \
+  apt-get install -y --no-install-recommends build-essential
+
 ADD . .
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends build-essential && \
-    npm ci --include=dev && \
+
+RUN npm ci --include=dev && \
     npm run build && \
     npm ci --omit=dev
 
 FROM ${ARCH}node:22.14.0-bookworm-slim
 WORKDIR /app
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get upgrade -y && \
+  apt-get install -y --no-install-recommends \
         ca-certificates \
         make \
         gcc \
@@ -25,10 +30,7 @@ RUN apt-get update && \
         libccid \
         libdvbv5-dev \
         pcsc-tools \
-        dvb-tools \
-        && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+        dvb-tools
 COPY --from=build /app /app
 CMD ["./docker/container-init.sh"]
 EXPOSE 40772 9229
