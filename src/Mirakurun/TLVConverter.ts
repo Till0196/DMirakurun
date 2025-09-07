@@ -172,10 +172,29 @@ export default class TLVConverter extends EventEmitter {
                     continue;
                 }
 
-                const tlvChunk = packet.slice(payloadOffset);
+                let tlvOffset = 0;
+                const tlvPacket = packet.slice(payloadOffset);
 
-                if (tlvChunk.length > 0) {
-                    this._buffer.push(tlvChunk);
+                while (tlvOffset < tlvPacket.length) {
+                    if (tlvOffset + 3 > tlvPacket.length) {
+                        break;
+                    }
+
+                    const packetLength = tlvPacket.readUInt16BE(tlvOffset + 1);
+                    const valueOffset = tlvOffset + 3;
+
+                    if (valueOffset + packetLength > tlvPacket.length) {
+                        log.warn("TunerDevice#%d Invalid TLV packet length", this._tunerIndex);
+                        break;
+                    }
+
+                    const value = tlvPacket.slice(valueOffset, valueOffset + packetLength);
+
+                    if (value.length > 0) {
+                        this._buffer.push(value);
+                    }
+
+                    tlvOffset = valueOffset + packetLength;
                 }
             }
         }
