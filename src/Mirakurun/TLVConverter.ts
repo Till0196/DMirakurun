@@ -166,6 +166,10 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _handleTSMFPacket(packet: Buffer): void {
+        if (this._tsmfHeaderParsed) {
+            return;
+        }
+
         const hasAdaptationField = (packet[3] & 0x20) !== 0;
         const hasPayload = (packet[3] & 0x10) !== 0;
 
@@ -190,14 +194,13 @@ export default class TLVConverter extends EventEmitter {
             }
 
             const pointerField = packet[payloadOffset];
-
             if (1 + pointerField > PACKET_SIZE - payloadOffset) {
                 return;
             }
             payloadOffset += 1 + pointerField;
         }
 
-        if (payloadOffset >= PACKET_SIZE || (PACKET_SIZE - payloadOffset) < 184) {
+        if (payloadOffset >= PACKET_SIZE) {
             return;
         }
 
@@ -223,37 +226,68 @@ export default class TLVConverter extends EventEmitter {
                 streamStatus.push(isActive);
             }
 
+            // --- スロット情報解析 ---
+            this._tsmfRelativeStreamNumber = [];
+            const slotInfoOffset = 69;
+            for (let i = 0; i < 26; i++) {
+                const byteOffset = slotInfoOffset + i;
+                if (byteOffset >= payload.length) {
+                    log.error("TunerDevice#%d Slot data truncated at offset %d", this._tunerIndex, byteOffset);
+                    this.emit("error", new Error("TSMF payload too short for slot data"));
+                    this._close();
+                    return;
+                }
+
+                const byte = payload[byteOffset];
+                const upperNibble = (byte & 0xf0) >> 4;
+                const lowerNibble = byte & 0x0f;
+
+                // 1-15の範囲のみ有効（0は無効スロット）
+                this._tsmfRelativeStreamNumber.push(upperNibble >= 1 && upperNibble <= 15 ? upperNibble : 0);
+                this._tsmfRelativeStreamNumber.push(lowerNibble >= 1 && lowerNibble <= 15 ? lowerNibble : 0);
+            }
+
+            // スロット占有状況を分析
+            const slotStats = new Map<number, number>();
+            this._tsmfRelativeStreamNumber.forEach(val => {
+                slotStats.set(val, (slotStats.get(val) || 0) + 1);
+            });
+
             // --- ストリーム種別の判定 ---
             const streamTypeWord = payload.readUInt16BE(121);
             const streamTypeBits = streamTypeWord >> 1;
-
             let targetStreamIsTlv = false;
 
             if (this._tsmfTsNumber === 0) {
-                // targetRelTs=0の場合、最初のTLVストリームを自動で探す
+                // TLVストリームの中から最も占有率の高いものを選択
+                let bestStream = 0;
+                let bestOccupancy = 0;
+
                 for (let relTs = 1; relTs <= 15; relTs++) {
                     const typeBit = (streamTypeBits >> (15 - relTs)) & 1;
                     if (typeBit === 0) { // "0"ならTLV
-                        this._tsmfTsNumber = relTs;
-                        targetStreamIsTlv = true;
-                        log.debug("TunerDevice#%d Auto-detected TLV stream at relative TS number: %d", this._tunerIndex, relTs);
-                        break;
+                        const occupancy = slotStats.get(relTs) || 0;
+                        if (occupancy > bestOccupancy) {
+                            bestStream = relTs;
+                            bestOccupancy = occupancy;
+                        }
                     }
                 }
+
+                if (bestStream > 0) {
+                    this._tsmfTsNumber = bestStream;
+                    targetStreamIsTlv = true;
+                    log.debug("TunerDevice#%d Auto-detected TLV stream: %d, %d slots",
+                        this._tunerIndex, bestStream, bestOccupancy);
+                }
             } else if (this._tsmfTsNumber > 0 && this._tsmfTsNumber <= 15) {
-                // 指定された相対ストリーム番号に対応するビットを抽出
-                // 相対ストリーム番号1は最上位ビット(14)、15は最下位ビット(0)に対応
                 const typeBit = (streamTypeBits >> (15 - this._tsmfTsNumber)) & 1;
+                const occupancy = slotStats.get(this._tsmfTsNumber) || 0;
 
-                log.debug(
-                    "TunerDevice#%d Stream Type Check: targetRelTs=%d, streamTypeBits=%s, extractedBit=%d",
-                    this._tunerIndex,
-                    this._tsmfTsNumber,
-                    streamTypeBits.toString(2).padStart(15, "0"),
-                    typeBit
-                );
+                log.debug("TunerDevice#%d Manual stream %d: typeBit=%d, %d slots",
+                    this._tunerIndex, this._tsmfTsNumber, typeBit, occupancy);
 
-                if (typeBit === 0) { // "0"ならTLV
+                if (typeBit === 0) {  // "0"ならTLV
                     targetStreamIsTlv = true;
                 }
             }
@@ -293,28 +327,9 @@ export default class TLVConverter extends EventEmitter {
                 return;
             }
 
-            // スロット情報解析
-            this._tsmfRelativeStreamNumber = [];
-            const slotInfoOffset = 69;
-
-            for (let i = 0; i < 26; i++) {
-                const byte = payload[slotInfoOffset + i];
-                const upperNibble = (byte & 0xf0) >> 4;
-                const lowerNibble = byte & 0x0f;
-                this._tsmfRelativeStreamNumber.push(upperNibble);
-                this._tsmfRelativeStreamNumber.push(lowerNibble);
-
-            }
-
+            // スロット統計の出力
             log.debug("TunerDevice#%d Total slots parsed: %d", this._tunerIndex, this._tsmfRelativeStreamNumber.length);
 
-            // スロット内容の統計情報
-            const slotStats = new Map<number, number>();
-            this._tsmfRelativeStreamNumber.forEach(val => {
-                slotStats.set(val, (slotStats.get(val) || 0) + 1);
-            });
-
-            // 単一ストリームが全スロットを占有している場合の情報出力を簡潔に
             if (slotStats.size === 1) {
                 const [stream, count] = Array.from(slotStats.entries())[0];
                 log.debug("TunerDevice#%d Single stream %d occupies all %d slots", this._tunerIndex, stream, count);
