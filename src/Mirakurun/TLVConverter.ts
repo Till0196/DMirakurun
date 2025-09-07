@@ -23,7 +23,7 @@ export default class TLVConverter extends EventEmitter {
     private _tsmfTsNumber = 1;
     private _numberOfCarriers = 0;
     private _carrierSequence = 0;
-    private _tsmfFrameCounter = 0;
+    private _tlvPacketCount = 0;
 
     constructor(tunerIndex: number, output: Writable, tsmfRelTs?: number) {
         super();
@@ -137,30 +137,85 @@ export default class TLVConverter extends EventEmitter {
 
             const pid = ((packet[1] & 0x1F) << 8) | packet[2];
 
+            // TSMFパケット処理
             if (pid === TSMF_PID) {
-                if (this._tsmfFrameCounter === 0) {
+                // 未解析の場合のみヘッダー解析
+                if (!this._tsmfHeaderParsed) {
                     this._handleTSMFPacket(packet);
-                }
-                this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
-
-            } else if (pid === TLV_PID) {
-                if (this._tsmfHeaderParsed && this._tsmfFrameCounter > 0) {
-                    const currentSlot = this._tsmfFrameCounter - 1;
-
-                    if (currentSlot < this._tsmfRelativeStreamNumber.length) {
-                        const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[currentSlot];
-
-                        if (streamNumberInThisSlot === this._tsmfTsNumber) {
-                            this._handleTLVPacket(packet);
-                        }
+                } else {
+                    // 既に解析済みの場合はframeSyncをチェックしてカウンタリセット
+                    if (this._isValidTSMFFrame(packet)) {
+                        this._tlvPacketCount = 0;
                     }
                 }
-                this._tsmfFrameCounter = (this._tsmfFrameCounter + 1) % 53;
-
-            } else {
                 continue;
             }
+
+            // TLV処理（ヘッダー解析後）
+            if (this._tsmfHeaderParsed && pid === TLV_PID) {
+                const slotIndex = this._tlvPacketCount % 52;
+
+                if (slotIndex < this._tsmfRelativeStreamNumber.length) {
+                    const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[slotIndex];
+
+                    if (streamNumberInThisSlot === this._tsmfTsNumber) {
+                        this._handleTLVPacket(packet);
+                    }
+                }
+
+                this._tlvPacketCount++;
+            }
         }
+    }
+
+    private _extractTSMFPayload(packet: Buffer): Buffer | null {
+        try {
+            const hasAdaptationField = (packet[3] & 0x20) !== 0;
+            const hasPayload = (packet[3] & 0x10) !== 0;
+
+            if (!hasPayload) {
+                return null;
+            }
+
+            let payloadOffset = 4;
+            if (hasAdaptationField) {
+                const adaptationFieldLength = packet[4];
+                if (1 + adaptationFieldLength > PACKET_SIZE - 4) {
+                    return null;
+                }
+                payloadOffset += 1 + adaptationFieldLength;
+            }
+
+            const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
+            if (payload_unit_start_indicator) {
+                if (payloadOffset >= PACKET_SIZE) {
+                    return null;
+                }
+                const pointerField = packet[payloadOffset];
+                if (1 + pointerField > PACKET_SIZE - payloadOffset) {
+                    return null;
+                }
+                payloadOffset += 1 + pointerField;
+            }
+
+            if (payloadOffset >= PACKET_SIZE) {
+                return null;
+            }
+
+            return packet.slice(payloadOffset);
+        } catch (err) {
+            return null;
+        }
+    }
+
+    private _isValidTSMFFrame(packet: Buffer): boolean {
+        const payload = this._extractTSMFPayload(packet);
+        if (!payload || payload.length < 2) {
+            return false;
+        }
+
+        const frameSync = payload.readUInt16BE(0) & 0x1FFF;
+        return frameSync === 0x1A86 || frameSync === 0x0579;
     }
 
     private _handleTSMFPacket(packet: Buffer): void {
@@ -168,48 +223,12 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        const hasAdaptationField = (packet[3] & 0x20) !== 0;
-        const hasPayload = (packet[3] & 0x10) !== 0;
-
-        if (!hasPayload) {
+        const payload = this._extractTSMFPayload(packet);
+        if (!payload) {
             return;
         }
-
-        let payloadOffset = 4;
-        if (hasAdaptationField) {
-            const adaptationFieldLength = packet[4];
-            if (1 + adaptationFieldLength > PACKET_SIZE - 4) {
-                return;
-            }
-            payloadOffset += 1 + adaptationFieldLength;
-        }
-
-        const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
-
-        if (payload_unit_start_indicator) {
-            if (payloadOffset >= PACKET_SIZE) {
-                return;
-            }
-
-            const pointerField = packet[payloadOffset];
-            if (1 + pointerField > PACKET_SIZE - payloadOffset) {
-                return;
-            }
-            payloadOffset += 1 + pointerField;
-        }
-
-        if (payloadOffset >= PACKET_SIZE) {
-            return;
-        }
-
-        const payload = packet.slice(payloadOffset);
 
         try {
-            const frameSync = payload.readUInt16BE(0) & 0x1FFF;
-            if (frameSync !== 0x1A86 && frameSync !== 0x0579) {
-                return;
-            }
-
             // byte 2: version(3bit) + mode(1bit) + type(4bit)
             const byte2 = payload[2];
             const frameType = byte2 & 0b1111;
