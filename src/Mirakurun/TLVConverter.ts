@@ -143,9 +143,8 @@ export default class TLVConverter extends EventEmitter {
                 if (!this._tsmfHeaderParsed) {
                     this._handleTSMFPacket(packet);
                 } else {
-                    if (this._isValidTSMFFrame(packet)) {
-                        this._tlvPacketCount = 0;
-                    }
+                    // TSMFパケット検出時は常にスロットリセット（フレーム境界）
+                    this._tlvPacketCount = 0;
                 }
                 continue;
             }
@@ -205,16 +204,6 @@ export default class TLVConverter extends EventEmitter {
         } catch (err) {
             return null;
         }
-    }
-
-    private _isValidTSMFFrame(packet: Buffer): boolean {
-        const payload = this._extractTSMFPayload(packet);
-        if (!payload || payload.length < 2) {
-            return false;
-        }
-
-        const frameSync = payload.readUInt16BE(0) & 0x1FFF;
-        return frameSync === 0x1A86 || frameSync === 0x0579;
     }
 
     private _handleTSMFPacket(packet: Buffer): void {
