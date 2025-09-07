@@ -162,6 +162,7 @@ export default class TLVConverter extends EventEmitter {
                 }
 
                 const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
+
                 if (payload_unit_start_indicator) {
                     const pointerField = packet[payloadOffset];
                     payloadOffset += 1 + pointerField;
@@ -192,6 +193,14 @@ export default class TLVConverter extends EventEmitter {
         if (hasAdaptationField) {
             const adaptationFieldLength = packet[4];
             payloadOffset = 5 + adaptationFieldLength;
+        }
+
+        const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
+
+        if (payload_unit_start_indicator) {
+            if (payloadOffset >= PACKET_SIZE) return;
+            const pointerField = packet[payloadOffset];
+            payloadOffset += 1 + pointerField;
         }
 
         if (payloadOffset >= PACKET_SIZE || (PACKET_SIZE - payloadOffset) < 184) {
