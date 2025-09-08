@@ -5,6 +5,7 @@ ENV DOCKER=YES NODE_ENV=production
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && \
   apt-get upgrade -y && \
   apt-get install -y --no-install-recommends build-essential
 
@@ -18,6 +19,7 @@ FROM ${ARCH}node:22.14.0-bookworm-slim
 WORKDIR /app
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && \
   apt-get upgrade -y && \
   apt-get install -y --no-install-recommends \
         ca-certificates \
