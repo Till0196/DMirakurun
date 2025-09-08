@@ -111,11 +111,9 @@ export default class TLVConverter extends EventEmitter {
         this._processPackets(packets);
 
         if (this._buffer.length !== 0) {
-            if (this._output.writableLength < this._output.writableHighWaterMark) {
-                const outputData = Buffer.concat(this._buffer);
-                this._output.write(outputData);
-                this._buffer.length = 0;
-            }
+            const outputData = Buffer.concat(this._buffer);
+            this._output.write(outputData);
+            this._buffer.length = 0;
         }
     }
 
