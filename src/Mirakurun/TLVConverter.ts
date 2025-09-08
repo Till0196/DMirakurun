@@ -233,7 +233,7 @@ export default class TLVConverter extends EventEmitter {
 
             // --- スロット情報解析 ---
             this._tsmfRelativeStreamNumber = [];
-            const slotInfoOffset = 74;
+            const slotInfoOffset = 72;
             for (let i = 0; i < 26; i++) {
                 const byteOffset = slotInfoOffset + i;
                 if (byteOffset >= payload.length) {
