@@ -17,13 +17,14 @@ export default class TLVConverter extends EventEmitter {
     private _closed = false;
     private _closing = false;
     private _tsmfHeaderParsed = false;
-    private _isTlvStream = false;
-    private _frameTypeValid = false;
     private _tsmfRelativeStreamNumber: number[] = [];
     private _tsmfTsNumber = 1;
     private _numberOfCarriers = 0;
     private _carrierSequence = 0;
-    private _tlvPacketCount = 0;
+
+    // スロット追跡
+    private _slotIndex = -1;
+    private _effectiveTargetStreamNumber = 0;
 
     constructor(tunerIndex: number, output: Writable, tsmfRelTs?: number) {
         super();
@@ -137,70 +138,36 @@ export default class TLVConverter extends EventEmitter {
 
             // TSMFパケット処理
             if (pid === TSMF_PID) {
-                // 未解析の場合のみヘッダー解析
                 if (!this._tsmfHeaderParsed) {
                     this._handleTSMFPacket(packet);
+                    this._slotIndex = 0;
                 } else {
-                    // TSMFパケット検出時は常にスロットリセット（フレーム境界）
-                    this._tlvPacketCount = 0;
+                    this._resyncTSMFFrame(packet);
                 }
                 continue;
             }
 
-            // TLV処理（ヘッダー解析後）
-            if (this._tsmfHeaderParsed && pid === TLV_PID) {
-                const slotIndex = this._tlvPacketCount;
+            // TLV処理
+            if (pid === TLV_PID) {
+                const allow = this._tsmfHeaderParsed
+                    ? (() => {
+                        const totalSlots = this._tsmfRelativeStreamNumber.length || 52;
+                        const curSlot = (this._slotIndex >= 0 && this._slotIndex < totalSlots) ? this._slotIndex : 0;
+                        const streamInSlot = this._tsmfRelativeStreamNumber[curSlot] || 0;
+                        const target = this._effectiveTargetStreamNumber;
+                        return target > 0 ? (streamInSlot === target) : false;
+                      })()
+                    : false;
 
-                if (slotIndex < this._tsmfRelativeStreamNumber.length) {
-                    const streamNumberInThisSlot = this._tsmfRelativeStreamNumber[slotIndex];
-
-                    if (Number(streamNumberInThisSlot) === Number(this._tsmfTsNumber)) {
-                        this._handleTLVPacket(packet);
+                if (allow) {
+                    this._handleTLVPacket(packet);
+                } else {
+                    if (this._tsmfHeaderParsed) {
+                        const totalSlots = this._tsmfRelativeStreamNumber.length || 52;
+                        this._slotIndex = (this._slotIndex + 1) % totalSlots;
                     }
                 }
-
-                this._tlvPacketCount++;
             }
-        }
-    }
-
-    private _extractTSMFPayload(packet: Buffer): Buffer | null {
-        try {
-            const hasAdaptationField = (packet[3] & 0x20) !== 0;
-            const hasPayload = (packet[3] & 0x10) !== 0;
-
-            if (!hasPayload) {
-                return null;
-            }
-
-            let payloadOffset = 4;
-            if (hasAdaptationField) {
-                const adaptationFieldLength = packet[4];
-                if (adaptationFieldLength < 0 || adaptationFieldLength > PACKET_SIZE - 5) {
-                    return null;
-                }
-                payloadOffset += 1 + adaptationFieldLength;
-            }
-
-            const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
-            if (payload_unit_start_indicator) {
-                if (payloadOffset >= PACKET_SIZE) {
-                    return null;
-                }
-                const pointerField = packet[payloadOffset];
-                if (pointerField < 0 || 1 + pointerField > PACKET_SIZE - payloadOffset) {
-                    return null;
-                }
-                payloadOffset += 1 + pointerField;
-            }
-
-            if (payloadOffset >= PACKET_SIZE) {
-                return null;
-            }
-
-            return packet.slice(payloadOffset);
-        } catch (err) {
-            return null;
         }
     }
 
@@ -208,126 +175,103 @@ export default class TLVConverter extends EventEmitter {
         if (this._tsmfHeaderParsed) {
             return;
         }
-
-        const payload = this._extractTSMFPayload(packet);
-        if (!payload) {
-            return;
-        }
-
         try {
-            // byte 2: version(3bit) + mode(1bit) + type(4bit)
-            const byte2 = payload[2];
-            const frameType = byte2 & 0b1111;
+            // ヘッダはTSヘッダ直後(オフセット4)からの固定配置
+            const base = 4;
+            if (188 < base + 126) { return; }
+            const sync = packet.readUInt16BE(base) & 0x1FFF;
+            if (sync !== 0x1A86 && sync !== 0x0579) { return; }
 
-            // stream_status (15bit) + 予約 (1bit)
-            // byte 3-4にまたがる16bitを読む
-            const streamStatusWord = payload.readUInt16BE(3);
-            const streamStatusBits = streamStatusWord >> 1;
-            const streamStatus: boolean[] = [];
-            for (let i = 0; i < 15; i++) {
-                const isActive = ((streamStatusBits >> (14 - i)) & 1) === 1;
-                streamStatus.push(isActive);
-            }
+            const frameType = packet[base + 2] & 0x0f;
+            if (frameType !== 0x01 && frameType !== 0x02) { return; }
 
-            // --- スロット情報解析 ---
+            // スロット情報（base+69..base+94）
             this._tsmfRelativeStreamNumber = [];
-            const slotInfoOffset = 69;
             for (let i = 0; i < 26; i++) {
-                const byteOffset = slotInfoOffset + i;
-                if (byteOffset >= payload.length) {
-                    log.error("TunerDevice#%d Slot data truncated at offset %d", this._tunerIndex, byteOffset);
-                    this.emit("error", new Error("TSMF payload too short for slot data"));
-                    this._close();
-                    return;
-                }
-
-                const byte = payload[byteOffset];
-                const upperNibble = (byte & 0xf0) >> 4;
-                const lowerNibble = byte & 0x0f;
-
-                // 1-15の範囲のみ有効（0は無効スロット）
-                this._tsmfRelativeStreamNumber.push(upperNibble >= 1 && upperNibble <= 15 ? upperNibble : 0);
-                this._tsmfRelativeStreamNumber.push(lowerNibble >= 1 && lowerNibble <= 15 ? lowerNibble : 0);
+                const b = packet[base + 69 + i];
+                const hi = (b & 0xf0) >> 4;
+                const lo = b & 0x0f;
+                this._tsmfRelativeStreamNumber.push(hi >= 1 && hi <= 15 ? hi : 0);
+                this._tsmfRelativeStreamNumber.push(lo >= 1 && lo <= 15 ? lo : 0);
             }
 
-            // スロット占有状況を分析
+            // 占有状況
             const slotStats = new Map<number, number>();
             this._tsmfRelativeStreamNumber.forEach(val => {
                 slotStats.set(val, (slotStats.get(val) || 0) + 1);
             });
 
-            // --- ストリーム種別の判定 ---
-            const streamTypeWord = payload.readUInt16BE(121);
-            const streamTypeBits = streamTypeWord >> 1;
-            let targetStreamIsTlv = false;
-
-            if (this._tsmfTsNumber === 0) {
-                // TLVストリームの中から最も占有率の高いものを選択
-                let bestStream = 0;
-                let bestOccupancy = 0;
-
-                for (let relTs = 1; relTs <= 15; relTs++) {
-                    const typeBit = (streamTypeBits >> (15 - relTs)) & 1;
-                    if (typeBit === 0) { // "0"ならTLV
-                        const occupancy = slotStats.get(relTs) || 0;
-                        if (occupancy > bestOccupancy) {
-                            bestStream = relTs;
-                            bestOccupancy = occupancy;
-                        }
-                    }
-                }
-
-                if (bestStream > 0) {
-                    this._tsmfTsNumber = bestStream;
-                    targetStreamIsTlv = true;
-                    log.debug("TunerDevice#%d Auto-detected TLV stream: %d, %d slots",
-                        this._tunerIndex, bestStream, bestOccupancy);
-                }
-            } else if (this._tsmfTsNumber > 0 && this._tsmfTsNumber <= 15) {
-                const typeBit = (streamTypeBits >> (15 - this._tsmfTsNumber)) & 1;
-                const occupancy = slotStats.get(this._tsmfTsNumber) || 0;
-
-                log.debug("TunerDevice#%d Manual stream %d: typeBit=%d, %d slots",
-                    this._tunerIndex, this._tsmfTsNumber, typeBit, occupancy);
-
-                if (typeBit === 0) {  // "0"ならTLV
-                    targetStreamIsTlv = true;
-                }
-            }
-
-            // --- 搬送波情報の解析 ---
-            const groupId = payload[123];
-            const numberOfCarriers = payload[124];
-            const carrierSequence = payload[125];
-
-            // --- 解析結果をインスタンス変数に格納 ---
-            this._frameTypeValid = (frameType === 0x1 || frameType === 0x2);
+            // 搬送波情報（base+123..base+125）
+            const groupId = packet[base + 123];
+            const numberOfCarriers = packet[base + 124];
+            const carrierSequence = packet[base + 125];
             this._numberOfCarriers = numberOfCarriers;
             this._carrierSequence = carrierSequence;
 
-            // --- 複数搬送波時の分岐 ---
-            if (this._frameTypeValid) {
-                log.debug(`TunerDevice#%d TSMF: detected frameType=${frameType}, GroupID=${groupId}, Carriers=${carrierSequence}/${numberOfCarriers}`, this._tunerIndex);
-
-                if (this._isTlvStream && this._numberOfCarriers > 1) {
-                    // 8K放送など複数搬送波のTLVストリームは同時に複数チューナーを必要とするため現状は未サポート
-                    log.error(`TunerDevice#%d Multiple carrier TLV stream is not supported. Terminating conversion.`, this._tunerIndex);
-                    this.emit("error", new Error(`Multiple carrier TLV stream is not supported (${this._numberOfCarriers} carriers).`));
-                    this._close();
-                    return;
-                }
-
-                if (!targetStreamIsTlv) {
-                    log.error(`TunerDevice#%d Target stream ${this._tsmfTsNumber} is not a TLV stream (type bit = 1). Terminating conversion.`, this._tunerIndex);
-                    this.emit("error", new Error(`Target stream ${this._tsmfTsNumber} is not a TLV stream.`));
-                    this._close();
-                    return;
-                }
-            } else {
-                log.error(`TunerDevice#%d Invalid frame type (${frameType}). TSMF frame type must be 0x1 or 0x2. Terminating conversion.`, this._tunerIndex);
-                this.emit("error", new Error(`Invalid TSMF frame type: 0x${frameType.toString(16)}`));
+            // 複数伝送波は未対応のためエラーで落とす
+            if (numberOfCarriers > 1) {
+                log.error(
+                    "TunerDevice#%d Multiple-carrier TSMF not supported (groupId=%d, carriers=%d, seq=%d)",
+                    this._tunerIndex,
+                    groupId,
+                    numberOfCarriers,
+                    carrierSequence
+                );
+                this.emit("error", new Error(`Multiple-carrier TSMF not supported: carriers=${numberOfCarriers}`));
                 this._close();
                 return;
+            }
+
+            // ストリームタイプビット（TLV=0, TS=1）
+            const streamTypeWord = packet.readUInt16BE(base + 121);
+            const streamTypeBits = streamTypeWord >> 1;
+
+            // 選択ロジック：手動優先、未指定は TLV(typeBit=0) の中から最大占有
+            if (this._tsmfTsNumber > 0 && this._tsmfTsNumber <= 15) {
+                const occupancy = slotStats.get(this._tsmfTsNumber) || 0;
+                const typeBit = (streamTypeBits >> (15 - this._tsmfTsNumber)) & 1;
+                if (typeBit === 0) {
+                    this._effectiveTargetStreamNumber = this._tsmfTsNumber;
+                    log.debug(
+                        "TunerDevice#%d Selected stream %d (manual TLV): %d slots",
+                        this._tunerIndex,
+                        this._tsmfTsNumber,
+                        occupancy
+                    );
+                } else {
+                    this._effectiveTargetStreamNumber = 0;
+                    log.warn(
+                        "TunerDevice#%d Manual stream %d is non-TLV (typeBit=1). No output will be produced.",
+                        this._tunerIndex,
+                        this._tsmfTsNumber
+                    );
+                }
+            } else {
+                let best = 0;
+                let bestOcc = 0;
+                for (let relTs = 1; relTs <= 15; relTs++) {
+                    const occ = slotStats.get(relTs) || 0;
+                    const typeBit = (streamTypeBits >> (15 - relTs)) & 1;
+                    if (typeBit === 0 && occ > bestOcc) {
+                        best = relTs;
+                        bestOcc = occ;
+                    }
+                }
+                this._tsmfTsNumber = best;
+                this._effectiveTargetStreamNumber = best;
+                if (best > 0) {
+                    log.debug(
+                        "TunerDevice#%d Selected stream %d (auto TLV by occupancy): %d slots",
+                        this._tunerIndex,
+                        best,
+                        bestOcc
+                    );
+                } else {
+                    log.warn(
+                        "TunerDevice#%d No TLV stream found in TSMF header. No output will be produced.",
+                        this._tunerIndex
+                    );
+                }
             }
 
             // スロット統計の出力
@@ -341,28 +285,29 @@ export default class TLVConverter extends EventEmitter {
                     Array.from(slotStats.entries()).map(([stream, count]) => `stream${stream}:${count}`).join(", "));
             }
 
-            // ターゲットストリーム番号がスロットに含まれているかチェック
-            const targetSlots = this._tsmfRelativeStreamNumber.map((val, idx) => ({ slot: idx, stream: val }))
-                .filter(item => item.stream === this._tsmfTsNumber);
-
-            if (targetSlots.length === 0) {
-                log.error(`TunerDevice#%d Target stream ${this._tsmfTsNumber} not found in slot mapping. Terminating conversion.`, this._tunerIndex);
-                this.emit("error", new Error(`Target stream ${this._tsmfTsNumber} not found in TSMF slot mapping.`));
-                this._close();
-                return;
+            // 相対TS番号がスロットに含まれるか確認
+            const selectedTarget = this._effectiveTargetStreamNumber;
+            if (selectedTarget > 0) {
+                const targetSlots = this._tsmfRelativeStreamNumber
+                    .map((val, idx) => ({ slot: idx, stream: val }))
+                    .filter(item => item.stream === selectedTarget);
+                if (targetSlots.length === 0) {
+                    log.warn(`TunerDevice#%d Selected stream ${selectedTarget} not found in slot mapping. TLV will be filtered out.`, this._tunerIndex);
+                } else {
+                    log.debug("TunerDevice#%d Selected stream %d slots: %s", this._tunerIndex, selectedTarget,
+                        targetSlots.map(s => s.slot).join(","));
+                }
+            } else {
+                log.warn(`TunerDevice#%d No valid target stream could be selected from TSMF header. TLV will be filtered out.`, this._tunerIndex);
             }
-
-            log.debug("TunerDevice#%d Target stream %d found in slots: %s", this._tunerIndex, this._tsmfTsNumber,
-                targetSlots.map(s => s.slot).join(","));
 
             // 実際のスロット配列内容を一時的に確認
             log.debug("TunerDevice#%d Full slot contents: %s", this._tunerIndex,
                 this._tsmfRelativeStreamNumber.join(","));
 
-            this._isTlvStream = targetStreamIsTlv;
             this._tsmfHeaderParsed = true;
-
-            log.info(`TunerDevice#%d TSMF header parsed successfully. FrameType=0x${frameType.toString(16)}, Target stream is TLV: ${this._isTlvStream}`, this._tunerIndex);
+            this._slotIndex = 0;
+            log.info(`TunerDevice#%d TSMF header parsed. frameType=0x${frameType.toString(16)} carriers=${carrierSequence}/${numberOfCarriers}`, this._tunerIndex);
 
         } catch (err) {
             log.error("TunerDevice#%d Failed to parse TSMF header: %s", this._tunerIndex, err.message);
@@ -371,12 +316,32 @@ export default class TLVConverter extends EventEmitter {
 
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
-
-        const payload_unit_start_indicator = (packet[1] & 0x40) !== 0;
-        const tlvChunk = payload_unit_start_indicator ? packet.slice(4) : packet.slice(3);
-
+        const pusi = (packet[1] & 0x40) !== 0;
+        // シンプル方式: pusi時は4バイト、非pusi時は3バイトをTSヘッダ分としてスキップ
+        const tlvChunk = pusi ? packet.slice(4) : packet.slice(3);
         if (tlvChunk.length > 0) {
             this._buffer.push(tlvChunk);
+        }
+
+        // 次のスロットへ
+        if (this._tsmfHeaderParsed) {
+            const totalSlots = this._tsmfRelativeStreamNumber.length || 52;
+            this._slotIndex = (this._slotIndex + 1) % totalSlots;
+        }
+    }
+
+    // 軽量なTSMFフレーム境界再同期（スロット位相のみ合わせる）
+    private _resyncTSMFFrame(packet: Buffer): void {
+        const base = 4;
+        if (!packet || packet.length < base + 2) {
+            return;
+        }
+        if (packet[0] !== 0x47) {
+            return;
+        }
+        const sync = packet.readUInt16BE(base) & 0x1FFF;
+        if (sync === 0x1A86 || sync === 0x0579) {
+            this._slotIndex = 0;
         }
     }
 
