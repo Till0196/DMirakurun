@@ -83,8 +83,8 @@ export default class TLVConverter extends EventEmitter {
             if (length >= PACKET_SIZE - this._offset) {
                 offset = PACKET_SIZE - this._offset;
                 packets.push(Buffer.concat([
-                    this._packet.slice(0, this._offset),
-                    chunk.slice(0, offset)
+                    this._packet.subarray(0, this._offset),
+                    chunk.subarray(0, offset)
                 ]));
                 this._offset = 0;
             } else {
@@ -102,7 +102,7 @@ export default class TLVConverter extends EventEmitter {
             }
 
             if (length - offset >= PACKET_SIZE) {
-                packets.push(chunk.slice(offset, offset + PACKET_SIZE));
+                packets.push(chunk.subarray(offset, offset + PACKET_SIZE));
             } else {
                 chunk.copy(this._packet, 0, offset);
                 this._offset = length - offset;
@@ -176,7 +176,6 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
         try {
-            // ヘッダはTSヘッダ直後(オフセット4)からの固定配置
             const base = 4;
             if (188 < base + 126) { return; }
             const sync = packet.readUInt16BE(base) & 0x1FFF;
@@ -317,20 +316,17 @@ export default class TLVConverter extends EventEmitter {
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
         const pusi = (packet[1] & 0x40) !== 0;
-        // シンプル方式: pusi時は4バイト、非pusi時は3バイトをTSヘッダ分としてスキップ
-        const tlvChunk = pusi ? packet.slice(4) : packet.slice(3);
+        const tlvChunk = pusi ? packet.subarray(4) : packet.subarray(3);
         if (tlvChunk.length > 0) {
             this._buffer.push(tlvChunk);
         }
 
-        // 次のスロットへ
         if (this._tsmfHeaderParsed) {
             const totalSlots = this._tsmfRelativeStreamNumber.length || 52;
             this._slotIndex = (this._slotIndex + 1) % totalSlots;
         }
     }
 
-    // 軽量なTSMFフレーム境界再同期（スロット位相のみ合わせる）
     private _resyncTSMFFrame(packet: Buffer): void {
         const base = 4;
         if (!packet || packet.length < base + 2) {
