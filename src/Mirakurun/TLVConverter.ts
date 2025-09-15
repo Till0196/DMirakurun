@@ -161,9 +161,13 @@ export default class TLVConverter extends EventEmitter {
         const outputData = Buffer.concat(this._buffer);
         this._buffer.length = 0;
 
-        if (!this._output.write(outputData)) {
-            this._sinkClosed = true;
-            this._close();
+        const writeSuccess = this._output.write(outputData);
+        if (!writeSuccess) {
+            this._output.once("drain", () => {
+                if (this._buffer.length > 0 && !this._sinkClosed) {
+                    this._flushBufferedOutput();
+                }
+            });
         }
     }
 
@@ -175,19 +179,19 @@ export default class TLVConverter extends EventEmitter {
 
             if (pid === TSMF_PID) {
                 this._handleTSMFPacket(packet);
-                continue;
             }
 
-            if (pid === TLV_PID && this._headerLocked) {
+            if (this._headerLocked && this._slotIndex >= 0) {
                 const totalSlots = this._tsmfRelativeStreamNumber.length || SLOT_COUNT;
-                const curSlot = (this._slotIndex >= 0 && this._slotIndex < totalSlots) ? this._slotIndex : 0;
+                const curSlot = this._slotIndex % totalSlots;
                 const streamInSlot = this._tsmfRelativeStreamNumber[curSlot] || 0;
                 const target = this._effectiveTargetStreamNumber;
 
-                if (target > 0 && streamInSlot === target) {
+                if (pid === TLV_PID && target > 0 && streamInSlot === target) {
                     this._handleTLVPacket(packet);
                 }
-                this._slotIndex = (this._slotIndex + 1) % totalSlots;
+
+                this._slotIndex++;
             }
         }
     }
@@ -380,7 +384,6 @@ export default class TLVConverter extends EventEmitter {
             }
         }
         // stream_id @ payload[5 + (i * 4)] (16bit each, 15 streams)
-        // C++実装に合わせて修正: StreamIDは2バイト単位で読み取る
         const streamIds: number[] = [];
         for (let i = 0; i < 15; i++) {
             const baseIndex = 5 + (i * 4);
