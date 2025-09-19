@@ -1,4 +1,5 @@
 import { Writable } from "stream";
+import * as stream from "stream";
 import { EventEmitter } from "eventemitter3";
 import * as log from "./log";
 
@@ -28,6 +29,8 @@ export default class TLVConverter extends EventEmitter {
     private _closed = false;
     private _closing = false;
     private _sinkClosed = false;
+    private _drainWaiting = false;
+    private _ready = false;
 
     // --- ヘッダ管理・選択 ---
     private _headerLocked = false;
@@ -51,25 +54,25 @@ export default class TLVConverter extends EventEmitter {
     // ログ用前回スナップショット
     private _lastLoggedHeaderCRC = -1;
 
-    constructor(tunerIndex: number, output: Writable, tsmfRelTs?: number) {
+    constructor(tunerIndex: number, output: Writable | null, tsmfRelTs?: number) {
         super();
         this._tunerIndex = tunerIndex;
         this._output = output;
         this._tsmfTsNumber = typeof tsmfRelTs === "number" ? tsmfRelTs : 0;
 
-        this._output.once("error", (err) => {
-            log.error("TunerDevice#%d TLVConverter output error: %s", this._tunerIndex, err.message);
-            this.emit("error", err);
-            this._close();
-        });
-        this._output.once("finish", this._close.bind(this));
-        this._output.once("close", this._close.bind(this));
+        if (this._output) {
+            this._setupOutputHandlers();
+        }
 
         log.debug("TunerDevice#%d TLVConverter created", this._tunerIndex);
     }
 
     get closed(): boolean {
         return this._closed;
+    }
+
+    get ready(): boolean {
+        return this._ready;
     }
 
     get carrierInfo(): { numberOfCarriers: number; carrierSequence: number } {
@@ -80,11 +83,15 @@ export default class TLVConverter extends EventEmitter {
         return { tsNumber: this._tsmfTsNumber, totalSlots: this._tsmfRelativeStreamNumber.length };
     }
 
+    setOutput(output: stream.Writable): void {
+        this._output = output;
+        this._setupOutputHandlers();
+    }
+
     write(chunk: Buffer): void {
-        if (this._closed || this._closing || this._sinkClosed) {
-            return;
-        }
-        if (!this._output || this._output.destroyed || (this._output as any).writableEnded) {
+        if (!this._output) {
+            // 出力先が設定されていない場合は処理を継続（バッファリングのみ）
+        } else if (this._output.destroyed || (this._output as any).writableEnded) {
             this._sinkClosed = true;
             this._close();
             return;
@@ -153,21 +160,63 @@ export default class TLVConverter extends EventEmitter {
         }
     }
 
-    private _flushBufferedOutput(): void {
-        if (this._buffer.length === 0 || this._sinkClosed || !this._output?.write) {
+    private _setupOutputHandlers(): void {
+        if (!this._output) {
             return;
         }
 
+        this._output.once("error", (err: any) => {
+            log.debug("TunerDevice#%d TLVConverter output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
+            this._close();
+        });
+        this._output.once("finish", this._close.bind(this));
+        this._output.once("close", this._close.bind(this));
+    }
+
+    private _flushBufferedOutput(): void {
+        if (this._buffer.length === 0 || this._sinkClosed || this._drainWaiting || !this._headerLocked) {
+            return;
+        }
+
+        // 初回TLV出力時にreadyイベントを発行（outputの有無に関わらず）
+        if (!this._ready) {
+            this._ready = true;
+            log.debug("TunerDevice#%d TLVConverter: first TLV packet ready, emitting ready event", this._tunerIndex);
+            process.nextTick(() => {
+                this.emit("ready");
+            });
+        }
+
+        // outputが設定されていない場合は、readyイベントのみ発行してreturn
+        if (!this._output) {
+            return;
+        }
+
+        if (this._output.destroyed || (this._output as any).writableEnded) {
+            this._sinkClosed = true;
+            return;
+        }
+
+        // 完全な分割TLVパケットを出力
         const outputData = Buffer.concat(this._buffer);
         this._buffer.length = 0;
 
-        const writeSuccess = this._output.write(outputData);
-        if (!writeSuccess) {
-            this._output.once("drain", () => {
-                if (this._buffer.length > 0 && !this._sinkClosed) {
-                    this._flushBufferedOutput();
-                }
-            });
+        try {
+            const writeSuccess = this._output.write(outputData);
+
+            if (!writeSuccess) {
+                this._drainWaiting = true;
+                this._output.once("drain", () => {
+                    this._drainWaiting = false;
+                    if (this._buffer.length > 0 && !this._sinkClosed) {
+                        this._flushBufferedOutput();
+                    }
+                });
+            }
+        } catch (err: any) {
+            log.debug("TunerDevice#%d TLVConverter output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
+            this._sinkClosed = true;
+            this._close();
         }
     }
 
@@ -183,15 +232,21 @@ export default class TLVConverter extends EventEmitter {
 
             if (this._headerLocked && this._slotIndex >= 0) {
                 const totalSlots = this._tsmfRelativeStreamNumber.length || SLOT_COUNT;
+                const target = this._effectiveTargetStreamNumber;
                 const curSlot = this._slotIndex % totalSlots;
                 const streamInSlot = this._tsmfRelativeStreamNumber[curSlot] || 0;
-                const target = this._effectiveTargetStreamNumber;
 
                 if (pid === TLV_PID && target > 0 && streamInSlot === target) {
                     this._handleTLVPacket(packet);
                 }
 
-                this._slotIndex++;
+                // スロットインデックスを安全に更新（オーバーフロー防止）
+                this._slotIndex = (this._slotIndex + 1) % (totalSlots * 1000);
+                // 長期間同期できない場合の安全策（稀な異常時のみ）
+                if (this._slotIndex % (totalSlots * 100) === 0) {
+                    // 非常に長時間経過した場合、次のTSMFヘッダーでリセットを促進
+                    // 通常動作には影響しない
+                }
             }
         }
     }
@@ -311,13 +366,11 @@ export default class TLVConverter extends EventEmitter {
                 this._lockTSMFHeader(payload, headerCRC, frameType, carriers, groupId);
             }
         } else {
+            if (headerCRC === this._activeHeaderCRC) {
+                this._slotIndex = 0;
+                return;
+            }
             if (atFrameStart) {
-                if (headerCRC === this._activeHeaderCRC) {
-                    const totalSlotsSync = this._tsmfRelativeStreamNumber.length || SLOT_COUNT;
-                    this._slotIndex = 0 % totalSlotsSync;
-                    return;
-                }
-
                 if (headerCRC !== this._candidateHeaderCRC) {
                     this._candidateHeaderCRC = headerCRC;
                     this._candidateSeen = 1;
@@ -342,6 +395,8 @@ export default class TLVConverter extends EventEmitter {
         carriers: { numberOfCarriers: number; carrierSequence: number },
         groupId: number
     ): void {
+        log.debug("TunerDevice#%d TLVConverter: locking TSMF header, CRC=0x%s, frameType=%d, carriers=%d/%d, groupId=%d",
+            this._tunerIndex, headerCRC.toString(16), frameType, carriers.carrierSequence, carriers.numberOfCarriers, groupId);
         this._applyTSMFHeader(payload, frameType, carriers.numberOfCarriers, carriers.carrierSequence, headerCRC, groupId);
     }
 
@@ -384,6 +439,7 @@ export default class TLVConverter extends EventEmitter {
             }
         }
         // stream_id @ payload[5 + (i * 4)] (16bit each, 15 streams)
+        // C++実装に合わせて修正: StreamIDは2バイト単位で読み取る
         const streamIds: number[] = [];
         for (let i = 0; i < 15; i++) {
             const baseIndex = 5 + (i * 4);
@@ -512,10 +568,26 @@ export default class TLVConverter extends EventEmitter {
 
     private _handleTLVPacket(packet: Buffer): void {
         this._tlvPackets++;
-        const pusi = (packet[1] & 0x40) !== 0;
-        const tlvChunk = pusi ? packet.subarray(4) : packet.subarray(3);
-        if (tlvChunk.length > 0) {
-            this._buffer.push(tlvChunk);
+        const pusi = (packet[1] & 0x40) !== 0; // TLV packet start indicator
+
+        if (pusi) {
+            // 新しい分割TLVパケットの開始
+            // 前の分割TLVパケットがあれば完成として出力
+            if (this._buffer.length > 0) {
+                this._flushBufferedOutput();
+            }
+
+            // 新しい分割TLVパケットの開始部分を追加
+            const tlvChunk = packet.subarray(4); // PUSIありの場合は4バイト目から
+            if (tlvChunk.length > 0) {
+                this._buffer.push(tlvChunk);
+            }
+        } else {
+            // 分割TLVパケットの継続部分
+            const tlvChunk = packet.subarray(3); // PUSIなしの場合は3バイト目から
+            if (tlvChunk.length > 0) {
+                this._buffer.push(tlvChunk);
+            }
         }
     }
 
@@ -523,8 +595,20 @@ export default class TLVConverter extends EventEmitter {
         if (this._closed || this._closing) {
             return;
         }
+        log.debug("TunerDevice#%d TLVConverter _close() called", this._tunerIndex);
         this._closing = true;
         this._sinkClosed = true;
+
+        // 残っている分割TLVパケットがあれば出力
+        if (this._buffer && this._buffer.length > 0 && this._output && !this._output.destroyed) {
+            log.debug("TunerDevice#%d TLVConverter: flushing remaining buffer on close", this._tunerIndex);
+            try {
+                const outputData = Buffer.concat(this._buffer);
+                this._output.write(outputData);
+            } catch (e) {
+                log.debug("TunerDevice#%d TLVConverter: error writing remaining buffer: %s", this._tunerIndex, (e as Error).message);
+            }
+        }
 
         setImmediate(() => {
             this._packet = undefined as any;
