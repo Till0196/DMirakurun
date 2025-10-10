@@ -239,14 +239,6 @@ export default class TLVConverter extends EventEmitter {
                 if (pid === TLV_PID && target > 0 && streamInSlot === target) {
                     this._handleTLVPacket(packet);
                 }
-
-                // スロットインデックスを安全に更新（オーバーフロー防止）
-                this._slotIndex = (this._slotIndex + 1) % (totalSlots * 1000);
-                // 長期間同期できない場合の安全策（稀な異常時のみ）
-                if (this._slotIndex % (totalSlots * 100) === 0) {
-                    // 非常に長時間経過した場合、次のTSMFヘッダーでリセットを促進
-                    // 通常動作には影響しない
-                }
             }
         }
     }
@@ -438,8 +430,8 @@ export default class TLVConverter extends EventEmitter {
                 this._tsmfRelativeStreamNumber.push(b & 0x0f);
             }
         }
+
         // stream_id @ payload[5 + (i * 4)] (16bit each, 15 streams)
-        // C++実装に合わせて修正: StreamIDは2バイト単位で読み取る
         const streamIds: number[] = [];
         for (let i = 0; i < 15; i++) {
             const baseIndex = 5 + (i * 4);
