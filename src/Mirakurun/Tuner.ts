@@ -326,6 +326,7 @@ export class Tuner {
                     });
                 }
 
+                const useMmtsDecoder = (setting.channel.type === "BS4K") && !!device.mmtsDecoder;
                 const tsFilter = new TSFilter({
                     output,
                     networkId: setting.networkId,
@@ -334,7 +335,7 @@ export class Tuner {
                     parseNIT: setting.parseNIT,
                     parseSDT: setting.parseSDT,
                     parseEIT: setting.parseEIT,
-                    tsmfRelTs: setting.channel.tsmfRelTs
+                    tsmfRelTs: useMmtsDecoder ? undefined : setting.channel.tsmfRelTs
                 });
 
                 Object.defineProperty(user, "streamInfo", {
