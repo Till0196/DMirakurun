@@ -940,7 +940,7 @@ export default class TSFilter extends EventEmitter {
                         }, 1000 * 60 * 30); // 30 mins
 
                         log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=%d, logoId=%d)", this._targetNetworkId, logoId);
-                    } else if (this._enableParseDSMCC) {
+                    } else if (this._enableParseDSMCC && this._essMap.size > 0) {
                         // for BS/CS/CATV
                         for (const essPmtPid of this._essMap.values()) {
                             this._parsePids.add(essPmtPid); // ESS PMT PID
