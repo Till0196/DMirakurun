@@ -509,21 +509,21 @@ export default class TSFilter extends EventEmitter {
             }
         }
 
-        for (const [sid, pmtPid] of this._essMap) {
-            if (pmtPid === -1) {
-                const newPmtPid = this._patMap.get(sid);
-                if (newPmtPid !== undefined) {
-                    this._essMap.set(sid, newPmtPid);
-                    this._parsePids.add(newPmtPid);
-                    log.info("TSFilter#_onPAT: resolved pending ESS service (serviceId=%d, PMT PID=%d)", sid, newPmtPid);
+        if (this._enableParseDSMCC) {
+            for (const [serviceId, pmtPid] of this._patMap) {
+                const item = this._targetNetworkId === null ? null : _.service.get(this._targetNetworkId, serviceId);
+                if (!item && !this._essMap.has(serviceId)) {
+                    this._essMap.set(serviceId, pmtPid);
+                    this._parsePids.add(pmtPid);
+                    log.debug("TSFilter#_onPAT: detected potential ESS service (serviceId=%d, PMT PID=%d)", serviceId, pmtPid);
                 }
             }
         }
     }
 
     private _onPMT(pid: number, data: any): void {
-        const essPmtPid = this._essMap.get(data.program_number);
-        if (essPmtPid !== undefined && essPmtPid !== -1) {
+        if (this._essMap.has(data.program_number)) {
+            let foundEss = false;
             for (const stream of data.streams) {
                 for (const descriptor of stream.ES_info) {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
@@ -533,6 +533,7 @@ export default class TSFilter extends EventEmitter {
                         ) {
                             this._parsePids.add(stream.elementary_PID);
                             this._essEsPids.add(stream.elementary_PID);
+                            foundEss = true;
 
                             log.debug("TSFilter#_onPMT: detected ESS ES PID=%d", stream.elementary_PID);
                             break;
@@ -540,6 +541,17 @@ export default class TSFilter extends EventEmitter {
                     }
                 }
             }
+
+            if (foundEss) {
+                log.info("TSFilter#_onPMT: confirmed ESS service (serviceId=%d)", data.program_number);
+                if (this._logoDataReady) {
+                    this._standbyLogoData();
+                }
+            } else {
+                this._essMap.delete(data.program_number);
+                log.debug("TSFilter#_onPMT: not ESS service (serviceId=%d)", data.program_number);
+            }
+
             this._parsePids.delete(pid);
             return;
         }
@@ -860,15 +872,11 @@ export default class TSFilter extends EventEmitter {
                         this._essMap.set(sid, pmtPid);
                         this._parsePids.add(pmtPid);
                         log.info("TSFilter#_resolveEssServices: resolved ESS service (serviceId=%d, PMT PID=%d, network='%s')", sid, pmtPid, networkName);
-                    } else {
-                        this._essMap.set(sid, -1);
-                        log.debug("TSFilter#_resolveEssServices: ESS service pending (serviceId=%d, network='%s')", sid, networkName);
                     }
                 }
             }
 
-            const hasValidEss = [...this._essMap.values()].some(pid => pid !== -1);
-            if (this._logoDataReady && hasValidEss) {
+            if (this._logoDataReady && this._essMap.size > 0) {
                 log.debug("TSFilter#_resolveEssServices: ESS services detected, starting logo data standby");
                 this._standbyLogoData();
             }
@@ -886,8 +894,7 @@ export default class TSFilter extends EventEmitter {
             return;
         }
 
-        const hasValidEss = [...this._essMap.values()].some(pid => pid !== -1);
-        if (this._enableParseDSMCC && !hasValidEss) {
+        if (this._enableParseDSMCC && this._essMap.size === 0) {
             return;
         }
 
