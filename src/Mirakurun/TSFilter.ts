@@ -571,6 +571,8 @@ export default class TSFilter extends EventEmitter {
     }
 
     private _onNIT(pid: number, data: any): void {
+        log.debug("TSFilter#_onNIT: received NIT (network_id=%d, tsid=%d)", data.network_id, this._tsid);
+
         const _network = {
             networkId: data.network_id,
             name: "",
@@ -613,6 +615,8 @@ export default class TSFilter extends EventEmitter {
                 }
             }
         }
+
+        log.debug("TSFilter#_onNIT: network='%s', essServiceIds=%s", _network.name, JSON.stringify(_network.essServiceIds));
 
         this.emit("network", _network);
 
