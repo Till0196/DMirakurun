@@ -579,11 +579,15 @@ export default class TSFilter extends EventEmitter {
 
         // Parse network descriptors (Network Name, etc.)
         if (data.network_descriptors) {
+            log.debug("TSFilter#_onNIT: network_descriptors count=%d", data.network_descriptors.length);
             for (const desc of data.network_descriptors) {
                 if (desc.descriptor_tag === 0x40) {
                     _network.name = new TsChar(desc.network_name_char).decode();
+                    log.debug("TSFilter#_onNIT: parsed network name='%s'", _network.name);
                 }
             }
+        } else {
+            log.debug("TSFilter#_onNIT: no network_descriptors");
         }
 
         // Parse transport descriptors (Area Code, Remote Control Key ID, ESS Service IDs)
@@ -878,7 +882,6 @@ export default class TSFilter extends EventEmitter {
         if (this._logoDataTimer) {
             return;
         }
-
         if (this._enableParseDSMCC && this._essMap.size === 0) {
             return;
         }
