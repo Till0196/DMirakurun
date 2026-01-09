@@ -148,6 +148,7 @@ export default class TSFilter extends EventEmitter {
     private _patMap = new Map<number, number>(); // <serviceId, pmtPid>
     private _essMap = new Map<number, number>(); // <serviceId, pid>
     private _essEsPids = new Set<number>();
+    private _networkName = "";
     private _dlDataMap = new Map<number, DownloadData>();
     private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
@@ -579,16 +580,13 @@ export default class TSFilter extends EventEmitter {
 
         // Parse network descriptors (Network Name, etc.)
         if (data.network_descriptors) {
-            log.debug("TSFilter#_onNIT: network_descriptors count=%d", data.network_descriptors.length);
             for (const desc of data.network_descriptors) {
                 if (desc.descriptor_tag === 0x40) {
-                    _network.name = new TsChar(desc.network_name_char).decode();
-                    log.debug("TSFilter#_onNIT: parsed network name='%s'", _network.name);
+                    this._networkName = new TsChar(desc.network_name_char).decode();
                 }
             }
-        } else {
-            log.debug("TSFilter#_onNIT: no network_descriptors");
         }
+        _network.name = this._networkName;
 
         // Parse transport descriptors (Area Code, Remote Control Key ID, ESS Service IDs)
         if (data.transport_streams) {
