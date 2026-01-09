@@ -857,7 +857,7 @@ export default class TSFilter extends EventEmitter {
     }
 
     private _resolveEssServices(essServiceIds?: number[], networkName?: string): void {
-        if (essServiceIds && networkName) {
+        if (essServiceIds && essServiceIds.length > 0) {
             for (const sid of essServiceIds) {
                 if (!this._essMap.has(sid)) {
                     const pmtPid = this._patMap.get(sid);
