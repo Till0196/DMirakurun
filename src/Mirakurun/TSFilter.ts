@@ -511,11 +511,10 @@ export default class TSFilter extends EventEmitter {
 
         if (this._enableParseDSMCC) {
             for (const [serviceId, pmtPid] of this._patMap) {
-                const item = this._targetNetworkId === null ? null : _.service.get(this._targetNetworkId, serviceId);
+                const item = this._targetNetworkId !== null && _.service.get(this._targetNetworkId, serviceId);
                 if (!item && !this._essMap.has(serviceId)) {
                     this._essMap.set(serviceId, pmtPid);
                     this._parsePids.add(pmtPid);
-                    log.debug("TSFilter#_onPAT: detected potential ESS service (serviceId=%d, PMT PID=%d)", serviceId, pmtPid);
                 }
             }
         }
@@ -523,7 +522,6 @@ export default class TSFilter extends EventEmitter {
 
     private _onPMT(pid: number, data: any): void {
         if (this._essMap.has(data.program_number)) {
-            let foundEss = false;
             for (const stream of data.streams) {
                 for (const descriptor of stream.ES_info) {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
@@ -533,23 +531,12 @@ export default class TSFilter extends EventEmitter {
                         ) {
                             this._parsePids.add(stream.elementary_PID);
                             this._essEsPids.add(stream.elementary_PID);
-                            foundEss = true;
 
                             log.debug("TSFilter#_onPMT: detected ESS ES PID=%d", stream.elementary_PID);
                             break;
                         }
                     }
                 }
-            }
-
-            if (foundEss) {
-                log.info("TSFilter#_onPMT: confirmed ESS service (serviceId=%d)", data.program_number);
-                if (this._logoDataReady) {
-                    this._standbyLogoData();
-                }
-            } else {
-                this._essMap.delete(data.program_number);
-                log.debug("TSFilter#_onPMT: not ESS service (serviceId=%d)", data.program_number);
             }
 
             this._parsePids.delete(pid);
@@ -866,13 +853,11 @@ export default class TSFilter extends EventEmitter {
     private _resolveEssServices(essServiceIds?: number[], networkName?: string): void {
         if (essServiceIds && essServiceIds.length > 0) {
             for (const sid of essServiceIds) {
-                if (!this._essMap.has(sid)) {
-                    const pmtPid = this._patMap.get(sid);
-                    if (pmtPid !== undefined) {
-                        this._essMap.set(sid, pmtPid);
-                        this._parsePids.add(pmtPid);
-                        log.info("TSFilter#_resolveEssServices: resolved ESS service (serviceId=%d, PMT PID=%d, network='%s')", sid, pmtPid, networkName);
-                    }
+                const pmtPid = this._patMap.get(sid);
+                if (pmtPid !== undefined) {
+                    this._essMap.set(sid, pmtPid);
+                    this._parsePids.add(pmtPid);
+                    log.info("TSFilter#_resolveEssServices: resolved ESS service (serviceId=%d, PMT PID=%d, network='%s')", sid, pmtPid, networkName);
                 }
             }
 
