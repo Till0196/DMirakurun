@@ -151,7 +151,6 @@ export default class TSFilter extends EventEmitter {
     private _dlDataMap = new Map<number, DownloadData>();
     private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
-    private _logoDataRetryTimer: NodeJS.Timeout;
     private _provideEventLastDetectedAt = -1;
     private _provideEventTimeout: NodeJS.Timeout = null;
 
@@ -571,8 +570,6 @@ export default class TSFilter extends EventEmitter {
     }
 
     private _onNIT(pid: number, data: any): void {
-        log.debug("TSFilter#_onNIT: received NIT (network_id=%d, tsid=%d)", data.network_id, this._tsid);
-
         const _network = {
             networkId: data.network_id,
             name: "",
@@ -615,8 +612,6 @@ export default class TSFilter extends EventEmitter {
                 }
             }
         }
-
-        log.debug("TSFilter#_onNIT: network='%s', essServiceIds=%s", _network.name, JSON.stringify(_network.essServiceIds));
 
         this.emit("network", _network);
 
@@ -866,14 +861,12 @@ export default class TSFilter extends EventEmitter {
                         this._parsePids.add(pmtPid);
                         log.info("TSFilter#_resolveEssServices: resolved ESS service (serviceId=%d, PMT PID=%d, network='%s')", sid, pmtPid, networkName);
                     } else {
-                        // pmtPidが見つからない場合は-1を設定（後でPATが来た時に再解決）
                         this._essMap.set(sid, -1);
                         log.debug("TSFilter#_resolveEssServices: ESS service pending (serviceId=%d, network='%s')", sid, networkName);
                     }
                 }
             }
 
-            // 有効なエントリ（pmtPid !== -1）があるかチェック
             const hasValidEss = [...this._essMap.values()].some(pid => pid !== -1);
             if (this._logoDataReady && hasValidEss) {
                 log.debug("TSFilter#_resolveEssServices: ESS services detected, starting logo data standby");
@@ -982,23 +975,15 @@ export default class TSFilter extends EventEmitter {
 
                             if (this._targetNetworkId === 4) {
                                 log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[4,6,7])");
-                            } else if (this._targetNetworkId === 65527) {
-                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65527])");
-                            } else if (this._targetNetworkId === 65533) {
-                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65533])");
-                            } else if (this._targetNetworkId === 65534) {
-                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[65534])");
+                            } else if (catvNetworkIds.includes(this._targetNetworkId)) {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[%d])", this._targetNetworkId);
                             }
                         }, 1000 * 60 * 30); // 30 mins
 
                         if (this._targetNetworkId === 4) {
                             log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[4,6,7])");
-                        } else if (this._targetNetworkId === 65527) {
-                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65527])");
-                        } else if (this._targetNetworkId === 65533) {
-                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65533])");
-                        } else if (this._targetNetworkId === 65534) {
-                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[65534])");
+                        } else if (catvNetworkIds.includes(this._targetNetworkId)) {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[%d])", this._targetNetworkId);
                         }
                     }
 

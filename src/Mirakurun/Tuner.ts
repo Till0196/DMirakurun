@@ -94,7 +94,6 @@ export class Tuner {
             streamSetting: {
                 channel,
                 networkId,
-                parseNIT: true,
                 parseEIT: true
             }
         }, output);
