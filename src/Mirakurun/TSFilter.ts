@@ -509,10 +509,22 @@ export default class TSFilter extends EventEmitter {
                 this._parsePids.add(0x11);
             }
         }
+
+        for (const [sid, pmtPid] of this._essMap) {
+            if (pmtPid === -1) {
+                const newPmtPid = this._patMap.get(sid);
+                if (newPmtPid !== undefined) {
+                    this._essMap.set(sid, newPmtPid);
+                    this._parsePids.add(newPmtPid);
+                    log.info("TSFilter#_onPAT: resolved pending ESS service (serviceId=%d, PMT PID=%d)", sid, newPmtPid);
+                }
+            }
+        }
     }
 
     private _onPMT(pid: number, data: any): void {
-        if (this._essMap.has(data.program_number)) {
+        const essPmtPid = this._essMap.get(data.program_number);
+        if (essPmtPid !== undefined && essPmtPid !== -1) {
             for (const stream of data.streams) {
                 for (const descriptor of stream.ES_info) {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
@@ -850,12 +862,16 @@ export default class TSFilter extends EventEmitter {
                         this._parsePids.add(pmtPid);
                         log.info("TSFilter#_resolveEssServices: resolved ESS service (serviceId=%d, PMT PID=%d, network='%s')", sid, pmtPid, networkName);
                     } else {
-                        log.debug("TSFilter#_resolveEssServices: resolved ESS service but PMT PID not found yet (serviceId=%d, network='%s')", sid, networkName);
+                        // pmtPidが見つからない場合は-1を設定（後でPATが来た時に再解決）
+                        this._essMap.set(sid, -1);
+                        log.debug("TSFilter#_resolveEssServices: ESS service pending (serviceId=%d, network='%s')", sid, networkName);
                     }
                 }
             }
 
-            if (this._logoDataReady && this._essMap.size > 0) {
+            // 有効なエントリ（pmtPid !== -1）があるかチェック
+            const hasValidEss = [...this._essMap.values()].some(pid => pid !== -1);
+            if (this._logoDataReady && hasValidEss) {
                 log.debug("TSFilter#_resolveEssServices: ESS services detected, starting logo data standby");
                 this._standbyLogoData();
             }
@@ -872,7 +888,9 @@ export default class TSFilter extends EventEmitter {
         if (this._logoDataTimer) {
             return;
         }
-        if (this._enableParseDSMCC && this._essMap.size === 0) {
+
+        const hasValidEss = [...this._essMap.values()].some(pid => pid !== -1);
+        if (this._enableParseDSMCC && !hasValidEss) {
             return;
         }
 
