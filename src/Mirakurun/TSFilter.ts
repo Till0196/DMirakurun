@@ -808,7 +808,10 @@ export default class TSFilter extends EventEmitter {
         log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s, size=%d)", networkId, logoId, logoType.toString(16).padStart(2, "0"), combinedData.length);
 
         this._receivedLogoTypes.set(logoKey, logoType);
-        const logoData = TsLogo.decode(combinedData);
+
+        // logo_type 0x05 uses fixed CLUT, needs TsLogo.decode to add PLTE/tRNS chunks
+        // logo_type 0x06/0x07 already contains PLTE chunk, use as-is
+        const logoData = logoType === 0x05 ? TsLogo.decode(combinedData) : combinedData;
         Service.saveLogoData(networkId, logoId, logoData);
     }
 
