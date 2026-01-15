@@ -150,7 +150,7 @@ export default class TSFilter extends EventEmitter {
     private _essEsPids = new Set<number>();
     private _networkName = "";
     private _dlDataMap = new Map<number, DownloadData>();
-    private _cdtDataMap = new Map<number, { networkId: number; logoId: number; logoType: number; lastSectionNumber: number; sections: Buffer[] }>();
+    private _cdtDataMap = new Map<string, { networkId: number; logoId: number; logoType: number; lastSectionNumber: number; receivedSections: Set<number>; sections: Map<number, Buffer> }>();
     private _receivedLogoTypes = new Map<string, number>(); // key: `${networkId}_${logoId}`, value: logo_type
     private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
@@ -739,66 +739,77 @@ export default class TSFilter extends EventEmitter {
             return;
         }
 
-        // Logo
+        // Logo - each section has its own logo_type header
+        const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
+        const logoType: number = dataModule.logo_type;
+
+        // Accept logo_type 0x05 (64x36) and 0x07 (256x144)
+        if (logoType !== 0x05 && logoType !== 0x07) {
+            return;
+        }
+
+        const networkId: number = data.original_network_id;
+        const logoId: number = dataModule.logo_id;
+        const logoKey = `${networkId}_${logoId}`;
+
+        // Check if we already have a higher quality logo in this session
+        const existingLogoType = this._receivedLogoTypes.get(logoKey);
+        if (existingLogoType !== undefined && existingLogoType >= logoType) {
+            // Already have same or better quality, skip
+            return;
+        }
+
+        // Use downloadDataId + logoType as key since same downloadDataId has multiple logoTypes
         const downloadDataId: number = data.download_data_id;
         const sectionNumber: number = data.section_number;
         const lastSectionNumber: number = data.last_section_number;
+        const cdtKey = `${downloadDataId}_${logoType}`;
 
-        let cdtData = this._cdtDataMap.get(downloadDataId);
+        let cdtData = this._cdtDataMap.get(cdtKey);
 
-        if (sectionNumber === 0) {
-            // First section - get logo info
-            const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
-            const logoType: number = dataModule.logo_type;
-
-            // Accept logo_type 0x05 (64x36) and 0x07 (256x144)
-            if (logoType !== 0x05 && logoType !== 0x07) {
-                return;
-            }
-
-            const networkId: number = data.original_network_id;
-            const logoId: number = dataModule.logo_id;
-            const logoKey = `${networkId}_${logoId}`;
-
-            // Check if we already have a higher quality logo
-            const existingLogoType = this._receivedLogoTypes.get(logoKey);
-            if (existingLogoType !== undefined && existingLogoType >= logoType) {
-                return;
-            }
-
+        if (!cdtData) {
+            // First section for this logoType
             cdtData = {
                 networkId,
                 logoId,
                 logoType,
                 lastSectionNumber,
-                sections: new Array(lastSectionNumber + 1)
+                receivedSections: new Set<number>(),
+                sections: new Map<number, Buffer>()
             };
-            this._cdtDataMap.set(downloadDataId, cdtData);
-            cdtData.sections[0] = dataModule.data_byte;
-        } else if (cdtData) {
-            // Subsequent sections
-            const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
-            cdtData.sections[sectionNumber] = dataModule.data_byte;
-        } else {
-            return;
+            this._cdtDataMap.set(cdtKey, cdtData);
         }
 
-        // Check if all sections received
-        const receivedCount = cdtData.sections.filter(s => s !== undefined).length;
-        if (receivedCount !== cdtData.lastSectionNumber + 1) {
-            return;
+        cdtData.receivedSections.add(sectionNumber);
+        cdtData.sections.set(sectionNumber, dataModule.data_byte);
+
+        // Check if all sections for this logoType received
+        // Note: sections with same logoType may not be contiguous (e.g., sections 2,3 for logoType 0x07)
+        if (cdtData.receivedSections.size < cdtData.lastSectionNumber + 1) {
+            // For multi-section logos, we need to count sections with same logoType
+            // But lastSectionNumber is for all sections, not per logoType
+            // So we check if we have a complete PNG by looking for IEND chunk
+            const sortedSections = Array.from(cdtData.sections.entries()).sort((a, b) => a[0] - b[0]);
+            const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
+
+            // Check for PNG IEND chunk (49 45 4E 44 AE 42 60 82)
+            const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
+            if (combinedData.length < 8 || !combinedData.subarray(-8).equals(iendSignature)) {
+                return; // PNG not complete yet
+            }
         }
 
-        // All sections received - combine and save
-        this._cdtDataMap.delete(downloadDataId);
+        // Complete PNG received - save
+        this._cdtDataMap.delete(cdtKey);
 
-        const logoKey = `${cdtData.networkId}_${cdtData.logoId}`;
-        log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s)", cdtData.networkId, cdtData.logoId, cdtData.logoType.toString(16).padStart(2, "0"));
+        const sortedSections = Array.from(cdtData.sections.entries()).sort((a, b) => a[0] - b[0]);
+        const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
 
-        this._receivedLogoTypes.set(logoKey, cdtData.logoType);
-        const combinedData = Buffer.concat(cdtData.sections);
+        log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s, size=%d)", networkId, logoId, logoType.toString(16).padStart(2, "0"), combinedData.length);
+
+        this._receivedLogoTypes.set(logoKey, logoType);
         const logoData = TsLogo.decode(combinedData);
-        Service.saveLogoData(cdtData.networkId, cdtData.logoId, logoData);
+        Service.saveLogoData(networkId, logoId, logoData);
     }
 
     private _onDSMCC(pid: number, data: any): void {

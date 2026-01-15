@@ -89,6 +89,9 @@ export default class TLVConverter extends EventEmitter {
     }
 
     write(chunk: Buffer): void {
+        if (this._closed || this._closing) {
+            return;
+        }
         if (!this._output) {
             // 出力先が設定されていない場合は処理を継続（バッファリングのみ）
         } else if (this._output.destroyed || (this._output as any).writableEnded) {
