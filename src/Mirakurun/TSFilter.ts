@@ -150,6 +150,7 @@ export default class TSFilter extends EventEmitter {
     private _essEsPids = new Set<number>();
     private _networkName = "";
     private _dlDataMap = new Map<number, DownloadData>();
+    private _receivedLogoTypes = new Map<string, number>(); // key: `${networkId}_${logoId}`, value: logo_type
     private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
     private _provideEventLastDetectedAt = -1;
@@ -736,14 +737,29 @@ export default class TSFilter extends EventEmitter {
         if (data.data_type === 0x01) {
             // Logo
             const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
-            if (dataModule.logo_type !== 0x05) {
+            const logoType: number = dataModule.logo_type;
+
+            // Accept logo_type 0x05 (64x36) and 0x07 (256x144)
+            if (logoType !== 0x05 && logoType !== 0x07) {
                 return;
             }
 
-            log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d)", data.original_network_id, dataModule.logo_id);
+            const networkId: number = data.original_network_id;
+            const logoId: number = dataModule.logo_id;
+            const logoKey = `${networkId}_${logoId}`;
 
+            // Check if we already have a higher quality logo
+            const existingLogoType = this._receivedLogoTypes.get(logoKey);
+            if (existingLogoType !== undefined && existingLogoType >= logoType) {
+                // Already have same or better quality, skip
+                return;
+            }
+
+            log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s)", networkId, logoId, logoType.toString(16).padStart(2, "0"));
+
+            this._receivedLogoTypes.set(logoKey, logoType);
             const logoData = TsLogo.decode(dataModule.data_byte);
-            Service.saveLogoData(data.original_network_id, dataModule.logo_id, logoData);
+            Service.saveLogoData(networkId, logoId, logoData);
         }
     }
 
