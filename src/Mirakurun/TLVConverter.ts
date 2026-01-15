@@ -174,7 +174,7 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _flushBufferedOutput(): void {
-        if (this._buffer.length === 0 || this._sinkClosed || this._drainWaiting || !this._headerLocked) {
+        if (!this._buffer || this._buffer.length === 0 || this._sinkClosed || this._drainWaiting || !this._headerLocked) {
             return;
         }
 
