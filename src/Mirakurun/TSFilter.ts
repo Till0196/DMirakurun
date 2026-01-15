@@ -150,6 +150,7 @@ export default class TSFilter extends EventEmitter {
     private _essEsPids = new Set<number>();
     private _networkName = "";
     private _dlDataMap = new Map<number, DownloadData>();
+    private _cdtDataMap = new Map<number, { networkId: number; logoId: number; logoType: number; lastSectionNumber: number; sections: Buffer[] }>();
     private _receivedLogoTypes = new Map<string, number>(); // key: `${networkId}_${logoId}`, value: logo_type
     private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
@@ -734,8 +735,19 @@ export default class TSFilter extends EventEmitter {
     }
 
     private _onCDT(pid: number, data: any): void {
-        if (data.data_type === 0x01) {
-            // Logo
+        if (data.data_type !== 0x01) {
+            return;
+        }
+
+        // Logo
+        const downloadDataId: number = data.download_data_id;
+        const sectionNumber: number = data.section_number;
+        const lastSectionNumber: number = data.last_section_number;
+
+        let cdtData = this._cdtDataMap.get(downloadDataId);
+
+        if (sectionNumber === 0) {
+            // First section - get logo info
             const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
             const logoType: number = dataModule.logo_type;
 
@@ -751,16 +763,42 @@ export default class TSFilter extends EventEmitter {
             // Check if we already have a higher quality logo
             const existingLogoType = this._receivedLogoTypes.get(logoKey);
             if (existingLogoType !== undefined && existingLogoType >= logoType) {
-                // Already have same or better quality, skip
                 return;
             }
 
-            log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s)", networkId, logoId, logoType.toString(16).padStart(2, "0"));
-
-            this._receivedLogoTypes.set(logoKey, logoType);
-            const logoData = TsLogo.decode(dataModule.data_byte);
-            Service.saveLogoData(networkId, logoId, logoData);
+            cdtData = {
+                networkId,
+                logoId,
+                logoType,
+                lastSectionNumber,
+                sections: new Array(lastSectionNumber + 1)
+            };
+            this._cdtDataMap.set(downloadDataId, cdtData);
+            cdtData.sections[0] = dataModule.data_byte;
+        } else if (cdtData) {
+            // Subsequent sections
+            const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
+            cdtData.sections[sectionNumber] = dataModule.data_byte;
+        } else {
+            return;
         }
+
+        // Check if all sections received
+        const receivedCount = cdtData.sections.filter(s => s !== undefined).length;
+        if (receivedCount !== cdtData.lastSectionNumber + 1) {
+            return;
+        }
+
+        // All sections received - combine and save
+        this._cdtDataMap.delete(downloadDataId);
+
+        const logoKey = `${cdtData.networkId}_${cdtData.logoId}`;
+        log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s)", cdtData.networkId, cdtData.logoId, cdtData.logoType.toString(16).padStart(2, "0"));
+
+        this._receivedLogoTypes.set(logoKey, cdtData.logoType);
+        const combinedData = Buffer.concat(cdtData.sections);
+        const logoData = TsLogo.decode(combinedData);
+        Service.saveLogoData(cdtData.networkId, cdtData.logoId, logoData);
     }
 
     private _onDSMCC(pid: number, data: any): void {
