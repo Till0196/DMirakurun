@@ -744,7 +744,7 @@ export default class TSFilter extends EventEmitter {
         this._streamTime = getTimeFromMJD(data.JST_time);
     }
 
-    private _onCDT(pid: number, data: any): void {
+    private async _onCDT(pid: number, data: any): Promise<void> {
         if (data.data_type !== 0x01) {
             return;
         }
@@ -797,6 +797,19 @@ export default class TSFilter extends EventEmitter {
             return;
         }
 
+        // On first check, verify existing logo file on disk
+        if (logoData.savedLogoType === null) {
+            const existingLogoType = await Service.getLogoType(networkId, logoId);
+            if (existingLogoType !== null) {
+                logoData.savedLogoType = existingLogoType;
+                if (existingLogoType >= logoType) {
+                    log.debug("TSFilter#_onCDT: skipping logo data save, existing file has same or better quality (networkId=%d, logoId=%d, existing=0x%s, current=0x%s)",
+                        networkId, logoId, existingLogoType.toString(16).padStart(2, "0"), logoType.toString(16).padStart(2, "0"));
+                    return;
+                }
+            }
+        }
+
         const receivingKey = `${downloadDataId}_${logoType}`;
         let receiving = logoData.receivingData.get(receivingKey);
 
@@ -813,22 +826,17 @@ export default class TSFilter extends EventEmitter {
         receiving.receivedSections.add(sectionNumber);
         receiving.sections.set(sectionNumber, dataModule.data_byte);
 
-        if (receiving.receivedSections.size < receiving.lastSectionNumber + 1) {
-            const sortedSections = Array.from(receiving.sections.entries()).sort((a, b) => a[0] - b[0]);
-            const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
+        const sortedSections = Array.from(receiving.sections.entries()).sort((a, b) => a[0] - b[0]);
+        const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
 
-            // Check for PNG IEND chunk (49 45 4E 44 AE 42 60 82)
-            const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
-            if (combinedData.length < 8 || !combinedData.subarray(-8).equals(iendSignature)) {
-                return;
-            }
+        // Check for PNG IEND chunk (49 45 4E 44 AE 42 60 82)
+        const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
+        if (combinedData.length < 8 || !combinedData.subarray(-8).equals(iendSignature)) {
+            return;
         }
 
         // Complete PNG received - save
         logoData.receivingData.delete(receivingKey);
-
-        const sortedSections = Array.from(receiving.sections.entries()).sort((a, b) => a[0] - b[0]);
-        const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
 
         log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s, size=%d)", networkId, logoId, logoType.toString(16).padStart(2, "0"), combinedData.length);
 
