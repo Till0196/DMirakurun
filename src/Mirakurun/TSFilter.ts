@@ -829,7 +829,13 @@ export default class TSFilter extends EventEmitter {
         const sortedSections = Array.from(receiving.sections.entries()).sort((a, b) => a[0] - b[0]);
         const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
 
-        // Check for PNG IEND chunk (49 45 4E 44 AE 42 60 82)
+        // Verify PNG signature (89 50 4E 47 0D 0A 1A 0A)
+        const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        if (combinedData.length < 8 || !combinedData.subarray(0, 8).equals(pngSignature)) {
+            return;
+        }
+
+        // Check for PNG IEND chunk at the end (49 45 4E 44 AE 42 60 82)
         const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
         if (combinedData.length < 8 || !combinedData.subarray(-8).equals(iendSignature)) {
             return;
