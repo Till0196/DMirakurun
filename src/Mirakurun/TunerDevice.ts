@@ -366,6 +366,9 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     cat.stdout.on("data", (chunk) => {
+                        if (!this._tlvConverter) {
+                            return;
+                        }
                         this._tlvConverter.write(chunk);
                     });
 
@@ -484,6 +487,9 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     this._process.stdout.on("data", (chunk) => {
+                        if (!this._tlvConverter) {
+                            return;
+                        }
                         this._tlvConverter.write(chunk);
                     });
 
