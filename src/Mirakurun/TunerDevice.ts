@@ -546,7 +546,6 @@ export default class TunerDevice extends EventEmitter {
 
         this._process.once("exit", () => {
             this._exited = true;
-            this._stopMmtsDecoder();
         });
 
         this._process.once("error", (err) => {
@@ -569,7 +568,6 @@ export default class TunerDevice extends EventEmitter {
                 this._index, code, signal, this._process.pid
             );
 
-            this._stopMmtsDecoder();
             this._end();
             setTimeout(this._release.bind(this), this._config.dvbDevicePath ? 1000 : 100);
         });
@@ -624,10 +622,7 @@ export default class TunerDevice extends EventEmitter {
         await new Promise<void>(resolve => {
             this.once("release", resolve);
 
-            const hasMmts = !!this._mmtsDecoderProcess?.pid;
-
-            if (hasMmts) {
-                this._stopMmtsDecoder();
+            if (this._mmtsDecoderProcess?.pid) {
                 this._process?.kill("SIGKILL");
                 return;
             }
@@ -656,11 +651,20 @@ export default class TunerDevice extends EventEmitter {
             this._stream.removeAllListeners();
         }
 
+        if (this._mmtsDecoderProcess) {
+            this._mmtsDecoderProcess.stdin.removeAllListeners();
+            this._mmtsDecoderProcess.stdout.removeAllListeners();
+            this._mmtsDecoderProcess.stderr.removeAllListeners();
+            this._mmtsDecoderProcess.removeAllListeners();
+            if (this._mmtsDecoderProcess.pid) {
+                this._mmtsDecoderProcess.kill("SIGKILL");
+            }
+        }
+
         this._command = null;
         this._process = null;
-        this._stopMmtsDecoder();
-        this._mmtsDecoderProcess = null;
         this._stream = null;
+        this._mmtsDecoderProcess = null;
         if (this._tlvConverter) {
             try {
                 this._tlvConverter.close();
@@ -698,26 +702,5 @@ export default class TunerDevice extends EventEmitter {
 
     private _updated(): void {
         Event.emit("tuner", "update", this.toJSON());
-    }
-
-    private _stopMmtsDecoder(): void {
-        const proc = this._mmtsDecoderProcess;
-        if (!proc || !proc.pid) {
-            return;
-        }
-
-        log.debug("TunerDevice#%d stopping mmtsDecoder (pid=%d)", this._index, proc.pid);
-
-        try {
-            proc.stdin?.destroy();
-        } catch (e) {
-            // ignore
-        }
-
-        try {
-            proc.kill("SIGKILL");
-        } catch (e) {
-            // ignore
-        }
     }
 }
