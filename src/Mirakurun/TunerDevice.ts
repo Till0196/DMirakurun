@@ -320,32 +320,44 @@ export default class TunerDevice extends EventEmitter {
                             this._kill(false);
                         });
 
+                        const mmtsPid = this._mmtsDecoderProcess.pid;
+
                         this._mmtsDecoderProcess.once("exit", () => {
-                            this._mmtsDecoderProcess.stdin.destroy();
+                            this._mmtsDecoderProcess?.stdin?.destroy();
+                            // TLVConverterをクリーンアップ
+                            if (this._tlvConverter) {
+                                try {
+                                    this._tlvConverter.close();
+                                } catch (e) {
+                                    // already closed
+                                }
+                                this._tlvConverter = null;
+                            }
+                            this._mmtsDecoderProcess = null;
                         });
 
                         this._mmtsDecoderProcess.once("close", (code, signal) => {
                             log.debug(
                                 "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                                this._index, code, signal, this._mmtsDecoderProcess.pid
+                                this._index, code, signal, mmtsPid
                             );
 
-                            if (this._exited === false) {
+                            if (this._exited === false && !this._closing) {
                                 this._kill(false);
                             }
                         });
 
                         this._mmtsDecoderProcess.stdout.pipe(outputStream);
                         this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
-                    });
 
-                    this._tlvConverter.once("close", () => {
-                        log.debug("TunerDevice#%d TLVConverter closed", this._index);
-                        if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
-                            if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
-                                this._mmtsDecoderProcess.stdin.end();
+                        this._tlvConverter.once("close", () => {
+                            log.debug("TunerDevice#%d TLVConverter closed", this._index);
+                            if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
+                                if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
+                                    this._mmtsDecoderProcess.stdin.end();
+                                }
                             }
-                        }
+                        });
                     });
 
                     this._tlvConverter.once("error", (err) => {
@@ -367,25 +379,30 @@ export default class TunerDevice extends EventEmitter {
                     this._stream = outputStream;
                 } else {
                     // 直接mmtsDecoderモード
+                    log.info("TunerDevice#%d Direct mmtsDecoder mode", this._index);
+
                     const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
                     this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
 
+                    const mmtsPid = this._mmtsDecoderProcess.pid;
+
                     this._mmtsDecoderProcess.once("error", (err) => {
-                        log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, this._mmtsDecoderProcess.pid);
+                        log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsPid);
                         this._kill(false);
                     });
 
                     this._mmtsDecoderProcess.once("exit", () => {
-                        this._mmtsDecoderProcess.stdin.destroy();
+                        this._mmtsDecoderProcess?.stdin?.destroy();
+                        this._mmtsDecoderProcess = null;
                     });
 
                     this._mmtsDecoderProcess.once("close", (code, signal) => {
                         log.debug(
                             "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                            this._index, code, signal, this._mmtsDecoderProcess.pid
+                            this._index, code, signal, mmtsPid
                         );
 
-                        if (this._exited === false) {
+                        if (this._exited === false && !this._closing) {
                             this._kill(false);
                         }
                     });
@@ -421,32 +438,44 @@ export default class TunerDevice extends EventEmitter {
                             this._kill(false);
                         });
 
+                        const mmtsPid = this._mmtsDecoderProcess.pid;
+
                         this._mmtsDecoderProcess.once("exit", () => {
-                            this._mmtsDecoderProcess.stdin.destroy();
+                            this._mmtsDecoderProcess?.stdin?.destroy();
+                            // TLVConverterをクリーンアップ
+                            if (this._tlvConverter) {
+                                try {
+                                    this._tlvConverter.close();
+                                } catch (e) {
+                                    // already closed
+                                }
+                                this._tlvConverter = null;
+                            }
+                            this._mmtsDecoderProcess = null;
                         });
 
                         this._mmtsDecoderProcess.once("close", (code, signal) => {
                             log.debug(
                                 "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                                this._index, code, signal, this._mmtsDecoderProcess.pid
+                                this._index, code, signal, mmtsPid
                             );
 
-                            if (this._exited === false) {
+                            if (this._exited === false && !this._closing) {
                                 this._kill(false);
                             }
                         });
 
                         this._mmtsDecoderProcess.stdout.pipe(outputStream);
                         this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
-                    });
 
-                    this._tlvConverter.once("close", () => {
-                        log.debug("TunerDevice#%d TLVConverter closed", this._index);
-                        if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
-                            if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
-                                this._mmtsDecoderProcess.stdin.end();
+                        this._tlvConverter.once("close", () => {
+                            log.debug("TunerDevice#%d TLVConverter closed", this._index);
+                            if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
+                                if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
+                                    this._mmtsDecoderProcess.stdin.end();
+                                }
                             }
-                        }
+                        });
                     });
 
                     this._tlvConverter.once("error", (err) => {
@@ -468,25 +497,30 @@ export default class TunerDevice extends EventEmitter {
                     this._stream = outputStream;
                 } else {
                     // 直接mmtsDecoderモード
+                    log.info("TunerDevice#%d Direct mmtsDecoder mode", this._index);
+
                     const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
                     this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
 
+                    const mmtsPid = this._mmtsDecoderProcess.pid;
+
                     this._mmtsDecoderProcess.once("error", (err) => {
-                        log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, this._mmtsDecoderProcess.pid);
+                        log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsPid);
                         this._kill(false);
                     });
 
                     this._mmtsDecoderProcess.once("exit", () => {
-                        this._mmtsDecoderProcess.stdin.destroy();
+                        this._mmtsDecoderProcess?.stdin?.destroy();
+                        this._mmtsDecoderProcess = null;
                     });
 
                     this._mmtsDecoderProcess.once("close", (code, signal) => {
                         log.debug(
                             "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                            this._index, code, signal, this._mmtsDecoderProcess.pid
+                            this._index, code, signal, mmtsPid
                         );
 
-                        if (this._exited === false) {
+                        if (this._exited === false && !this._closing) {
                             this._kill(false);
                         }
                     });
@@ -572,27 +606,6 @@ export default class TunerDevice extends EventEmitter {
             return;
         }
 
-        if (this._mmtsDecoderProcess) {
-            if (this._tlvConverter) {
-                try {
-                    this._tlvConverter.close();
-                } catch (e) {
-                    log.debug("TunerDevice#%d TLVConverter close error: %s", this._index, (e as Error).message);
-                }
-            } else {
-                this._process.stdout.unpipe();
-                this._process.stdout.destroy();
-            }
-
-            if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
-                this._mmtsDecoderProcess.stdin.end();
-            }
-
-            if (!this._mmtsDecoderProcess.killed) {
-                this._mmtsDecoderProcess.kill("SIGKILL");
-            }
-        }
-
         this._isAvailable = false;
         this._closing = close;
 
@@ -600,6 +613,14 @@ export default class TunerDevice extends EventEmitter {
 
         await new Promise<void>(resolve => {
             this.once("release", resolve);
+
+            const hasMmts = !!this._mmtsDecoderProcess?.pid;
+
+            if (hasMmts) {
+                this._mmtsDecoderProcess?.kill("SIGKILL");
+                this._process?.kill("SIGKILL");
+                return;
+            }
 
             if (/^dvbv5-zap /.test(this._command) === true) {
                 this._process.kill("SIGKILL");
