@@ -611,9 +611,13 @@ export default class TLVConverter extends EventEmitter {
         });
 
         if (this._output && !this._output.destroyed) {
-            try { (this._output as any).destroy?.(); } catch (e) {
+            try {
+                if (!(this._output as any).writableEnded) {
+                    this._output.end();
+                }
+            } catch (e) {
                 const err = e as any;
-                log.warn("TunerDevice#%d TLVConverter output destroy error: %s", this._tunerIndex, err?.message ?? String(err));
+                log.debug("TunerDevice#%d TLVConverter output end error: %s", this._tunerIndex, err?.message ?? String(err));
             }
         }
         this._output = null as any;

@@ -321,7 +321,7 @@ export default class TunerDevice extends EventEmitter {
                         });
 
                         this._mmtsDecoderProcess.once("exit", () => {
-                            this._mmtsDecoderProcess.stdin.end();
+                            this._mmtsDecoderProcess.stdin.destroy();
                         });
 
                         this._mmtsDecoderProcess.once("close", (code, signal) => {
@@ -339,6 +339,15 @@ export default class TunerDevice extends EventEmitter {
                         this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
                     });
 
+                    this._tlvConverter.once("close", () => {
+                        log.debug("TunerDevice#%d TLVConverter closed", this._index);
+                        if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
+                            if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
+                                this._mmtsDecoderProcess.stdin.end();
+                            }
+                        }
+                    });
+
                     this._tlvConverter.once("error", (err) => {
                         log.error("TunerDevice#%d TLVConverter error: %s", this._index, err.message);
                         this._kill(false);
@@ -346,6 +355,13 @@ export default class TunerDevice extends EventEmitter {
 
                     cat.stdout.on("data", (chunk) => {
                         this._tlvConverter.write(chunk);
+                    });
+
+                    cat.stdout.once("end", () => {
+                        log.debug("TunerDevice#%d cat stdout ended, closing TLVConverter", this._index);
+                        if (this._tlvConverter) {
+                            this._tlvConverter.close();
+                        }
                     });
 
                     this._stream = outputStream;
@@ -360,7 +376,7 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     this._mmtsDecoderProcess.once("exit", () => {
-                        this._mmtsDecoderProcess.stdin.end();
+                        this._mmtsDecoderProcess.stdin.destroy();
                     });
 
                     this._mmtsDecoderProcess.once("close", (code, signal) => {
@@ -374,7 +390,12 @@ export default class TunerDevice extends EventEmitter {
                         }
                     });
 
-                    cat.stdout.pipe(this._mmtsDecoderProcess.stdin);
+                    stream.pipeline(cat.stdout, this._mmtsDecoderProcess.stdin, (err) => {
+                        if (err && !this._closing) {
+                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
+                        }
+                    });
+
                     this._stream = this._mmtsDecoderProcess.stdout;
                 }
             } else {
@@ -401,7 +422,7 @@ export default class TunerDevice extends EventEmitter {
                         });
 
                         this._mmtsDecoderProcess.once("exit", () => {
-                            this._mmtsDecoderProcess.stdin.end();
+                            this._mmtsDecoderProcess.stdin.destroy();
                         });
 
                         this._mmtsDecoderProcess.once("close", (code, signal) => {
@@ -419,6 +440,15 @@ export default class TunerDevice extends EventEmitter {
                         this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
                     });
 
+                    this._tlvConverter.once("close", () => {
+                        log.debug("TunerDevice#%d TLVConverter closed", this._index);
+                        if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
+                            if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
+                                this._mmtsDecoderProcess.stdin.end();
+                            }
+                        }
+                    });
+
                     this._tlvConverter.once("error", (err) => {
                         log.error("TunerDevice#%d TLVConverter error: %s", this._index, err.message);
                         this._kill(false);
@@ -426,6 +456,13 @@ export default class TunerDevice extends EventEmitter {
 
                     this._process.stdout.on("data", (chunk) => {
                         this._tlvConverter.write(chunk);
+                    });
+
+                    this._process.stdout.once("end", () => {
+                        log.debug("TunerDevice#%d process stdout ended, closing TLVConverter", this._index);
+                        if (this._tlvConverter) {
+                            this._tlvConverter.close();
+                        }
                     });
 
                     this._stream = outputStream;
@@ -440,7 +477,7 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     this._mmtsDecoderProcess.once("exit", () => {
-                        this._mmtsDecoderProcess.stdin.end();
+                        this._mmtsDecoderProcess.stdin.destroy();
                     });
 
                     this._mmtsDecoderProcess.once("close", (code, signal) => {
@@ -454,7 +491,12 @@ export default class TunerDevice extends EventEmitter {
                         }
                     });
 
-                    this._process.stdout.pipe(this._mmtsDecoderProcess.stdin);
+                    stream.pipeline(this._process.stdout, this._mmtsDecoderProcess.stdin, (err) => {
+                        if (err && !this._closing) {
+                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
+                        }
+                    });
+
                     this._stream = this._mmtsDecoderProcess.stdout;
                 }
             } else {
@@ -531,10 +573,24 @@ export default class TunerDevice extends EventEmitter {
         }
 
         if (this._mmtsDecoderProcess) {
-            this._process.stdout.unpipe();
-            this._process.stdout.destroy();
-            this._mmtsDecoderProcess.stdin.end();
-            this._mmtsDecoderProcess.kill("SIGTERM");
+            if (this._tlvConverter) {
+                try {
+                    this._tlvConverter.close();
+                } catch (e) {
+                    log.debug("TunerDevice#%d TLVConverter close error: %s", this._index, (e as Error).message);
+                }
+            } else {
+                this._process.stdout.unpipe();
+                this._process.stdout.destroy();
+            }
+
+            if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
+                this._mmtsDecoderProcess.stdin.end();
+            }
+
+            if (!this._mmtsDecoderProcess.killed) {
+                this._mmtsDecoderProcess.kill("SIGKILL");
+            }
         }
 
         this._isAvailable = false;
@@ -573,6 +629,13 @@ export default class TunerDevice extends EventEmitter {
         this._process = null;
         this._mmtsDecoderProcess = null;
         this._stream = null;
+        if (this._tlvConverter) {
+            try {
+                this._tlvConverter.close();
+            } catch (e) {
+                // already closed
+            }
+        }
         this._tlvConverter = null;
 
         if (this._closing === false && this._users.size !== 0) {
