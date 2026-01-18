@@ -19,7 +19,7 @@ import * as util from "util";
 import EventEmitter = require("eventemitter3");
 import * as common from "./common";
 import * as log from "./log";
-import * as config from "./config";
+import _ from "./_";
 import * as apid from "../../api";
 import status from "./status";
 import Event from "./Event";
@@ -30,6 +30,18 @@ import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
     _stream?: TSFilter;
+}
+
+interface StartStreamOptions {
+    suppressGroupCombine?: boolean;
+}
+
+interface CarrierLink {
+    device: TunerDevice;
+    user: User;
+    stream: TSFilter;
+    output: stream.PassThrough;
+    input: stream.Writable;
 }
 
 export interface TunerDeviceStatus {
@@ -53,6 +65,8 @@ export default class TunerDevice extends EventEmitter {
     private _mmtsDecoderProcess: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
     private _tlvConverter: any = null;
+    private _carrierLinks: CarrierLink[] = [];
+    private _carrierInitInProgress = false;
 
     private _users = new Set<User>();
 
@@ -164,7 +178,7 @@ export default class TunerDevice extends EventEmitter {
         await this._kill(true);
     }
 
-    async startStream(user: User, stream: TSFilter, channel?: ChannelItem): Promise<void> {
+    async startStream(user: User, stream: TSFilter, channel?: ChannelItem, options?: StartStreamOptions): Promise<void> {
         log.debug("TunerDevice#%d start stream for user `%s` (priority=%d)...", this._index, user.id, user.priority);
 
         if (this._isAvailable === false) {
@@ -187,10 +201,10 @@ export default class TunerDevice extends EventEmitter {
                     }
 
                     await this._kill(true);
-                    this._spawn(channel);
+                    this._spawn(channel, options);
                 }
             } else {
-                this._spawn(channel);
+                this._spawn(channel, options);
             }
         }
 
@@ -245,7 +259,7 @@ export default class TunerDevice extends EventEmitter {
         return programs;
     }
 
-    private _spawn(ch: ChannelItem): void {
+    private _spawn(ch: ChannelItem, options?: StartStreamOptions): void {
         log.debug("TunerDevice#%d spawn...", this._index);
 
         if (this._process) {
@@ -278,7 +292,6 @@ export default class TunerDevice extends EventEmitter {
         this._process = child_process.spawn(parsed.command, parsed.args);
         this._command = cmd;
         this._channel = ch;
-
         if (this._config.dvbDevicePath) {
             const cat = child_process.spawn("cat", [this._config.dvbDevicePath]);
 
@@ -302,12 +315,31 @@ export default class TunerDevice extends EventEmitter {
             this._process.once("exit", () => cat.kill("SIGKILL"));
 
             if (ch.type === "BS4K") {
+                const useGroupCombine = !options?.suppressGroupCombine;
                 if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
-                    // TLVConverter使用モード
-                    log.info("TunerDevice#%d TLV conversion mode (tsmfRelTs=%d)", this._index, ch.tsmfRelTs);
+                    log.info(
+                        "TunerDevice#%d TLV combiner mode (tsmfRelTs=%d, groupId=%s)",
+                        this._index,
+                        ch.tsmfRelTs,
+                        ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined ? String(ch.tsmfGroupId) : "none"
+                    );
 
                     const outputStream = new stream.PassThrough();
-                    this._tlvConverter = new TLVConverter(this._index, null, ch.tsmfRelTs);
+                    this._tlvConverter = new TLVConverter(this._index, null, {
+                        tsmfRelTs: ch.tsmfRelTs,
+                        groupId: ch.tsmfGroupId ?? undefined
+                    });
+                    const primaryInput = this._tlvConverter.createInput();
+
+                    this._tlvConverter.once("needCarriers", (count: number) => {
+                        if (useGroupCombine && count === 3) {
+                            if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
+                                log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
+                                return;
+                            }
+                            this._startAdditionalCarriers(ch, this._tlvConverter as TLVConverter).catch(log.error);
+                        }
+                    });
 
                     this._tlvConverter.once("ready", () => {
                         log.info("TunerDevice#%d TLVConverter ready, starting mmtsDecoder", this._index);
@@ -324,7 +356,6 @@ export default class TunerDevice extends EventEmitter {
 
                         this._mmtsDecoderProcess.once("exit", () => {
                             this._mmtsDecoderProcess?.stdin?.destroy();
-                            // TLVConverterをクリーンアップ
                             if (this._tlvConverter) {
                                 try {
                                     this._tlvConverter.close();
@@ -333,6 +364,7 @@ export default class TunerDevice extends EventEmitter {
                                 }
                                 this._tlvConverter = null;
                             }
+                            this._cleanupCarrierLinks();
                             this._mmtsDecoderProcess = null;
                         });
 
@@ -369,7 +401,7 @@ export default class TunerDevice extends EventEmitter {
                         if (!this._tlvConverter) {
                             return;
                         }
-                        this._tlvConverter.write(chunk);
+                        primaryInput.write(chunk);
                     });
 
                     cat.stdout.once("end", () => {
@@ -423,12 +455,31 @@ export default class TunerDevice extends EventEmitter {
             }
         } else {
             if (ch.type === "BS4K") {
+                const useGroupCombine = !options?.suppressGroupCombine;
                 if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
-                    // TLVConverter使用モード
-                    log.info("TunerDevice#%d TLV conversion mode (tsmfRelTs=%d)", this._index, ch.tsmfRelTs);
+                    log.info(
+                        "TunerDevice#%d TLV combiner mode (tsmfRelTs=%d, groupId=%s)",
+                        this._index,
+                        ch.tsmfRelTs,
+                        ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined ? String(ch.tsmfGroupId) : "none"
+                    );
 
                     const outputStream = new stream.PassThrough();
-                    this._tlvConverter = new TLVConverter(this._index, null, ch.tsmfRelTs);
+                    this._tlvConverter = new TLVConverter(this._index, null, {
+                        tsmfRelTs: ch.tsmfRelTs,
+                        groupId: ch.tsmfGroupId ?? undefined
+                    });
+                    const primaryInput = this._tlvConverter.createInput();
+
+                    this._tlvConverter.once("needCarriers", (count: number) => {
+                        if (useGroupCombine && count === 3) {
+                            if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
+                                log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
+                                return;
+                            }
+                            this._startAdditionalCarriers(ch, this._tlvConverter as TLVConverter).catch(log.error);
+                        }
+                    });
 
                     this._tlvConverter.once("ready", () => {
                         log.info("TunerDevice#%d TLVConverter ready, starting mmtsDecoder", this._index);
@@ -445,7 +496,6 @@ export default class TunerDevice extends EventEmitter {
 
                         this._mmtsDecoderProcess.once("exit", () => {
                             this._mmtsDecoderProcess?.stdin?.destroy();
-                            // TLVConverterをクリーンアップ
                             if (this._tlvConverter) {
                                 try {
                                     this._tlvConverter.close();
@@ -454,6 +504,7 @@ export default class TunerDevice extends EventEmitter {
                                 }
                                 this._tlvConverter = null;
                             }
+                            this._cleanupCarrierLinks();
                             this._mmtsDecoderProcess = null;
                         });
 
@@ -490,7 +541,7 @@ export default class TunerDevice extends EventEmitter {
                         if (!this._tlvConverter) {
                             return;
                         }
-                        this._tlvConverter.write(chunk);
+                        primaryInput.write(chunk);
                     });
 
                     this._process.stdout.once("end", () => {
@@ -589,6 +640,125 @@ export default class TunerDevice extends EventEmitter {
         }
     }
 
+    private async _startAdditionalCarriers(ch: ChannelItem, combiner: TLVConverter): Promise<void> {
+        if (this._carrierInitInProgress || this._carrierLinks.length > 0) {
+            return;
+        }
+
+        if (!_.tuner) {
+            log.warn("TunerDevice#%d cannot start extra carriers (tuner registry missing)", this._index);
+            return;
+        }
+
+        if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
+            return;
+        }
+
+        this._carrierInitInProgress = true;
+        try {
+            if (!_.channel) {
+                log.warn("TunerDevice#%d cannot start extra carriers (channel registry missing)", this._index);
+                return;
+            }
+
+            const groupChannels = _.channel.items.filter(item =>
+                item.type === "BS4K" &&
+                item.tsmfGroupId === ch.tsmfGroupId &&
+                item.channel !== ch.channel
+            );
+
+            if (groupChannels.length < 2) {
+                log.warn(
+                    "TunerDevice#%d not enough channels for groupId=%d (need=2, available=%d)",
+                    this._index,
+                    ch.tsmfGroupId,
+                    groupChannels.length
+                );
+                return;
+            }
+
+            const candidates = _.tuner.devices
+                .map(device => _.tuner.get(device.index))
+                .filter(device =>
+                    device &&
+                    device !== this &&
+                    device.isFree &&
+                    !device.isRemote &&
+                    device.config.types.includes("BS4K")
+                ) as TunerDevice[];
+
+            if (candidates.length < 2) {
+                log.warn("TunerDevice#%d not enough free BS4K tuners for multi-carrier (need=2, available=%d)", this._index, candidates.length);
+                return;
+            }
+
+            const selected = candidates.slice(0, 2);
+            const selectedChannels = groupChannels.slice(0, 2);
+
+            for (let i = 0; i < selected.length; i++) {
+                const device = selected[i];
+                const channel = selectedChannels[i];
+                const output = new stream.PassThrough();
+                const input = combiner.createInput();
+                const tsFilter = new TSFilter({ output, parseNIT: false, parseSDT: false, parseEIT: false });
+                const user: User = {
+                    id: `tlv-carrier-${this._index}-${device.index}`,
+                    priority: 100,
+                    disableDecoder: true
+                };
+
+                await device.startStream(user, tsFilter, channel, { suppressGroupCombine: true });
+
+                output.on("data", (chunk) => {
+                    input.write(chunk);
+                });
+
+                output.once("end", () => {
+                    try {
+                        input.end();
+                    } catch (e) {
+                        // ignore
+                    }
+                    if (!this._closing) {
+                        log.warn("TunerDevice#%d carrier stream ended (device=%d)", this._index, device.index);
+                        this._kill(false);
+                    }
+                });
+
+                this._carrierLinks.push({ device, user, stream: tsFilter, output, input });
+            }
+        } finally {
+            this._carrierInitInProgress = false;
+        }
+    }
+
+    private _cleanupCarrierLinks(): void {
+        if (this._carrierLinks.length === 0) {
+            return;
+        }
+
+        for (const link of this._carrierLinks) {
+            try {
+                link.output.removeAllListeners();
+            } catch (e) {
+                // ignore
+            }
+            try {
+                link.input.end();
+            } catch (e) {
+                // ignore
+            }
+            try {
+                link.device.endStream(link.user);
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        this._carrierLinks = [];
+        this._carrierInitInProgress = false;
+    }
+
     private _end(): void {
         this._isAvailable = false;
 
@@ -673,6 +843,7 @@ export default class TunerDevice extends EventEmitter {
             }
         }
         this._tlvConverter = null;
+        this._cleanupCarrierLinks();
 
         if (this._closing === false && this._users.size !== 0) {
             log.warn("TunerDevice#%d respawning because request has not closed", this._index);

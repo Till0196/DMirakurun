@@ -326,6 +326,8 @@ export interface ConfigChannelsItem {
     serviceId?: number;
     /** TSMF (MPEG-TS Multi Frame) relative TS number config for CATV */
     tsmfRelTs?: number;
+    /** TSMF group_id for multi-carrier streams */
+    tsmfGroupId?: number;
     /**
      * passed to tuning command variables.
      * @example { "freq": 123456, "polarity": "H", "space": 6, "extra-args": "..." }

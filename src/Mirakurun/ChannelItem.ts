@@ -25,6 +25,7 @@ export default class ChannelItem {
     readonly type: apid.ChannelType;
     readonly channel: string;
     readonly tsmfRelTs: number;
+    readonly tsmfGroupId: number;
     readonly commandVars: apid.ConfigChannelsItem["commandVars"];
 
     constructor(config: apid.ConfigChannelsItem) {
@@ -32,6 +33,7 @@ export default class ChannelItem {
         this.type = config.type;
         this.channel = config.channel;
         this.tsmfRelTs = config.tsmfRelTs;
+        this.tsmfGroupId = config.tsmfGroupId;
         this.commandVars = config.commandVars;
     }
 

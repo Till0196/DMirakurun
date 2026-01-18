@@ -115,6 +115,10 @@ export class Channel {
                 log.error("invalid type of property `tsmfRelTs` in channel#%d (%s) configuration", i, channel.name);
                 return;
             }
+            if (channel.tsmfGroupId && typeof channel.tsmfGroupId !== "number") {
+                log.error("invalid type of property `tsmfGroupId` in channel#%d (%s) configuration", i, channel.name);
+                return;
+            }
 
             if (channel.commandVars && typeof channel.commandVars !== "object") {
                 log.error("invalid type of property `commandVars` in channel#%d (%s) configuration", i, channel.name);

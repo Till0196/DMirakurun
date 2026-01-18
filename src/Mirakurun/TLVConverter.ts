@@ -15,72 +15,134 @@ const AFC_WITH_ADAPTATION = 0x03;
 const TSMF_FRAME_TYPE_1 = 0x01;
 const TSMF_FRAME_TYPE_2 = 0x02;
 
+interface CarrierFrame {
+    framePosition: number;
+    numberOfFrames: number;
+    slots: Buffer[];
+    targetSlots: boolean[];
+}
+
+interface CarrierSuperframe {
+    numberOfFrames: number;
+    frames: CarrierFrame[];
+}
+
+interface PendingSuperframe {
+    numberOfFrames: number;
+    frames: Array<CarrierFrame | null>;
+    filled: number;
+    expectedPosition: number;
+}
+
+interface CarrierState {
+    carrierSequence: number;
+    numberOfCarriers: number;
+    superframes: CarrierSuperframe[];
+    pending?: PendingSuperframe;
+}
+
+interface SourceState {
+    sourceId: number;
+    carrierSequence?: number;
+    numberOfCarriers?: number;
+    packet: Buffer;
+    offset: number;
+    currentFrame?: CarrierFrame;
+}
+
+interface MultiCarrierOptions {
+    offsets?: number[];
+    tsmfRelTs?: number;
+    groupId?: number;
+}
+
+class CarrierInput extends stream.Writable {
+    private _combiner: TLVConverter;
+    private _sourceId: number;
+
+    constructor(combiner: TLVConverter, sourceId: number) {
+        super();
+        this._combiner = combiner;
+        this._sourceId = sourceId;
+    }
+
+    _write(chunk: any, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+        try {
+            this._combiner.writeFromSource(this._sourceId, chunk as Buffer);
+            callback();
+        } catch (err: any) {
+            this._combiner.emit("error", err);
+            callback(err);
+        }
+    }
+
+    _final(callback: (error?: Error | null) => void): void {
+        this._combiner.endSource(this._sourceId);
+        callback();
+    }
+}
+
 export default class TLVConverter extends EventEmitter {
     private _tunerIndex: number;
     private _output: Writable;
-
     private _buffer: Buffer[] = [];
-    private _packet = Buffer.allocUnsafeSlow(PACKET_SIZE).fill(0);
-    private _offset = -1;
 
-    private _processedPackets = 0;
-    private _tlvPackets = 0;
+    private _sources = new Map<number, SourceState>();
+    private _carrierStates = new Map<number, CarrierState>();
+    private _nextSourceId = 1;
+
+    private _numberOfCarriers = 0;
+    private _carrierInfoEmitted = false;
+
+    private _offsets: number[] | null = null;
+    private _offsetsPendingBySequence: Map<number, number> | null = null;
+    private _offsetsFromOptions?: number[];
+    private _targetRelStream: number | null;
+    private _expectedGroupId: number | null;
 
     private _closed = false;
     private _closing = false;
     private _sinkClosed = false;
     private _drainWaiting = false;
     private _ready = false;
-
-    // --- ヘッダ管理・選択 ---
-    private _headerLocked = false;
-    private _activeHeaderCRC = -1;
-    private _candidateHeaderCRC = -1;
-    private _candidateSeen = 0;
-
-    // TSMF関連
-    private _tsmfRelativeStreamNumber: number[] = [];
-    private _tsmfTsNumber = 1;
-    private _numberOfCarriers = 0;
-    private _carrierSequence = 0;
-
-    // スロット追跡
-    private _slotIndex = -1;
-    private _effectiveTargetStreamNumber = 0;
-
-    // CRC32計算用テーブル
     private _crcTable?: number[];
 
-    // ログ用前回スナップショット
-    private _lastLoggedHeaderCRC = -1;
-
-    constructor(tunerIndex: number, output: Writable | null, tsmfRelTs?: number) {
+    constructor(tunerIndex: number, output: Writable | null, options?: MultiCarrierOptions | number) {
         super();
         this._tunerIndex = tunerIndex;
         this._output = output;
-        this._tsmfTsNumber = typeof tsmfRelTs === "number" ? tsmfRelTs : 0;
+        if (typeof options === "number") {
+            this._offsetsFromOptions = undefined;
+            this._targetRelStream = options;
+            this._expectedGroupId = null;
+        } else {
+            this._offsetsFromOptions = options?.offsets;
+            this._targetRelStream = typeof options?.tsmfRelTs === "number" ? options.tsmfRelTs : null;
+            this._expectedGroupId = typeof options?.groupId === "number" ? options.groupId : null;
+        }
 
         if (this._output) {
             this._setupOutputHandlers();
         }
-
-        log.debug("TunerDevice#%d TLVConverter created", this._tunerIndex);
-    }
-
-    get closed(): boolean {
-        return this._closed;
     }
 
     get ready(): boolean {
         return this._ready;
     }
 
-    get carrierInfo(): { numberOfCarriers: number; carrierSequence: number } {
-        return { numberOfCarriers: this._numberOfCarriers, carrierSequence: this._carrierSequence };
+    get closed(): boolean {
+        return this._closed;
     }
 
-    get tsmfInfo(): { tsNumber: number; totalSlots: number } {
-        return { tsNumber: this._tsmfTsNumber, totalSlots: this._tsmfRelativeStreamNumber.length };
+    createInput(): stream.Writable {
+        const sourceId = this._nextSourceId++;
+        const state: SourceState = {
+            sourceId,
+            packet: Buffer.allocUnsafeSlow(PACKET_SIZE).fill(0),
+            offset: -1
+        };
+        this._sources.set(sourceId, state);
+        return new CarrierInput(this, sourceId);
     }
 
     setOutput(output: stream.Writable): void {
@@ -88,13 +150,15 @@ export default class TLVConverter extends EventEmitter {
         this._setupOutputHandlers();
     }
 
-    write(chunk: Buffer): void {
+    writeFromSource(sourceId: number, chunk: Buffer): void {
         if (this._closed || this._closing) {
             return;
         }
-        if (!this._output) {
-            // 出力先が設定されていない場合は処理を継続（バッファリングのみ）
-        } else if (this._output.destroyed || (this._output as any).writableEnded) {
+        const source = this._sources.get(sourceId);
+        if (!source) {
+            return;
+        }
+        if (this._output && (this._output.destroyed || (this._output as any).writableEnded)) {
             this._sinkClosed = true;
             this._close();
             return;
@@ -106,14 +170,14 @@ export default class TLVConverter extends EventEmitter {
         const length = chunk.length;
         const packets: Buffer[] = [];
 
-        if (this._offset > 0) {
-            const need = PACKET_SIZE - this._offset;
+        if (source.offset > 0) {
+            const need = PACKET_SIZE - source.offset;
             if (length >= need) {
                 const head = Buffer.concat([
-                    this._packet.subarray(0, this._offset),
+                    source.packet.subarray(0, source.offset),
                     chunk.subarray(0, need)
                 ]);
-                this._offset = 0;
+                source.offset = 0;
 
                 if (head[0] === TS_SYNC_BYTE) {
                     packets.push(head);
@@ -122,13 +186,13 @@ export default class TLVConverter extends EventEmitter {
                     if (p >= 0 && head.length - p >= PACKET_SIZE) {
                         packets.push(head.subarray(p, p + PACKET_SIZE));
                     } else {
-                        log.warn("TunerDevice#%d TS resync failed at chunk head", this._tunerIndex);
+                        log.warn("TunerDevice#%d TLVConverter TS resync failed at chunk head", this._tunerIndex);
                     }
                 }
                 offset = need;
             } else {
-                chunk.copy(this._packet, this._offset);
-                this._offset += length;
+                chunk.copy(source.packet, source.offset);
+                source.offset += length;
                 return;
             }
         }
@@ -143,18 +207,28 @@ export default class TLVConverter extends EventEmitter {
         }
 
         if (offset < length) {
-            chunk.copy(this._packet, 0, offset);
-            this._offset = length - offset;
+            chunk.copy(source.packet, 0, offset);
+            source.offset = length - offset;
         }
 
-        this._processPackets(packets);
+        this._processPackets(source, packets);
         this._flushBufferedOutput();
     }
 
-    end(): void {
-        if (!this._closed && !this._closing) {
-            this._close();
+    endSource(sourceId: number): void {
+        const source = this._sources.get(sourceId);
+        if (!source) {
+            return;
         }
+
+        if (source.currentFrame && source.currentFrame.slots.length > 0 && source.carrierSequence) {
+            const carrier = this._carrierStates.get(source.carrierSequence);
+            if (carrier) {
+                this._pushFrame(carrier, source.currentFrame);
+            }
+        }
+
+        this._sources.delete(sourceId);
     }
 
     close(): void {
@@ -176,12 +250,299 @@ export default class TLVConverter extends EventEmitter {
         this._output.once("close", this._close.bind(this));
     }
 
-    private _flushBufferedOutput(): void {
-        if (!this._buffer || this._buffer.length === 0 || this._sinkClosed || this._drainWaiting || !this._headerLocked) {
+    private _processPackets(source: SourceState, packets: Buffer[]): void {
+        for (const packet of packets) {
+            const pid = ((packet[1] & 0x1f) << 8) | packet[2];
+            if (pid === TSMF_PID) {
+                this._handleTSMFPacket(source, packet);
+                continue;
+            }
+
+            if (pid === TLV_PID && source.currentFrame && source.currentFrame.slots.length < SLOT_COUNT) {
+                source.currentFrame.slots.push(Buffer.from(packet));
+            }
+        }
+    }
+
+    private _handleTSMFPacket(source: SourceState, packet: Buffer): void {
+        const payload = this._extractTSMFPayload(packet);
+        if (!payload) {
             return;
         }
 
-        // 初回TLV出力時にreadyイベントを発行（outputの有無に関わらず）
+        const frameInfo = this._validateTSMFFrame(payload);
+        if (!frameInfo) {
+            return;
+        }
+        if (this._expectedGroupId !== null && frameInfo.groupId !== this._expectedGroupId) {
+            return;
+        }
+
+        const carrierState = this._getOrCreateCarrier(source, frameInfo);
+        if (!carrierState) {
+            return;
+        }
+
+        if (source.currentFrame && source.currentFrame.slots.length > 0) {
+            this._pushFrame(carrierState, source.currentFrame);
+        }
+
+        const relativeStreamNumbers = this._parseRelativeStreamNumbers(payload);
+        if (this._targetRelStream === null) {
+            this._targetRelStream = this._selectTargetStream(relativeStreamNumbers);
+            log.info("TunerDevice#%d TLVConverter selected stream %d", this._tunerIndex, this._targetRelStream);
+        }
+
+        const targetSlots = relativeStreamNumbers.map(value => {
+            if (this._targetRelStream === null) {
+                return true;
+            }
+            return value === this._targetRelStream;
+        });
+
+        source.currentFrame = {
+            framePosition: frameInfo.framePosition,
+            numberOfFrames: frameInfo.numberOfFrames,
+            slots: [],
+            targetSlots
+        };
+    }
+
+    private _getOrCreateCarrier(
+        source: SourceState,
+        frameInfo: {
+            numberOfFrames: number;
+            carriers: { numberOfCarriers: number; carrierSequence: number };
+        }
+    ): CarrierState | null {
+        const { numberOfCarriers, carrierSequence } = frameInfo.carriers;
+
+        if (numberOfCarriers < 1 || carrierSequence < 1 || carrierSequence > numberOfCarriers) {
+            return null;
+        }
+
+        if (this._numberOfCarriers === 0) {
+            this._numberOfCarriers = numberOfCarriers;
+        } else if (this._numberOfCarriers !== numberOfCarriers) {
+            log.warn(
+                "TunerDevice#%d TLVConverter carrier count mismatch: got=%d expected=%d",
+                this._tunerIndex, numberOfCarriers, this._numberOfCarriers
+            );
+        }
+
+        if (source.carrierSequence && source.carrierSequence !== carrierSequence) {
+            log.warn(
+                "TunerDevice#%d TLVConverter source carrier sequence changed %d -> %d",
+                this._tunerIndex, source.carrierSequence, carrierSequence
+            );
+        }
+
+        source.carrierSequence = carrierSequence;
+        source.numberOfCarriers = numberOfCarriers;
+
+        let carrier = this._carrierStates.get(carrierSequence);
+        if (!carrier) {
+            carrier = {
+                carrierSequence,
+                numberOfCarriers,
+                superframes: []
+            };
+            this._carrierStates.set(carrierSequence, carrier);
+        }
+
+        if (!this._carrierInfoEmitted) {
+            this._carrierInfoEmitted = true;
+            process.nextTick(() => {
+                this.emit("carrierInfo", { numberOfCarriers, carrierSequence });
+                if (numberOfCarriers > 1) {
+                    this.emit("needCarriers", numberOfCarriers);
+                }
+            });
+        }
+
+        return carrier;
+    }
+
+    private _pushFrame(carrier: CarrierState, frame: CarrierFrame): void {
+        const n = frame.numberOfFrames;
+        if (n <= 0 || n > 4) {
+            return;
+        }
+
+        if (!carrier.pending || frame.framePosition === 0 || carrier.pending.numberOfFrames !== n) {
+            if (frame.framePosition !== 0) {
+                return;
+            }
+            carrier.pending = {
+                numberOfFrames: n,
+                frames: new Array(n).fill(null),
+                filled: 0,
+                expectedPosition: 0
+            };
+        }
+
+        if (!carrier.pending) {
+            return;
+        }
+
+        if (frame.framePosition !== carrier.pending.expectedPosition) {
+            if (frame.framePosition === 0) {
+                carrier.pending = {
+                    numberOfFrames: n,
+                    frames: new Array(n).fill(null),
+                    filled: 0,
+                    expectedPosition: 0
+                };
+            } else {
+                carrier.pending = undefined;
+                return;
+            }
+        }
+
+        if (!carrier.pending.frames[frame.framePosition]) {
+            carrier.pending.frames[frame.framePosition] = frame;
+            carrier.pending.filled += 1;
+        }
+        carrier.pending.expectedPosition += 1;
+
+        if (carrier.pending.filled === carrier.pending.numberOfFrames) {
+            this._maybeApplyOffsets();
+            if (this._offsetsPendingBySequence) {
+                const pending = this._offsetsPendingBySequence.get(carrier.carrierSequence) || 0;
+                if (pending > 0) {
+                    this._offsetsPendingBySequence.set(carrier.carrierSequence, pending - 1);
+                    carrier.pending = undefined;
+                    return;
+                }
+            }
+            carrier.superframes.push({
+                numberOfFrames: carrier.pending.numberOfFrames,
+                frames: carrier.pending.frames as CarrierFrame[]
+            });
+            carrier.pending = undefined;
+            this._outputAvailableSuperframes();
+        }
+    }
+
+    private _maybeApplyOffsets(): void {
+        if (this._offsets) {
+            return;
+        }
+        if (this._carrierStates.size === 0 || this._numberOfCarriers === 0) {
+            return;
+        }
+        if (this._carrierStates.size < this._numberOfCarriers) {
+            return;
+        }
+
+        if (this._offsetsFromOptions && this._offsetsFromOptions.length >= this._numberOfCarriers) {
+            this._offsets = this._offsetsFromOptions.slice(0, this._numberOfCarriers);
+        } else {
+            this._offsets = new Array(this._numberOfCarriers).fill(0);
+        }
+        const carriers = this._getCarriersSorted();
+        this._offsetsPendingBySequence = new Map<number, number>();
+        carriers.forEach((carrier, index) => {
+            const pending = this._offsets ? this._offsets[index] || 0 : 0;
+            this._offsetsPendingBySequence!.set(carrier.carrierSequence, pending);
+        });
+    }
+
+    private _outputAvailableSuperframes(): void {
+        if (!this._offsets || this._carrierStates.size === 0) {
+            return;
+        }
+
+        const carriers = this._getCarriersSorted();
+        if (this._offsetsPendingBySequence) {
+            for (const carrier of carriers) {
+                const pending = this._offsetsPendingBySequence.get(carrier.carrierSequence) || 0;
+                if (pending > 0) {
+                    return;
+                }
+            }
+            this._offsetsPendingBySequence = null;
+        }
+
+        const minAvailable = Math.min(...carriers.map(c => c.superframes.length));
+        if (minAvailable <= 0) {
+            return;
+        }
+
+        for (let i = 0; i < minAvailable; i++) {
+            this._outputSuperframe(carriers.map(c => c.superframes[i]));
+        }
+
+        carriers.forEach(carrier => {
+            carrier.superframes.splice(0, minAvailable);
+        });
+
+        this._flushBufferedOutput();
+    }
+
+    private _outputSuperframe(superframes: CarrierSuperframe[]): void {
+        for (let sub = 0; sub < 53; sub++) {
+            for (let sp = 0; sp < 4; sp++) {
+                for (let c = 0; c < superframes.length; c++) {
+                    const sf = superframes[c];
+                    const n = sf.numberOfFrames;
+                    if (sp >= n) {
+                        continue;
+                    }
+                    const slotIndex = sub * n + sp;
+                    const framePosition = Math.floor(slotIndex / 53);
+                    const slotInFrame = slotIndex % 53;
+                    if (framePosition < 0 || framePosition >= n) {
+                        continue;
+                    }
+                    if (slotInFrame === 0) {
+                        continue;
+                    }
+
+                    const frame = sf.frames[framePosition];
+                    const packetSlot = slotInFrame - 1;
+                    if (!frame.targetSlots[packetSlot]) {
+                        continue;
+                    }
+                    const packet = frame.slots[packetSlot];
+                    if (packet) {
+                        this._handleTLVPacket(packet);
+                    }
+                }
+            }
+        }
+    }
+
+    private _getCarriersSorted(): CarrierState[] {
+        return Array.from(this._carrierStates.values()).sort((a, b) => a.carrierSequence - b.carrierSequence);
+    }
+
+
+
+    private _handleTLVPacket(packet: Buffer): void {
+        const pusi = (packet[1] & 0x40) !== 0;
+
+        if (pusi) {
+            if (this._buffer.length > 0) {
+                this._flushBufferedOutput();
+            }
+            const tlvChunk = packet.subarray(4);
+            if (tlvChunk.length > 0) {
+                this._buffer.push(tlvChunk);
+            }
+        } else {
+            const tlvChunk = packet.subarray(3);
+            if (tlvChunk.length > 0) {
+                this._buffer.push(tlvChunk);
+            }
+        }
+    }
+
+    private _flushBufferedOutput(): void {
+        if (!this._buffer || this._buffer.length === 0 || this._sinkClosed || this._drainWaiting) {
+            return;
+        }
+
         if (!this._ready) {
             this._ready = true;
             log.debug("TunerDevice#%d TLVConverter: first TLV packet ready, emitting ready event", this._tunerIndex);
@@ -190,7 +551,6 @@ export default class TLVConverter extends EventEmitter {
             });
         }
 
-        // outputが設定されていない場合は、readyイベントのみ発行してreturn
         if (!this._output) {
             return;
         }
@@ -200,13 +560,11 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        // 完全な分割TLVパケットを出力
         const outputData = Buffer.concat(this._buffer);
         this._buffer.length = 0;
 
         try {
             const writeSuccess = this._output.write(outputData);
-
             if (!writeSuccess) {
                 this._drainWaiting = true;
                 this._output.once("drain", () => {
@@ -223,32 +581,47 @@ export default class TLVConverter extends EventEmitter {
         }
     }
 
-    private _processPackets(packets: Buffer[]): void {
-        for (const packet of packets) {
-            this._processedPackets++;
+    private _close(): void {
+        if (this._closed || this._closing) {
+            return;
+        }
+        this._closing = true;
+        this._sinkClosed = true;
 
-            const pid = ((packet[1] & 0x1f) << 8) | packet[2];
-
-            if (pid === TSMF_PID) {
-                this._handleTSMFPacket(packet);
-            }
-
-            if (this._headerLocked && this._slotIndex >= 0) {
-                const totalSlots = this._tsmfRelativeStreamNumber.length || SLOT_COUNT;
-                const target = this._effectiveTargetStreamNumber;
-                const curSlot = this._slotIndex % totalSlots;
-                const streamInSlot = this._tsmfRelativeStreamNumber[curSlot] || 0;
-
-                if (pid === TLV_PID && target > 0 && streamInSlot === target) {
-                    this._handleTLVPacket(packet);
-                }
+        if (this._buffer && this._buffer.length > 0 && this._output && !this._output.destroyed) {
+            try {
+                const outputData = Buffer.concat(this._buffer);
+                this._output.write(outputData);
+            } catch (e) {
+                log.debug("TunerDevice#%d TLVConverter: error writing remaining buffer: %s", this._tunerIndex, (e as Error).message);
             }
         }
+
+        setImmediate(() => {
+            this._buffer = undefined as any;
+        });
+
+        if (this._output && !this._output.destroyed) {
+            try {
+                if (!(this._output as any).writableEnded) {
+                    this._output.end();
+                }
+            } catch (e) {
+                const err = e as any;
+                log.debug("TunerDevice#%d TLVConverter output end error: %s", this._tunerIndex, err?.message ?? String(err));
+            }
+        }
+        this._output = null as any;
+
+        this._closed = true;
+        this._closing = false;
+
+        process.nextTick(() => {
+            this.emit("close");
+            this.removeAllListeners();
+        });
     }
 
-    /**
-     * TSMFパケットからペイロードを抽出し、基本的な検証を行う
-     */
     private _extractTSMFPayload(packet: Buffer): Buffer | null {
         if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
             return null;
@@ -275,13 +648,43 @@ export default class TLVConverter extends EventEmitter {
         return packet.subarray(base, base + 184);
     }
 
-    /**
-     * TSMFフレームの同期とCRC検証を行う
-     */
+    private _parseRelativeStreamNumbers(payload: Buffer): number[] {
+        const relative = [];
+        for (let i = 0; i < SLOT_COUNT; i++) {
+            const b = payload[69 + (i >> 1)];
+            if ((i & 1) === 0) {
+                relative.push((b >> 4) & 0x0f);
+            } else {
+                relative.push(b & 0x0f);
+            }
+        }
+        return relative;
+    }
+
+    private _selectTargetStream(relative: number[]): number {
+        const counts = new Array(16).fill(0);
+        for (const value of relative) {
+            if (value >= 1 && value <= 15) {
+                counts[value] += 1;
+            }
+        }
+
+        let best = 0;
+        let bestCount = 0;
+        for (let i = 1; i <= 15; i++) {
+            if (counts[i] > bestCount) {
+                best = i;
+                bestCount = counts[i];
+            }
+        }
+        return best;
+    }
+
     private _validateTSMFFrame(payload: Buffer): {
         frameType: number;
         headerCRC: number;
         framePosition: number;
+        numberOfFrames: number;
         carriers: { numberOfCarriers: number; carrierSequence: number };
         groupId: number;
     } | null {
@@ -305,337 +708,23 @@ export default class TLVConverter extends EventEmitter {
         const numberOfCarriers = payload[124];
         const carrierSequence = payload[125];
         if (numberOfCarriers < 1 || numberOfCarriers > 16 || carrierSequence < 1 || carrierSequence > numberOfCarriers) {
-            if (this._lastLoggedHeaderCRC !== headerCRC) {
-                log.warn(
-                    "TunerDevice#%d Invalid carrier info: groupId=%d, carriers=%d, sequence=%d, skipping TSMF parsing",
-                    this._tunerIndex,
-                    groupId,
-                    numberOfCarriers,
-                    carrierSequence
-                );
-                this._lastLoggedHeaderCRC = headerCRC;
-            }
             return null;
         }
 
         const frameRaw = payload[126];
+        const numberOfFrames = (frameRaw >> 4) & 0x0f;
         const framePosition = frameRaw & 0x0f;
 
         return {
             frameType,
             headerCRC,
             framePosition,
+            numberOfFrames,
             carriers: { numberOfCarriers, carrierSequence },
             groupId
         };
     }
 
-    /**
-     * TSMFヘッダのロック/切替処理を行う
-     */
-    private _processTSMFHeader(
-        payload: Buffer,
-        frameInfo: {
-            frameType: number;
-            headerCRC: number;
-            framePosition: number;
-            carriers: { numberOfCarriers: number; carrierSequence: number };
-            groupId: number;
-        }
-    ): void {
-        const { frameType, headerCRC, framePosition, carriers, groupId } = frameInfo;
-        const atFrameStart = framePosition === 0;
-
-        if (!this._headerLocked) {
-            if (!atFrameStart) {
-                return;
-            }
-            if (headerCRC !== this._candidateHeaderCRC) {
-                this._candidateHeaderCRC = headerCRC;
-                this._candidateSeen = 1;
-                return;
-            }
-
-            this._candidateSeen += 1;
-            if (this._candidateSeen >= 2) {
-                this._lockTSMFHeader(payload, headerCRC, frameType, carriers, groupId);
-            }
-        } else {
-            if (headerCRC === this._activeHeaderCRC) {
-                this._slotIndex = 0;
-                return;
-            }
-            if (atFrameStart) {
-                if (headerCRC !== this._candidateHeaderCRC) {
-                    this._candidateHeaderCRC = headerCRC;
-                    this._candidateSeen = 1;
-                    return;
-                }
-
-                this._candidateSeen += 1;
-                if (this._candidateSeen >= 2) {
-                    this._lockTSMFHeader(payload, headerCRC, frameType, carriers, groupId);
-                }
-            }
-        }
-    }
-
-    /**
-     * TSMFヘッダをロック/切替する際の共通処理
-     */
-    private _lockTSMFHeader(
-        payload: Buffer,
-        headerCRC: number,
-        frameType: number,
-        carriers: { numberOfCarriers: number; carrierSequence: number },
-        groupId: number
-    ): void {
-        log.debug("TunerDevice#%d TLVConverter: locking TSMF header, CRC=0x%s, frameType=%d, carriers=%d/%d, groupId=%d",
-            this._tunerIndex, headerCRC.toString(16), frameType, carriers.carrierSequence, carriers.numberOfCarriers, groupId);
-        this._applyTSMFHeader(payload, frameType, carriers.numberOfCarriers, carriers.carrierSequence, headerCRC, groupId);
-    }
-
-    /**
-     * TSMF パケットを処理し、ヘッダをロック/切替、フレーム先頭で位相を同期する。
-     */
-    private _handleTSMFPacket(packet: Buffer): void {
-        const payload = this._extractTSMFPayload(packet);
-        if (!payload) {
-            return;
-        }
-
-        const frameInfo = this._validateTSMFFrame(payload);
-        if (!frameInfo) {
-            return;
-        }
-
-        this._processTSMFHeader(payload, frameInfo);
-    }
-
-    /**
-     * ロック/切替時にだけ呼ばれる。relative_stream_number の展開、選択、ログ、状態更新まで。
-     */
-    private _applyTSMFHeader(
-        payload: Buffer,
-        _frameType: number,
-        numberOfCarriers: number,
-        carrierSequence: number,
-        headerCRCField: number,
-        groupId: number
-    ): void {
-        // relative_stream_number (52 slots × 4bit) @ payload[69..94]
-        this._tsmfRelativeStreamNumber = [];
-        for (let i = 0; i < SLOT_COUNT; i++) {
-            const b = payload[69 + (i >> 1)];
-            if ((i & 1) === 0) {
-                this._tsmfRelativeStreamNumber.push((b >> 4) & 0x0f);
-            } else {
-                this._tsmfRelativeStreamNumber.push(b & 0x0f);
-            }
-        }
-
-        // stream_id @ payload[5 + (i * 4)] (16bit each, 15 streams)
-        const streamIds: number[] = [];
-        for (let i = 0; i < 15; i++) {
-            const baseIndex = 5 + (i * 4);
-            const streamId = (payload[baseIndex] << 8) | payload[baseIndex + 1];
-            streamIds.push(streamId);
-        }
-
-        // stream_type bits (15bit) @ payload[121], [122]  0=TLV,1=TS
-        const streamTypeBits = (payload[121] << 7) | (payload[122] >> 1);
-
-        const counts = new Array(16).fill(0);
-        for (const s of this._tsmfRelativeStreamNumber) {
-            if (s >= 1 && s <= 15) {
-                counts[s] += 1;
-            }
-        }
-
-        let best = 0;
-        let bestOcc = 0;
-
-        for (let s = 1; s <= 15; s++) {
-            const typeBit = (streamTypeBits >> (14 - (s - 1))) & 0x01; // 0=TLV,1=TS
-            if (typeBit === 0 && counts[s] > bestOcc) {
-                best = s;
-                bestOcc = counts[s];
-            }
-        }
-        if (best === 0) {
-            for (let s = 1; s <= 15; s++) {
-                if (counts[s] > bestOcc) {
-                    best = s;
-                    bestOcc = counts[s];
-                }
-            }
-        }
-
-        if (this._tsmfTsNumber >= 1 && this._tsmfTsNumber <= 15) {
-            const manualOcc = counts[this._tsmfTsNumber] || 0;
-            const manualTypeBit = (streamTypeBits >> (14 - (this._tsmfTsNumber - 1))) & 0x01;
-            if (manualTypeBit === 1 && manualOcc > 0) {
-                log.warn(
-                    "TunerDevice#%d Manual stream %d is TS format (typeBit=1) but has %d slots. Processing as TLV anyway.",
-                    this._tunerIndex,
-                    this._tsmfTsNumber,
-                    manualOcc
-                );
-                best = this._tsmfTsNumber;
-            } else if (manualTypeBit === 1 && manualOcc === 0) {
-                log.warn(
-                    "TunerDevice#%d Manual stream %d is TS format with no slots. No output will be produced.",
-                    this._tunerIndex,
-                    this._tsmfTsNumber
-                );
-            } else {
-                best = this._tsmfTsNumber;
-            }
-        }
-
-        this._tsmfTsNumber = best;
-        this._effectiveTargetStreamNumber = best;
-
-        if (this._lastLoggedHeaderCRC !== headerCRCField) {
-            const slotStats = new Map<number, number>();
-            for (const v of this._tsmfRelativeStreamNumber) {
-                slotStats.set(v, (slotStats.get(v) || 0) + 1);
-            }
-
-            log.debug("TunerDevice#%d Slot detection successful: validSlots=%d", this._tunerIndex, this._tsmfRelativeStreamNumber.length);
-
-            if (slotStats.size === 1) {
-                const [stream, count] = Array.from(slotStats.entries())[0];
-                log.debug("TunerDevice#%d Single stream %d occupies all %d slots", this._tunerIndex, stream, count);
-            } else {
-                const statText = Array.from(slotStats.entries()).map(([s, c]) => `stream${s}:${c}`).join(", ");
-                log.debug("TunerDevice#%d Slot statistics: %s", this._tunerIndex, statText);
-            }
-
-            log.debug("TunerDevice#%d Full slot contents: %s", this._tunerIndex, this._tsmfRelativeStreamNumber.join(","));
-
-            const validStreamIds = streamIds.slice(0, 15);
-            const streamIdText = validStreamIds.map((id, idx) => `stream${idx + 1}:0x${id.toString(16).padStart(2, "0")}`).join(", ");
-            log.debug("TunerDevice#%d StreamIDs: %s", this._tunerIndex, streamIdText);
-
-            if (best > 0) {
-                const targetSlots = [];
-                for (let i = 0; i < this._tsmfRelativeStreamNumber.length; i++) {
-                    if (this._tsmfRelativeStreamNumber[i] === best) {
-                        targetSlots.push(i);
-                    }
-                }
-                if (targetSlots.length === 0) {
-                    log.warn("TunerDevice#%d Selected stream %d not found in slot mapping. TLV will be filtered out.", this._tunerIndex, best);
-                } else {
-                    const selectedStreamId = best <= validStreamIds.length ? validStreamIds[best - 1] : 0;
-                    log.debug("TunerDevice#%d Selected stream %d (StreamID:0x%s) slots: %s",
-                        this._tunerIndex, best, selectedStreamId.toString(16).padStart(2, "0"), targetSlots.join(","));
-                }
-            } else {
-                log.warn("TunerDevice#%d No valid target stream could be selected from TSMF header. TLV will be filtered out.", this._tunerIndex);
-            }
-
-            const selectedStreamId = best > 0 && best <= streamIds.length ? streamIds[best - 1] : 0;
-            log.info(
-                "TunerDevice#%d TSMF header applied. groupId=%d carriers=%d/%d tsmfRelTs=%d StreamID=0x%s",
-                this._tunerIndex,
-                groupId,
-                carrierSequence,
-                numberOfCarriers,
-                this._tsmfTsNumber,
-                selectedStreamId.toString(16).padStart(4, "0")
-            );
-            this._lastLoggedHeaderCRC = headerCRCField;
-        }
-
-        // 状態更新（ロック/切替確定）
-        this._numberOfCarriers = numberOfCarriers;
-        this._carrierSequence = carrierSequence;
-        this._activeHeaderCRC = headerCRCField;
-        this._headerLocked = true;
-        this._slotIndex = 0;
-
-        // 候補リセット
-        this._candidateHeaderCRC = -1;
-        this._candidateSeen = 0;
-    }
-
-    private _handleTLVPacket(packet: Buffer): void {
-        this._tlvPackets++;
-        const pusi = (packet[1] & 0x40) !== 0; // TLV packet start indicator
-
-        if (pusi) {
-            // 新しい分割TLVパケットの開始
-            // 前の分割TLVパケットがあれば完成として出力
-            if (this._buffer.length > 0) {
-                this._flushBufferedOutput();
-            }
-
-            // 新しい分割TLVパケットの開始部分を追加
-            const tlvChunk = packet.subarray(4); // PUSIありの場合は4バイト目から
-            if (tlvChunk.length > 0) {
-                this._buffer.push(tlvChunk);
-            }
-        } else {
-            // 分割TLVパケットの継続部分
-            const tlvChunk = packet.subarray(3); // PUSIなしの場合は3バイト目から
-            if (tlvChunk.length > 0) {
-                this._buffer.push(tlvChunk);
-            }
-        }
-    }
-
-    private _close(): void {
-        if (this._closed || this._closing) {
-            return;
-        }
-        log.debug("TunerDevice#%d TLVConverter _close() called", this._tunerIndex);
-        this._closing = true;
-        this._sinkClosed = true;
-
-        // 残っている分割TLVパケットがあれば出力
-        if (this._buffer && this._buffer.length > 0 && this._output && !this._output.destroyed) {
-            log.debug("TunerDevice#%d TLVConverter: flushing remaining buffer on close", this._tunerIndex);
-            try {
-                const outputData = Buffer.concat(this._buffer);
-                this._output.write(outputData);
-            } catch (e) {
-                log.debug("TunerDevice#%d TLVConverter: error writing remaining buffer: %s", this._tunerIndex, (e as Error).message);
-            }
-        }
-
-        setImmediate(() => {
-            this._packet = undefined as any;
-            this._buffer = undefined as any;
-        });
-
-        if (this._output && !this._output.destroyed) {
-            try {
-                if (!(this._output as any).writableEnded) {
-                    this._output.end();
-                }
-            } catch (e) {
-                const err = e as any;
-                log.debug("TunerDevice#%d TLVConverter output end error: %s", this._tunerIndex, err?.message ?? String(err));
-            }
-        }
-        this._output = null as any;
-
-        this._closed = true;
-        this._closing = false;
-
-        log.debug("TunerDevice#%d TLVConverter closed", this._tunerIndex);
-
-        process.nextTick(() => {
-            this.emit("close");
-            this.removeAllListeners();
-        });
-    }
-
-    /**
-     * CRC-32 計算メソッド (MPEG-2/DVB準拠) - TSMFヘッダ184Bの残差0チェック用
-     */
     private _calculateCRC32(data: Buffer): number {
         if (!this._crcTable) {
             this._crcTable = new Array(256);
