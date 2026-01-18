@@ -538,7 +538,10 @@ export default class TunerDevice extends EventEmitter {
             }
         }
 
-        this._process.once("exit", () => this._exited = true);
+        this._process.once("exit", () => {
+            this._exited = true;
+            this._stopMmtsDecoder();
+        });
 
         this._process.once("error", (err) => {
             log.fatal("TunerDevice#%d process error `%s` (pid=%d)", this._index, err.name, this._process.pid);
@@ -560,6 +563,7 @@ export default class TunerDevice extends EventEmitter {
                 this._index, code, signal, this._process.pid
             );
 
+            this._stopMmtsDecoder();
             this._end();
             setTimeout(this._release.bind(this), this._config.dvbDevicePath ? 1000 : 100);
         });
@@ -617,7 +621,7 @@ export default class TunerDevice extends EventEmitter {
             const hasMmts = !!this._mmtsDecoderProcess?.pid;
 
             if (hasMmts) {
-                this._mmtsDecoderProcess?.kill("SIGKILL");
+                this._stopMmtsDecoder();
                 this._process?.kill("SIGKILL");
                 return;
             }
@@ -648,6 +652,7 @@ export default class TunerDevice extends EventEmitter {
 
         this._command = null;
         this._process = null;
+        this._stopMmtsDecoder();
         this._mmtsDecoderProcess = null;
         this._stream = null;
         if (this._tlvConverter) {
@@ -687,5 +692,26 @@ export default class TunerDevice extends EventEmitter {
 
     private _updated(): void {
         Event.emit("tuner", "update", this.toJSON());
+    }
+
+    private _stopMmtsDecoder(): void {
+        const proc = this._mmtsDecoderProcess;
+        if (!proc || !proc.pid) {
+            return;
+        }
+
+        log.debug("TunerDevice#%d stopping mmtsDecoder (pid=%d)", this._index, proc.pid);
+
+        try {
+            proc.stdin?.destroy();
+        } catch (e) {
+            // ignore
+        }
+
+        try {
+            proc.kill("SIGKILL");
+        } catch (e) {
+            // ignore
+        }
     }
 }
