@@ -986,6 +986,9 @@ export default class TLVConverter extends EventEmitter {
         }
 
         if (!this._ready) {
+            if (this._offsets && !this._offsetsApplied) {
+                return;
+            }
             this._ready = true;
             log.debug("TunerDevice#%d TLVConverter: first TLV packet ready, emitting ready event", this._tunerIndex);
             process.nextTick(() => {
