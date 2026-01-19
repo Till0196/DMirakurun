@@ -986,7 +986,11 @@ export default class TLVConverter extends EventEmitter {
         }
 
         if (!this._ready) {
-            if (this._offsets && !this._offsetsApplied) {
+            if (this._numberOfCarriers > 1) {
+                if (!this._offsets || !this._offsetsApplied) {
+                    return;
+                }
+            } else if (this._offsets && !this._offsetsApplied) {
                 return;
             }
             this._ready = true;
