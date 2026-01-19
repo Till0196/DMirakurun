@@ -105,6 +105,8 @@ export default class TLVConverter extends EventEmitter {
     private _expectedGroupId: number | null;
     private _freezeHeader = false;
     private _offsetsApplied = false;
+    private _readySuperframes = 0;
+    private _loggedOffsetsBeforeReady = false;
 
     private _closed = false;
     private _closing = false;
@@ -907,6 +909,7 @@ export default class TLVConverter extends EventEmitter {
 
         for (let i = 0; i < minAvailable; i++) {
             this._outputSuperframe(carriers.map(c => c.superframes[i]));
+            this._readySuperframes += 1;
         }
 
         carriers.forEach(carrier => {
@@ -990,8 +993,19 @@ export default class TLVConverter extends EventEmitter {
                 if (!this._offsets || !this._offsetsApplied) {
                     return;
                 }
+                if (this._readySuperframes < 10) {
+                    return;
+                }
             } else if (this._offsets && !this._offsetsApplied) {
                 return;
+            }
+            if (this._offsets && !this._loggedOffsetsBeforeReady) {
+                log.info(
+                    "TunerDevice#%d TLVConverter ready offsets: %s",
+                    this._tunerIndex,
+                    this._offsets.join(",")
+                );
+                this._loggedOffsetsBeforeReady = true;
             }
             this._ready = true;
             log.debug("TunerDevice#%d TLVConverter: first TLV packet ready, emitting ready event", this._tunerIndex);
