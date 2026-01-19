@@ -145,6 +145,10 @@ export default class TLVConverter extends EventEmitter {
         return this._ready;
     }
 
+    get closed(): boolean {
+        return this._closed;
+    }
+
     getDebugState(): {
         ready: boolean;
         readySuperframes: number;
@@ -173,10 +177,6 @@ export default class TLVConverter extends EventEmitter {
             closing: this._closing,
             closed: this._closed
         };
-    }
-
-    get closed(): boolean {
-        return this._closed;
     }
 
     createInput(): stream.Writable {
