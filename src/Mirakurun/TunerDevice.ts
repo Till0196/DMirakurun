@@ -332,7 +332,6 @@ export default class TunerDevice extends EventEmitter {
                     const primaryInput = this._tlvConverter.createInput();
 
                     this._tlvConverter.once("needCarriers", (count: number) => {
-                        log.info("TunerDevice#%d needCarriers event received: count=%d, useGroupCombine=%s", this._index, count, useGroupCombine);
                         if (useGroupCombine && count === 3) {
                             if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
                                 log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
@@ -340,8 +339,6 @@ export default class TunerDevice extends EventEmitter {
                             }
                             log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
                             this._startAdditionalCarriers(ch, this._tlvConverter as TLVConverter).catch(log.error);
-                        } else {
-                            log.info("TunerDevice#%d skipping additional carriers: useGroupCombine=%s, count=%d (expected 3)", this._index, useGroupCombine, count);
                         }
                     });
 
@@ -476,7 +473,6 @@ export default class TunerDevice extends EventEmitter {
                     const primaryInput = this._tlvConverter.createInput();
 
                     this._tlvConverter.once("needCarriers", (count: number) => {
-                        log.info("TunerDevice#%d needCarriers event received: count=%d, useGroupCombine=%s", this._index, count, useGroupCombine);
                         if (useGroupCombine && count === 3) {
                             if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
                                 log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
@@ -484,8 +480,6 @@ export default class TunerDevice extends EventEmitter {
                             }
                             log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
                             this._startAdditionalCarriers(ch, this._tlvConverter as TLVConverter).catch(log.error);
-                        } else {
-                            log.info("TunerDevice#%d skipping additional carriers: useGroupCombine=%s, count=%d (expected 3)", this._index, useGroupCombine, count);
                         }
                     });
 
@@ -649,10 +643,7 @@ export default class TunerDevice extends EventEmitter {
     }
 
     private async _startAdditionalCarriers(ch: ChannelItem, combiner: TLVConverter): Promise<void> {
-        log.info("TunerDevice#%d _startAdditionalCarriers called for channel=%s groupId=%d", this._index, ch.channel, ch.tsmfGroupId);
-
         if (this._carrierInitInProgress || this._carrierLinks.length > 0) {
-            log.info("TunerDevice#%d _startAdditionalCarriers: already in progress or links exist", this._index);
             return;
         }
 
@@ -662,7 +653,6 @@ export default class TunerDevice extends EventEmitter {
         }
 
         if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-            log.warn("TunerDevice#%d _startAdditionalCarriers: tsmfGroupId is null/undefined", this._index);
             return;
         }
 
@@ -673,20 +663,11 @@ export default class TunerDevice extends EventEmitter {
                 return;
             }
 
-            log.info("TunerDevice#%d searching for channels with groupId=%d (excluding channel=%s)", this._index, ch.tsmfGroupId, ch.channel);
-            const allBS4KChannels = _.channel.items.filter(item => item.type === "BS4K");
-            log.info("TunerDevice#%d total BS4K channels: %d", this._index, allBS4KChannels.length);
-            for (const item of allBS4KChannels) {
-                log.debug("TunerDevice#%d   channel=%s groupId=%s", this._index, item.channel, item.tsmfGroupId);
-            }
-
             const groupChannels = _.channel.items.filter(item =>
                 item.type === "BS4K" &&
                 item.tsmfGroupId === ch.tsmfGroupId &&
                 item.channel !== ch.channel
             );
-
-            log.info("TunerDevice#%d found %d channels in same group", this._index, groupChannels.length);
 
             if (groupChannels.length < 2) {
                 log.warn(
@@ -698,15 +679,6 @@ export default class TunerDevice extends EventEmitter {
                 return;
             }
 
-            log.info("TunerDevice#%d searching for free BS4K tuners", this._index);
-            const allDevices = _.tuner.devices;
-            log.info("TunerDevice#%d total tuner devices: %d", this._index, allDevices.length);
-            for (const device of allDevices) {
-                const d = _.tuner.get(device.index);
-                log.debug("TunerDevice#%d   tuner#%d: isFree=%s isRemote=%s types=%s",
-                    this._index, device.index, d?.isFree, d?.isRemote, d?.config.types.join(","));
-            }
-
             const candidates = _.tuner.devices
                 .map(device => _.tuner.get(device.index))
                 .filter(device =>
@@ -716,8 +688,6 @@ export default class TunerDevice extends EventEmitter {
                     !device.isRemote &&
                     device.config.types.includes("BS4K")
                 ) as TunerDevice[];
-
-            log.info("TunerDevice#%d found %d free BS4K tuner candidates", this._index, candidates.length);
 
             if (candidates.length < 2) {
                 log.warn("TunerDevice#%d not enough free BS4K tuners for multi-carrier (need=2, available=%d)", this._index, candidates.length);
@@ -737,6 +707,7 @@ export default class TunerDevice extends EventEmitter {
                 const device = selected[i];
                 const channel = selectedChannels[i];
                 const input = combiner.createInput();
+                // Use raw stream instead of TSFilter to pass TSMF/TLV packets (PID=0x2f,0x2d) unfiltered
                 const rawStream = new stream.PassThrough();
                 const tsFilter = rawStream as unknown as TSFilter;
                 const user: User = {
@@ -745,7 +716,6 @@ export default class TunerDevice extends EventEmitter {
                     disableDecoder: true
                 };
 
-                log.info("TunerDevice#%d starting carrier stream on tuner#%d for channel=%s", this._index, device.index, channel.channel);
                 await device.startStream(user, tsFilter, channel, { suppressGroupCombine: true });
 
                 rawStream.on("data", (chunk) => {
@@ -765,10 +735,9 @@ export default class TunerDevice extends EventEmitter {
                 });
 
                 this._carrierLinks.push({ device, user, stream: tsFilter, output: rawStream, input });
-                log.info("TunerDevice#%d carrier link established for tuner#%d", this._index, device.index);
             }
 
-            log.info("TunerDevice#%d all additional carriers started successfully", this._index);
+            log.info("TunerDevice#%d additional carriers started", this._index);
         } finally {
             this._carrierInitInProgress = false;
         }

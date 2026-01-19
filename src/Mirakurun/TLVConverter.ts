@@ -8,12 +8,13 @@ const TLV_PID = 0x2d;
 const TSMF_PID = 0x2f;
 const SLOT_COUNT = 52 as const;
 const TS_SYNC_BYTE = 0x47;
+// TSMF sync patterns (ARIB STD-B32)
+// Calculated as ((AFL << 8) | first_AF_byte) & 0x1fff
+// AFL=0xfa -> 0x1a86, AFL=0xe5 -> 0x0579
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
-const AFC_NO_PAYLOAD = 0x01;
+const AFC_ADAPTATION_ONLY = 0x01;
 const AFC_WITH_ADAPTATION = 0x03;
-const TSMF_FRAME_TYPE_1 = 0x01;
-const TSMF_FRAME_TYPE_2 = 0x02;
 
 interface CarrierFrame {
     framePosition: number;
@@ -624,7 +625,12 @@ export default class TLVConverter extends EventEmitter {
         }
 
         const afc = (packet[3] & 0x30) >> 4;
-        if (afc !== AFC_NO_PAYLOAD && afc !== AFC_WITH_ADAPTATION) {
+
+        // AFC=1: Adaptation field only - TSMF data is in adaptation field
+        // AFC=3: Adaptation field + payload
+        // For TSMF, we return data starting from byte 4 (including AFL byte)
+        // The sync pattern is encoded as ((AFL << 8) | first_AF_byte) & 0x1fff
+        if (afc !== AFC_ADAPTATION_ONLY && afc !== AFC_WITH_ADAPTATION) {
             return null;
         }
 
@@ -684,22 +690,25 @@ export default class TLVConverter extends EventEmitter {
         carriers: { numberOfCarriers: number; carrierSequence: number };
         groupId: number;
     } | null {
+        if (payload.length < 184) {
+            return null;
+        }
+
         const frameSync = ((payload[0] << 8) | payload[1]) & 0x1fff;
         if (frameSync !== TSMF_SYNC_A && frameSync !== TSMF_SYNC_B) {
             return null;
         }
 
-        const frameType = payload[2] & 0x0f;
-        if (frameType !== TSMF_FRAME_TYPE_1 && frameType !== TSMF_FRAME_TYPE_2) {
-            return null;
-        }
-
+        // CRC32 check
         if (this._calculateCRC32(payload) !== 0) {
             return null;
         }
 
-        const headerCRC = (payload[180] << 24) | (payload[181] << 16) | (payload[182] << 8) | payload[183];
-
+        // TSMF structure (matching combine_transmod_tlv_correct.js):
+        // payload[123] = groupId
+        // payload[124] = numberOfCarriers
+        // payload[125] = carrierSequence
+        // payload[126] = frameRaw (upper 4 bits = numberOfFrames, lower 4 bits = framePosition)
         const groupId = payload[123];
         const numberOfCarriers = payload[124];
         const carrierSequence = payload[125];
@@ -710,6 +719,9 @@ export default class TLVConverter extends EventEmitter {
         const frameRaw = payload[126];
         const numberOfFrames = (frameRaw >> 4) & 0x0f;
         const framePosition = frameRaw & 0x0f;
+
+        const frameType = payload[2] & 0x0f;
+        const headerCRC = (payload[180] << 24) | (payload[181] << 16) | (payload[182] << 8) | payload[183];
 
         return {
             frameType,
