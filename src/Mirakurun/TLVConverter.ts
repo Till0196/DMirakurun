@@ -769,11 +769,7 @@ export default class TLVConverter extends EventEmitter {
                 const after = data.subarray(safePointer);
 
                 if (before.length > 0) {
-                    if (!current) {
-                        current = Buffer.from(before);
-                    } else {
-                        current = Buffer.concat([current, before]);
-                    }
+                    current = current ? Buffer.concat([current, before]) : Buffer.from(before);
                 }
                 if (current) {
                     output.push(current);
@@ -784,11 +780,7 @@ export default class TLVConverter extends EventEmitter {
                 if (tlvChunk.length === 0) {
                     continue;
                 }
-                if (!current) {
-                    current = Buffer.from(tlvChunk);
-                } else {
-                    current = Buffer.concat([current, tlvChunk]);
-                }
+                current = current ? Buffer.concat([current, tlvChunk]) : Buffer.from(tlvChunk);
             }
         }
 
