@@ -316,7 +316,10 @@ export default class TunerDevice extends EventEmitter {
 
             if (ch.type === "BS4K") {
                 const useGroupCombine = !options?.suppressGroupCombine;
-                if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
+                if (!useGroupCombine) {
+                    log.info("TunerDevice#%d carrier mode (raw stream for multi-carrier)", this._index);
+                    this._stream = cat.stdout;
+                } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
                     log.info(
                         "TunerDevice#%d TLV combiner mode (tsmfRelTs=%d, groupId=%s)",
                         this._index,
@@ -457,7 +460,10 @@ export default class TunerDevice extends EventEmitter {
         } else {
             if (ch.type === "BS4K") {
                 const useGroupCombine = !options?.suppressGroupCombine;
-                if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
+                if (!useGroupCombine) {
+                    log.info("TunerDevice#%d carrier mode (raw stream for multi-carrier)", this._index);
+                    this._stream = this._process.stdout;
+                } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
                     log.info(
                         "TunerDevice#%d TLV combiner mode (tsmfRelTs=%d, groupId=%s)",
                         this._index,
