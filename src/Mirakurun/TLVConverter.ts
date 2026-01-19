@@ -19,6 +19,7 @@ const OFFSET_MIN_SUPERFRAMES = 3;
 const OFFSET_STABLE_REQUIRED = 3;
 const OFFSET_MIN_TLV_PACKETS = 8;
 const OFFSET_MIN_HEADER_RATIO = 0.6;
+const READY_MIN_SUPERFRAMES = 3;
 
 interface CarrierFrame {
     framePosition: number;
@@ -1113,7 +1114,7 @@ export default class TLVConverter extends EventEmitter {
                 if (!this._offsets || !this._offsetsApplied) {
                     return;
                 }
-                if (this._readySuperframes < 10) {
+                if (this._readySuperframes < READY_MIN_SUPERFRAMES) {
                     return;
                 }
             } else if (this._offsets && !this._offsetsApplied) {
