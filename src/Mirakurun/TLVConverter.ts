@@ -435,11 +435,9 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (this._offsetsFromOptions && this._offsetsFromOptions.length >= this._numberOfCarriers) {
-            this._offsets = this._offsetsFromOptions.slice(0, this._numberOfCarriers);
-        } else {
-            this._offsets = new Array(this._numberOfCarriers).fill(0);
-        }
+        this._offsets = (this._offsetsFromOptions && this._offsetsFromOptions.length >= this._numberOfCarriers)
+            ? this._offsetsFromOptions.slice(0, this._numberOfCarriers)
+            : new Array(this._numberOfCarriers).fill(0);
         const carriers = this._getCarriersSorted();
         this._offsetsPendingBySequence = new Map<number, number>();
         carriers.forEach((carrier, index) => {
@@ -516,8 +514,6 @@ export default class TLVConverter extends EventEmitter {
     private _getCarriersSorted(): CarrierState[] {
         return Array.from(this._carrierStates.values()).sort((a, b) => a.carrierSequence - b.carrierSequence);
     }
-
-
 
     private _handleTLVPacket(packet: Buffer): void {
         const pusi = (packet[1] & 0x40) !== 0;
