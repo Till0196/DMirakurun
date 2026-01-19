@@ -525,7 +525,7 @@ export default class TLVConverter extends EventEmitter {
         if (minAvailable <= 0) {
             return;
         }
-        if (minAvailable < 60) {
+        if (minAvailable < 10) {
             return;
         }
 
