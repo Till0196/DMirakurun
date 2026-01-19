@@ -16,6 +16,9 @@ const TSMF_SYNC_B = 0x0579;
 const AFC_ADAPTATION_ONLY = 0x01;
 const AFC_WITH_ADAPTATION = 0x03;
 const OFFSET_MIN_SUPERFRAMES = 3;
+const OFFSET_STABLE_REQUIRED = 3;
+const OFFSET_MIN_TLV_PACKETS = 8;
+const OFFSET_MIN_HEADER_RATIO = 0.6;
 
 interface CarrierFrame {
     framePosition: number;
@@ -106,6 +109,8 @@ export default class TLVConverter extends EventEmitter {
     private _expectedGroupId: number | null;
     private _freezeHeader = false;
     private _offsetsApplied = false;
+    private _pendingOffsets: number[] | null = null;
+    private _pendingOffsetsStable = 0;
     private _readySuperframes = 0;
     private _loggedOffsetsBeforeReady = false;
 
@@ -521,8 +526,7 @@ export default class TLVConverter extends EventEmitter {
         }
 
         if (this._offsetsFromOptions && this._offsetsFromOptions.length >= this._numberOfCarriers) {
-            this._offsets = this._offsetsFromOptions.slice(0, this._numberOfCarriers);
-            this._offsetsApplied = false;
+            this._finalizeOffsets(this._offsetsFromOptions.slice(0, this._numberOfCarriers));
             return;
         }
 
@@ -546,9 +550,34 @@ export default class TLVConverter extends EventEmitter {
             offsets = headerScore >= tlvScore ? headerOffsets : tlvOffsets;
         }
 
+        const tlvBuffer = this._assembleTLVFromPackets(this._assemblePacketsForOffsets(carriers, offsets, preview));
+        const evaluation = this._evaluateTLVBuffer(tlvBuffer);
+        if (evaluation.total < OFFSET_MIN_TLV_PACKETS || evaluation.headerRatio < OFFSET_MIN_HEADER_RATIO) {
+            this._pendingOffsets = null;
+            this._pendingOffsetsStable = 0;
+            return;
+        }
+
+        if (!this._pendingOffsets || !this._areOffsetsEqual(this._pendingOffsets, offsets)) {
+            this._pendingOffsets = offsets.slice();
+            this._pendingOffsetsStable = 1;
+            return;
+        }
+
+        this._pendingOffsetsStable += 1;
+        if (this._pendingOffsetsStable < OFFSET_STABLE_REQUIRED) {
+            return;
+        }
+
+        this._finalizeOffsets(offsets);
+    }
+
+    private _finalizeOffsets(offsets: number[]): void {
         this._offsets = offsets;
         this._freezeHeader = true;
         this._offsetsApplied = false;
+        this._pendingOffsets = null;
+        this._pendingOffsetsStable = 0;
         if (this._buffer && this._buffer.length > 0) {
             // Drop pre-offset TLV fragments to avoid feeding invalid data to decoder.
             this._buffer.length = 0;
@@ -562,6 +591,96 @@ export default class TLVConverter extends EventEmitter {
             source.currentFrame = undefined;
         }
         // offsets will be applied when outputting superframes
+    }
+
+    private _areOffsetsEqual(a: number[], b: number[]): boolean {
+        if (a.length !== b.length) {
+            return false;
+        }
+        for (let i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private _evaluateTLVBuffer(buffer: Buffer): { score: number; headerRatio: number; total: number } {
+        const maxPackets = 2000;
+        const maxStart = Math.min(4096, buffer.length > 4 ? buffer.length - 4 : 0);
+        let bestScore = 0;
+        let bestHeaderRatio = 0;
+        let bestTotal = 0;
+
+        const evaluate = (start: number): { score: number; headerRatio: number; total: number } => {
+            let offset = start;
+            let validHeaders = 0;
+            let validIpv6 = 0;
+            let validNull = 0;
+            let validTypes = 0;
+            let total = 0;
+
+            while (offset + 4 <= buffer.length && total < maxPackets) {
+                if (buffer[offset] !== 0x7f) {
+                    break;
+                }
+                const type = buffer[offset + 1];
+                const length = (buffer[offset + 2] << 8) | buffer[offset + 3];
+                const next = offset + 4 + length;
+                if (next > buffer.length) {
+                    break;
+                }
+                const payload = buffer.subarray(offset + 4, next);
+                const typeValid = type === 0x01 || type === 0x02 || type === 0x03 || type === 0xfe || type === 0xff;
+                if (!typeValid) {
+                    break;
+                }
+                validHeaders += 1;
+                validTypes += 1;
+                if (type === 0x02 && payload.length >= 40 && (payload[0] >> 4) === 0x06) {
+                    const payloadLength = (payload[4] << 8) | payload[5];
+                    if (payloadLength + 40 === payload.length) {
+                        validIpv6 += 1;
+                    }
+                }
+                if (type === 0xff) {
+                    let ok = true;
+                    for (let i = 0; i < payload.length; i++) {
+                        if (payload[i] !== 0xff) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (ok) {
+                        validNull += 1;
+                    }
+                }
+                if (next < buffer.length && buffer[next] !== 0x7f) {
+                    break;
+                }
+                offset = next;
+                total += 1;
+            }
+
+            if (total === 0) {
+                return { score: 0, headerRatio: 0, total: 0 };
+            }
+            const headerRatio = validHeaders / total;
+            const ipv6Ratio = validIpv6 / total;
+            const score = headerRatio * 1000000 + ipv6Ratio * 500000 + validNull * 500 + validTypes * 100 + total;
+            return { score, headerRatio, total };
+        };
+
+        for (let start = 0; start < maxStart; start++) {
+            const result = evaluate(start);
+            if (result.score > bestScore) {
+                bestScore = result.score;
+                bestHeaderRatio = result.headerRatio;
+                bestTotal = result.total;
+            }
+        }
+
+        return { score: bestScore, headerRatio: bestHeaderRatio, total: bestTotal };
     }
 
     private _findOffsetsByTLVHeuristics(
