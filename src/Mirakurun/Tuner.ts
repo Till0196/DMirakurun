@@ -391,7 +391,10 @@ export class Tuner {
     ): TunerDevice | null {
         // 1. join to existing
         for (const device of devices) {
-            if (device.isAvailable === true && device.channel === channel) {
+            if (device.isAvailable !== true || !device.channel) {
+                continue;
+            }
+            if (device.channel === channel || device.channel.isSameTsmfGroup(channel)) {
                 return device;
             }
         }

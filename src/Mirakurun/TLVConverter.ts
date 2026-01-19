@@ -19,8 +19,10 @@ const AFC_WITH_ADAPTATION = 0x03;
 interface CarrierFrame {
     framePosition: number;
     numberOfFrames: number;
-    slots: Buffer[];
+    slots: Array<Buffer | null>;
     targetSlots: boolean[];
+    nextTargetSlotIndex: number;
+    filledSlots: number;
 }
 
 interface CarrierSuperframe {
@@ -222,7 +224,7 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (source.currentFrame && source.currentFrame.slots.length > 0 && source.carrierSequence) {
+        if (source.currentFrame && source.currentFrame.filledSlots > 0 && source.carrierSequence) {
             const carrier = this._carrierStates.get(source.carrierSequence);
             if (carrier) {
                 this._pushFrame(carrier, source.currentFrame);
@@ -259,8 +261,17 @@ export default class TLVConverter extends EventEmitter {
                 continue;
             }
 
-            if (pid === TLV_PID && source.currentFrame && source.currentFrame.slots.length < SLOT_COUNT) {
-                source.currentFrame.slots.push(Buffer.from(packet));
+            if (pid === TLV_PID && source.currentFrame && source.currentFrame.filledSlots < SLOT_COUNT) {
+                const frame = source.currentFrame;
+                let slotIndex = frame.nextTargetSlotIndex;
+                while (slotIndex < SLOT_COUNT && !frame.targetSlots[slotIndex]) {
+                    slotIndex += 1;
+                }
+                if (slotIndex < SLOT_COUNT) {
+                    frame.slots[slotIndex] = Buffer.from(packet);
+                    frame.filledSlots += 1;
+                    frame.nextTargetSlotIndex = slotIndex + 1;
+                }
             }
         }
     }
@@ -284,13 +295,14 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (source.currentFrame && source.currentFrame.slots.length > 0) {
+        if (source.currentFrame && source.currentFrame.filledSlots > 0) {
             this._pushFrame(carrierState, source.currentFrame);
         }
 
         const relativeStreamNumbers = this._parseRelativeStreamNumbers(payload);
         if (this._targetRelStream === null) {
-            this._targetRelStream = this._selectTargetStream(relativeStreamNumbers);
+            const streamTypeBits = this._parseStreamTypeBits(payload);
+            this._targetRelStream = this._selectTargetStream(relativeStreamNumbers, streamTypeBits);
             log.info("TunerDevice#%d TLVConverter selected stream %d", this._tunerIndex, this._targetRelStream);
         }
 
@@ -304,8 +316,10 @@ export default class TLVConverter extends EventEmitter {
         source.currentFrame = {
             framePosition: frameInfo.framePosition,
             numberOfFrames: frameInfo.numberOfFrames,
-            slots: [],
-            targetSlots
+            slots: new Array(SLOT_COUNT).fill(null),
+            targetSlots,
+            nextTargetSlotIndex: 0,
+            filledSlots: 0
         };
     }
 
@@ -517,21 +531,42 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _handleTLVPacket(packet: Buffer): void {
+        if (this._closed || this._closing || !this._buffer) {
+            return;
+        }
         const pusi = (packet[1] & 0x40) !== 0;
+        const afc = (packet[3] & 0x30) >> 4;
+        if (afc === 0x02) {
+            return;
+        }
+
+        let payloadStart = 4;
+        if (afc === 0x03) {
+            const afl = packet[4];
+            payloadStart = 5 + afl;
+        }
+        if (payloadStart >= PACKET_SIZE) {
+            return;
+        }
 
         if (pusi) {
+            const pointerField = packet[payloadStart];
+            const remainderStart = payloadStart + 1;
+            const remainderEnd = remainderStart + pointerField;
+            if (remainderEnd > PACKET_SIZE) {
+                return;
+            }
+            if (pointerField > 0 && remainderEnd <= PACKET_SIZE) {
+                this._buffer.push(packet.subarray(remainderStart, remainderEnd));
+            }
             if (this._buffer.length > 0) {
                 this._flushBufferedOutput();
             }
-            const tlvChunk = packet.subarray(4);
-            if (tlvChunk.length > 0) {
-                this._buffer.push(tlvChunk);
+            if (remainderEnd < PACKET_SIZE) {
+                this._buffer.push(packet.subarray(remainderEnd));
             }
         } else {
-            const tlvChunk = packet.subarray(3);
-            if (tlvChunk.length > 0) {
-                this._buffer.push(tlvChunk);
-            }
+            this._buffer.push(packet.subarray(payloadStart));
         }
     }
 
@@ -663,11 +698,18 @@ export default class TLVConverter extends EventEmitter {
         return relative;
     }
 
-    private _selectTargetStream(relative: number[]): number {
+    private _parseStreamTypeBits(payload: Buffer): number {
+        return (payload[121] << 7) | (payload[122] >> 1);
+    }
+
+    private _selectTargetStream(relative: number[], streamTypeBits: number): number {
         const counts = new Array(16).fill(0);
         for (const value of relative) {
             if (value >= 1 && value <= 15) {
-                counts[value] += 1;
+                const typeBit = (streamTypeBits >> (15 - value)) & 1;
+                if (typeBit === 0) {
+                    counts[value] += 1;
+                }
             }
         }
 
@@ -679,7 +721,23 @@ export default class TLVConverter extends EventEmitter {
                 bestCount = counts[i];
             }
         }
-        return best;
+        if (best > 0) {
+            return best;
+        }
+
+        const fallback = new Array(16).fill(0);
+        for (const value of relative) {
+            if (value >= 1 && value <= 15) {
+                fallback[value] += 1;
+            }
+        }
+        for (let i = 1; i <= 15; i++) {
+            if (fallback[i] > bestCount) {
+                best = i;
+                bestCount = fallback[i];
+            }
+        }
+        return best || 1;
     }
 
     private _validateTSMFFrame(payload: Buffer): {

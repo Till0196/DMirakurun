@@ -41,6 +41,28 @@ export default class ChannelItem {
         return _.service.findByChannel(this);
     }
 
+    isSameTsmfGroup(other: ChannelItem | null | undefined): boolean {
+        if (!other) {
+            return false;
+        }
+        if (this.type !== "BS4K" || other.type !== "BS4K") {
+            return false;
+        }
+        if (this.tsmfGroupId === null || this.tsmfGroupId === undefined) {
+            return false;
+        }
+        if (other.tsmfGroupId === null || other.tsmfGroupId === undefined) {
+            return false;
+        }
+        if (this.tsmfRelTs === null || this.tsmfRelTs === undefined) {
+            return false;
+        }
+        if (other.tsmfRelTs === null || other.tsmfRelTs === undefined) {
+            return false;
+        }
+        return this.tsmfGroupId === other.tsmfGroupId && this.tsmfRelTs === other.tsmfRelTs;
+    }
+
     getStream(user: common.User, output: stream.Writable): Promise<TSFilter> {
         return _.tuner.initChannelStream(this, user, output);
     }

@@ -175,7 +175,8 @@ export class Service {
 
         const l = this._items.length;
         for (let i = 0; i < l; i++) {
-            if (this._items[i].channel === channel) {
+            const serviceChannel = this._items[i].channel;
+            if (serviceChannel === channel || serviceChannel.isSameTsmfGroup(channel)) {
                 items.push(this._items[i]);
             }
         }
@@ -361,11 +362,15 @@ export class Service {
     }
 
     private _queueScanToAdd(channel: ChannelItem): void {
+        const scanChannel = this._getScanTargetChannel(channel);
+        if (scanChannel !== channel) {
+            return;
+        }
         _.job.add({
-            key: `Service.Add.Scan.${channel.type}.${channel.channel}`,
-            name: `Service Add Scan ${channel.type}/${channel.channel}`,
-            fn: async () => this._scan(channel, true),
-            readyFn: () => _.tuner.readyForJob(channel),
+            key: `Service.Add.Scan.${scanChannel.type}.${scanChannel.channel}`,
+            name: `Service Add Scan ${scanChannel.type}/${scanChannel.channel}`,
+            fn: async () => this._scan(scanChannel, true),
+            readyFn: () => _.tuner.readyForJob(scanChannel),
             retryOnFail: true,
             retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3), // (12時間 / retryDelay) = 12時間～
             retryDelay: 1000 * 60 * 3
@@ -373,11 +378,15 @@ export class Service {
     }
 
     private _queueScanToUpdate(channel: ChannelItem): void {
+        const scanChannel = this._getScanTargetChannel(channel);
+        if (scanChannel !== channel) {
+            return;
+        }
         _.job.add({
-            key: `Service.Update.Scan.${channel.type}.${channel.channel}`,
-            name: `Service Update Scan ${channel.type}/${channel.channel}`,
-            fn: async () => this._scan(channel, false),
-            readyFn: () => _.tuner.readyForJob(channel)
+            key: `Service.Update.Scan.${scanChannel.type}.${scanChannel.channel}`,
+            name: `Service Update Scan ${scanChannel.type}/${scanChannel.channel}`,
+            fn: async () => this._scan(scanChannel, false),
+            readyFn: () => _.tuner.readyForJob(scanChannel)
         });
     }
 
@@ -448,6 +457,17 @@ export class Service {
         });
 
         log.info("ChannelItem#'%s' service scan has finished", channel.name);
+    }
+
+    private _getScanTargetChannel(channel: ChannelItem): ChannelItem {
+        if (!channel || channel.type !== "BS4K" || channel.tsmfGroupId === null || channel.tsmfGroupId === undefined) {
+            return channel;
+        }
+        const groupChannels = _.channel.items.filter(item => item.isSameTsmfGroup(channel));
+        if (groupChannels.length === 0) {
+            return channel;
+        }
+        return groupChannels[0];
     }
 }
 

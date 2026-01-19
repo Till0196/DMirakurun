@@ -195,7 +195,8 @@ export default class TunerDevice extends EventEmitter {
             }
 
             if (this._stream) {
-                if (channel.channel !== this._channel.channel) {
+                const sameGroup = this._channel && this._channel.isSameTsmfGroup(channel);
+                if (channel.channel !== this._channel.channel && !sameGroup) {
                     if (user.priority <= this.getPriority()) {
                         throw new Error(util.format("TunerDevice#%d has higher priority user", this._index));
                     }
