@@ -293,25 +293,35 @@ export default class TunerDevice extends EventEmitter {
         this._process = child_process.spawn(parsed.command, parsed.args);
         this._command = cmd;
         this._channel = ch;
-        if (this._config.dvbDevicePath) {
-            const cat = child_process.spawn("cat", [this._config.dvbDevicePath]);
+            if (this._config.dvbDevicePath) {
+                const cat = child_process.spawn("cat", [this._config.dvbDevicePath]);
 
-            cat.once("error", (err) => {
-                log.error("TunerDevice#%d cat process error `%s` (pid=%d)", this._index, err.name, cat.pid);
+                cat.once("error", (err) => {
+                    log.error("TunerDevice#%d cat process error `%s` (pid=%d)", this._index, err.name, cat.pid);
 
-                this._kill(false);
-            });
-
-            cat.once("close", (code, signal) => {
-                log.debug(
-                    "TunerDevice#%d cat process has closed with code=%d by signal `%s` (pid=%d)",
-                    this._index, code, signal, cat.pid
-                );
-
-                if (this._exited === false) {
                     this._kill(false);
-                }
-            });
+                });
+
+                cat.once("close", (code, signal) => {
+                    const proc = this._process;
+                    log.debug(
+                        "TunerDevice#%d cat process has closed with code=%d by signal `%s` (pid=%d, procPid=%s, procExit=%s, procSignal=%s, procKilled=%s, closing=%s, users=%d)",
+                        this._index,
+                        code,
+                        signal,
+                        cat.pid,
+                        proc?.pid ?? "null",
+                        proc?.exitCode ?? "null",
+                        proc?.signalCode ?? "null",
+                        proc?.killed ?? false,
+                        this._closing,
+                        this._users.size
+                    );
+
+                    if (this._exited === false) {
+                        this._kill(false);
+                    }
+                });
 
             this._process.once("exit", () => cat.kill("SIGKILL"));
 
@@ -410,7 +420,12 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     cat.stdout.once("end", () => {
-                        log.debug("TunerDevice#%d cat stdout ended, closing TLVConverter", this._index);
+                        const tlvState = this._tlvConverter?.getDebugState ? this._tlvConverter.getDebugState() : null;
+                        log.debug(
+                            "TunerDevice#%d cat stdout ended, closing TLVConverter (tlv=%s)",
+                            this._index,
+                            tlvState ? JSON.stringify(tlvState) : "null"
+                        );
                         if (this._tlvConverter) {
                             this._tlvConverter.close();
                         }
@@ -554,7 +569,12 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     this._process.stdout.once("end", () => {
-                        log.debug("TunerDevice#%d process stdout ended, closing TLVConverter", this._index);
+                        const tlvState = this._tlvConverter?.getDebugState ? this._tlvConverter.getDebugState() : null;
+                        log.debug(
+                            "TunerDevice#%d process stdout ended, closing TLVConverter (tlv=%s)",
+                            this._index,
+                            tlvState ? JSON.stringify(tlvState) : "null"
+                        );
                         if (this._tlvConverter) {
                             this._tlvConverter.close();
                         }

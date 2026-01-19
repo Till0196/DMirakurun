@@ -17,9 +17,9 @@ const AFC_ADAPTATION_ONLY = 0x01;
 const AFC_WITH_ADAPTATION = 0x03;
 const OFFSET_MIN_SUPERFRAMES = 3;
 const OFFSET_STABLE_REQUIRED = 3;
-const OFFSET_MIN_TLV_PACKETS = 8;
+const OFFSET_MIN_TLV_PACKETS = 3;
 const OFFSET_MIN_HEADER_RATIO = 0.6;
-const READY_MIN_SUPERFRAMES = 3;
+const READY_MIN_SUPERFRAMES = 2;
 
 interface CarrierFrame {
     framePosition: number;
@@ -143,6 +143,36 @@ export default class TLVConverter extends EventEmitter {
 
     get ready(): boolean {
         return this._ready;
+    }
+
+    getDebugState(): {
+        ready: boolean;
+        readySuperframes: number;
+        numberOfCarriers: number;
+        carrierStates: number;
+        offsets: number[] | null;
+        offsetsApplied: boolean;
+        pendingOffsets: number[] | null;
+        pendingOffsetsStable: number;
+        bufferChunks: number;
+        sinkClosed: boolean;
+        closing: boolean;
+        closed: boolean;
+    } {
+        return {
+            ready: this._ready,
+            readySuperframes: this._readySuperframes,
+            numberOfCarriers: this._numberOfCarriers,
+            carrierStates: this._carrierStates.size,
+            offsets: this._offsets ? this._offsets.slice() : null,
+            offsetsApplied: this._offsetsApplied,
+            pendingOffsets: this._pendingOffsets ? this._pendingOffsets.slice() : null,
+            pendingOffsetsStable: this._pendingOffsetsStable,
+            bufferChunks: this._buffer ? this._buffer.length : 0,
+            sinkClosed: this._sinkClosed,
+            closing: this._closing,
+            closed: this._closed
+        };
     }
 
     get closed(): boolean {
@@ -579,6 +609,7 @@ export default class TLVConverter extends EventEmitter {
         this._offsetsApplied = false;
         this._pendingOffsets = null;
         this._pendingOffsetsStable = 0;
+        log.info("TunerDevice#%d TLVConverter offsets finalized: %s", this._tunerIndex, offsets.join(","));
         if (this._buffer && this._buffer.length > 0) {
             // Drop pre-offset TLV fragments to avoid feeding invalid data to decoder.
             this._buffer.length = 0;
