@@ -44,6 +44,44 @@ interface CarrierLink {
     input: stream.Writable;
 }
 
+class StreamGate extends stream.Transform {
+    private _opened = false;
+    private _buffer: Buffer[] = [];
+    private _bufferedBytes = 0;
+
+    constructor(private _limitBytes: number) {
+        super();
+    }
+
+    open(): void {
+        if (this._opened) {
+            return;
+        }
+        this._opened = true;
+        for (const chunk of this._buffer) {
+            this.push(chunk);
+        }
+        this._buffer = [];
+        this._bufferedBytes = 0;
+    }
+
+    _transform(chunk: any, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
+        if (this._opened) {
+            this.push(chunk);
+            callback();
+            return;
+        }
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (this._bufferedBytes + data.length > this._limitBytes) {
+            this._buffer = [];
+            this._bufferedBytes = 0;
+        }
+        this._buffer.push(data);
+        this._bufferedBytes += data.length;
+        callback();
+    }
+}
+
 export interface TunerDeviceStatus {
     readonly index: number;
     readonly name: string;
@@ -67,6 +105,9 @@ export default class TunerDevice extends EventEmitter {
     private _tlvConverter: any = null;
     private _carrierLinks: CarrierLink[] = [];
     private _carrierInitInProgress = false;
+    private _carrierGates: StreamGate[] = [];
+    private _carrierGatesExpected: number | null = null;
+    private _carrierGatesOpened = false;
 
     private _users = new Set<User>();
 
@@ -293,6 +334,14 @@ export default class TunerDevice extends EventEmitter {
         this._process = child_process.spawn(parsed.command, parsed.args);
         this._command = cmd;
         this._channel = ch;
+        if (this._process.stderr) {
+            this._process.stderr.on("data", (chunk) => {
+                const text = chunk.toString().replace(/\r?\n/g, "\\n").trim();
+                if (text.length > 0) {
+                    log.debug("TunerDevice#%d process stderr: %s", this._index, text);
+                }
+            });
+        }
         if (this._config.dvbDevicePath) {
             const cat = child_process.spawn("cat", [this._config.dvbDevicePath]);
 
@@ -301,6 +350,14 @@ export default class TunerDevice extends EventEmitter {
 
                 this._kill(false);
             });
+            if (cat.stderr) {
+                cat.stderr.on("data", (chunk) => {
+                    const text = chunk.toString().replace(/\r?\n/g, "\\n").trim();
+                    if (text.length > 0) {
+                        log.debug("TunerDevice#%d cat stderr: %s", this._index, text);
+                    }
+                });
+            }
 
             cat.once("close", (code, signal) => {
                 const proc = this._process;
@@ -344,8 +401,16 @@ export default class TunerDevice extends EventEmitter {
                         groupId: ch.tsmfGroupId ?? undefined
                     });
                     const primaryInput = this._tlvConverter.createInput();
+                    const primaryGate = new StreamGate(8 * 1024 * 1024);
+                    this._prepareCarrierGates(3);
+                    this._registerCarrierGate(primaryGate);
+                    const primaryGate = new StreamGate(8 * 1024 * 1024);
+                    this._prepareCarrierGates(3);
+                    this._registerCarrierGate(primaryGate);
 
                     this._tlvConverter.once("needCarriers", (count: number) => {
+                        this._carrierGatesExpected = count;
+                        this._openCarrierGatesIfReady();
                         if (useGroupCombine && count === 3) {
                             if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
                                 log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
@@ -412,11 +477,10 @@ export default class TunerDevice extends EventEmitter {
                         this._kill(false);
                     });
 
-                    cat.stdout.on("data", (chunk) => {
-                        if (!this._tlvConverter) {
-                            return;
+                    stream.pipeline(cat.stdout, primaryGate, primaryInput, (err) => {
+                        if (err && !this._closing) {
+                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
                         }
-                        primaryInput.write(chunk);
                     });
 
                     cat.stdout.once("end", () => {
@@ -495,6 +559,8 @@ export default class TunerDevice extends EventEmitter {
                     const primaryInput = this._tlvConverter.createInput();
 
                     this._tlvConverter.once("needCarriers", (count: number) => {
+                        this._carrierGatesExpected = count;
+                        this._openCarrierGatesIfReady();
                         if (useGroupCombine && count === 3) {
                             if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
                                 log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
@@ -561,11 +627,10 @@ export default class TunerDevice extends EventEmitter {
                         this._kill(false);
                     });
 
-                    this._process.stdout.on("data", (chunk) => {
-                        if (!this._tlvConverter) {
-                            return;
+                    stream.pipeline(this._process.stdout, primaryGate, primaryInput, (err) => {
+                        if (err && !this._closing) {
+                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
                         }
-                        primaryInput.write(chunk);
                     });
 
                     this._process.stdout.once("end", () => {
@@ -669,6 +734,40 @@ export default class TunerDevice extends EventEmitter {
         }
     }
 
+    private _prepareCarrierGates(expected: number): void {
+        this._carrierGates = [];
+        this._carrierGatesExpected = expected;
+        this._carrierGatesOpened = false;
+    }
+
+    private _registerCarrierGate(gate: StreamGate): void {
+        if (!this._carrierGatesExpected) {
+            gate.open();
+            return;
+        }
+        this._carrierGates.push(gate);
+        this._openCarrierGatesIfReady();
+    }
+
+    private _openCarrierGatesIfReady(): void {
+        if (this._carrierGatesOpened) {
+            return;
+        }
+        if (!this._carrierGatesExpected || this._carrierGates.length < this._carrierGatesExpected) {
+            return;
+        }
+        this._carrierGatesOpened = true;
+        for (const gate of this._carrierGates) {
+            gate.open();
+        }
+    }
+
+    private _resetCarrierGates(): void {
+        this._carrierGates = [];
+        this._carrierGatesExpected = null;
+        this._carrierGatesOpened = false;
+    }
+
     private async _startAdditionalCarriers(ch: ChannelItem, combiner: TLVConverter): Promise<void> {
         if (this._carrierInitInProgress || this._carrierLinks.length > 0) {
             return;
@@ -736,6 +835,7 @@ export default class TunerDevice extends EventEmitter {
                 const input = combiner.createInput();
                 // Use raw stream instead of TSFilter to pass TSMF/TLV packets (PID=0x2f,0x2d) unfiltered
                 const rawStream = new stream.PassThrough();
+                const gate = new StreamGate(8 * 1024 * 1024);
                 const tsFilter = rawStream as unknown as TSFilter;
                 const user: User = {
                     id: `tlv-carrier-${this._index}-${device.index}`,
@@ -745,8 +845,11 @@ export default class TunerDevice extends EventEmitter {
 
                 await device.startStream(user, tsFilter, channel, { suppressGroupCombine: true });
 
-                rawStream.on("data", (chunk) => {
-                    input.write(chunk);
+                this._registerCarrierGate(gate);
+                stream.pipeline(rawStream, gate, input, (err) => {
+                    if (err && !this._closing) {
+                        log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
+                    }
                 });
 
                 rawStream.once("end", () => {
@@ -795,6 +898,7 @@ export default class TunerDevice extends EventEmitter {
 
         this._carrierLinks = [];
         this._carrierInitInProgress = false;
+        this._resetCarrierGates();
     }
 
     private _end(): void {
