@@ -19,10 +19,8 @@ const AFC_WITH_ADAPTATION = 0x03;
 interface CarrierFrame {
     framePosition: number;
     numberOfFrames: number;
-    slots: Array<Buffer | null>;
+    slots: Buffer[];
     targetSlots: boolean[];
-    nextTargetSlotIndex: number;
-    filledSlots: number;
 }
 
 interface CarrierSuperframe {
@@ -224,7 +222,7 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (source.currentFrame && source.currentFrame.filledSlots > 0 && source.carrierSequence) {
+        if (source.currentFrame && source.currentFrame.slots.length > 0 && source.carrierSequence) {
             const carrier = this._carrierStates.get(source.carrierSequence);
             if (carrier) {
                 this._pushFrame(carrier, source.currentFrame);
@@ -261,17 +259,8 @@ export default class TLVConverter extends EventEmitter {
                 continue;
             }
 
-            if (pid === TLV_PID && source.currentFrame && source.currentFrame.filledSlots < SLOT_COUNT) {
-                const frame = source.currentFrame;
-                let slotIndex = frame.nextTargetSlotIndex;
-                while (slotIndex < SLOT_COUNT && !frame.targetSlots[slotIndex]) {
-                    slotIndex += 1;
-                }
-                if (slotIndex < SLOT_COUNT) {
-                    frame.slots[slotIndex] = Buffer.from(packet);
-                    frame.filledSlots += 1;
-                    frame.nextTargetSlotIndex = slotIndex + 1;
-                }
+            if (pid === TLV_PID && source.currentFrame && source.currentFrame.slots.length < SLOT_COUNT) {
+                source.currentFrame.slots.push(Buffer.from(packet));
             }
         }
     }
@@ -295,31 +284,17 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (source.currentFrame && source.currentFrame.filledSlots > 0) {
+        if (source.currentFrame && source.currentFrame.slots.length > 0) {
             this._pushFrame(carrierState, source.currentFrame);
         }
 
-        const relativeStreamNumbers = this._parseRelativeStreamNumbers(payload);
-        if (this._targetRelStream === null) {
-            const streamTypeBits = this._parseStreamTypeBits(payload);
-            this._targetRelStream = this._selectTargetStream(relativeStreamNumbers, streamTypeBits);
-            log.info("TunerDevice#%d TLVConverter selected stream %d", this._tunerIndex, this._targetRelStream);
-        }
-
-        const targetSlots = relativeStreamNumbers.map(value => {
-            if (this._targetRelStream === null) {
-                return true;
-            }
-            return value === this._targetRelStream;
-        });
+        const targetSlots = new Array(SLOT_COUNT).fill(true);
 
         source.currentFrame = {
             framePosition: frameInfo.framePosition,
             numberOfFrames: frameInfo.numberOfFrames,
-            slots: new Array(SLOT_COUNT).fill(null),
-            targetSlots,
-            nextTargetSlotIndex: 0,
-            filledSlots: 0
+            slots: [],
+            targetSlots
         };
     }
 
@@ -535,38 +510,19 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
         const pusi = (packet[1] & 0x40) !== 0;
-        const afc = (packet[3] & 0x30) >> 4;
-        if (afc === 0x02) {
-            return;
-        }
-
-        let payloadStart = 4;
-        if (afc === 0x03) {
-            const afl = packet[4];
-            payloadStart = 5 + afl;
-        }
-        if (payloadStart >= PACKET_SIZE) {
-            return;
-        }
-
         if (pusi) {
-            const pointerField = packet[payloadStart];
-            const remainderStart = payloadStart + 1;
-            const remainderEnd = remainderStart + pointerField;
-            if (remainderEnd > PACKET_SIZE) {
-                return;
-            }
-            if (pointerField > 0 && remainderEnd <= PACKET_SIZE) {
-                this._buffer.push(packet.subarray(remainderStart, remainderEnd));
-            }
             if (this._buffer.length > 0) {
                 this._flushBufferedOutput();
             }
-            if (remainderEnd < PACKET_SIZE) {
-                this._buffer.push(packet.subarray(remainderEnd));
+            const tlvChunk = packet.subarray(4);
+            if (tlvChunk.length > 0) {
+                this._buffer.push(tlvChunk);
             }
         } else {
-            this._buffer.push(packet.subarray(payloadStart));
+            const tlvChunk = packet.subarray(3);
+            if (tlvChunk.length > 0) {
+                this._buffer.push(tlvChunk);
+            }
         }
     }
 
