@@ -21,18 +21,20 @@ interface CarrierFrame {
     numberOfFrames: number;
     slots: Buffer[];
     targetSlots: boolean[];
+    filledSlots: number;
+    signature?: string;
 }
 
 interface CarrierSuperframe {
     numberOfFrames: number;
     frames: CarrierFrame[];
+    signature?: string;
 }
 
 interface PendingSuperframe {
     numberOfFrames: number;
     frames: Array<CarrierFrame | null>;
     filled: number;
-    expectedPosition: number;
 }
 
 interface CarrierState {
@@ -49,6 +51,14 @@ interface SourceState {
     packet: Buffer;
     offset: number;
     currentFrame?: CarrierFrame;
+    headerLocked: boolean;
+    activeHeaderCRC: number;
+    candidateHeaderCRC: number;
+    candidateSeen: number;
+    slotIndex: number;
+    effectiveTargetStreamNumber: number;
+    tsmfRelativeStreamNumber: number[];
+    streamTypeBits: number;
 }
 
 interface MultiCarrierOptions {
@@ -140,7 +150,15 @@ export default class TLVConverter extends EventEmitter {
         const state: SourceState = {
             sourceId,
             packet: Buffer.allocUnsafeSlow(PACKET_SIZE).fill(0),
-            offset: -1
+            offset: -1,
+            headerLocked: false,
+            activeHeaderCRC: -1,
+            candidateHeaderCRC: -1,
+            candidateSeen: 0,
+            slotIndex: -1,
+            effectiveTargetStreamNumber: 0,
+            tsmfRelativeStreamNumber: [],
+            streamTypeBits: 0
         };
         this._sources.set(sourceId, state);
         return new CarrierInput(this, sourceId);
@@ -222,7 +240,7 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (source.currentFrame && source.currentFrame.slots.length > 0 && source.carrierSequence) {
+        if (source.currentFrame && source.carrierSequence) {
             const carrier = this._carrierStates.get(source.carrierSequence);
             if (carrier) {
                 this._pushFrame(carrier, source.currentFrame);
@@ -256,11 +274,11 @@ export default class TLVConverter extends EventEmitter {
             const pid = ((packet[1] & 0x1f) << 8) | packet[2];
             if (pid === TSMF_PID) {
                 this._handleTSMFPacket(source, packet);
-                continue;
             }
 
             if (pid === TLV_PID && source.currentFrame && source.currentFrame.slots.length < SLOT_COUNT) {
                 source.currentFrame.slots.push(Buffer.from(packet));
+                source.currentFrame.filledSlots += 1;
             }
         }
     }
@@ -284,18 +302,108 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (source.currentFrame && source.currentFrame.slots.length > 0) {
+        this._processTSMFHeader(source, payload, frameInfo);
+
+        if (source.currentFrame) {
             this._pushFrame(carrierState, source.currentFrame);
         }
 
-        const targetSlots = new Array(SLOT_COUNT).fill(true);
+        const targetSlots = this._buildTargetSlots(source);
+        const signature = frameInfo.framePosition === 0 ? this._buildTSMFSignature(payload) : undefined;
 
         source.currentFrame = {
             framePosition: frameInfo.framePosition,
             numberOfFrames: frameInfo.numberOfFrames,
             slots: [],
-            targetSlots
+            targetSlots,
+            filledSlots: 0,
+            signature
         };
+    }
+
+    private _processTSMFHeader(
+        source: SourceState,
+        payload: Buffer,
+        frameInfo: {
+            frameType: number;
+            headerCRC: number;
+            framePosition: number;
+            carriers: { numberOfCarriers: number; carrierSequence: number };
+            groupId: number;
+        }
+    ): void {
+        const { headerCRC, framePosition, carriers, groupId } = frameInfo;
+        const atFrameStart = framePosition === 0;
+
+        if (!source.headerLocked) {
+            if (atFrameStart) {
+                this._lockTSMFHeader(source, payload, headerCRC, carriers, groupId);
+            }
+            return;
+        }
+
+        if (headerCRC === source.activeHeaderCRC) {
+            source.slotIndex = 0;
+            return;
+        }
+
+        if (!atFrameStart) {
+            return;
+        }
+
+        if (headerCRC !== source.candidateHeaderCRC) {
+            source.candidateHeaderCRC = headerCRC;
+            source.candidateSeen = 1;
+            return;
+        }
+
+        source.candidateSeen += 1;
+        if (source.candidateSeen >= 2) {
+            this._lockTSMFHeader(source, payload, headerCRC, carriers, groupId);
+        }
+    }
+
+    private _lockTSMFHeader(
+        source: SourceState,
+        payload: Buffer,
+        headerCRC: number,
+        carriers: { numberOfCarriers: number; carrierSequence: number },
+        groupId: number
+    ): void {
+        this._applyTSMFHeader(source, payload, headerCRC, carriers, groupId);
+    }
+
+    private _applyTSMFHeader(
+        source: SourceState,
+        payload: Buffer,
+        headerCRC: number,
+        carriers: { numberOfCarriers: number; carrierSequence: number },
+        _groupId: number
+    ): void {
+        source.tsmfRelativeStreamNumber = this._parseRelativeStreamNumbers(payload);
+        source.streamTypeBits = this._parseStreamTypeBits(payload);
+        source.effectiveTargetStreamNumber = this._resolveTargetStream(
+            source.tsmfRelativeStreamNumber,
+            source.streamTypeBits
+        );
+
+        source.headerLocked = true;
+        source.activeHeaderCRC = headerCRC;
+        source.slotIndex = 0;
+        source.candidateHeaderCRC = -1;
+        source.candidateSeen = 0;
+    }
+
+    private _buildTargetSlots(source: SourceState): boolean[] {
+        if (!source.headerLocked || source.effectiveTargetStreamNumber <= 0) {
+            return new Array(SLOT_COUNT).fill(true);
+        }
+        const slots = new Array(SLOT_COUNT).fill(false);
+        for (let i = 0; i < SLOT_COUNT; i++) {
+            const value = source.tsmfRelativeStreamNumber[i] || 0;
+            slots[i] = value === source.effectiveTargetStreamNumber && this._isTLVStream(source.streamTypeBits, value);
+        }
+        return slots;
     }
 
     private _getOrCreateCarrier(
@@ -366,8 +474,7 @@ export default class TLVConverter extends EventEmitter {
             carrier.pending = {
                 numberOfFrames: n,
                 frames: new Array(n).fill(null),
-                filled: 0,
-                expectedPosition: 0
+                filled: 0
             };
         }
 
@@ -375,25 +482,13 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        if (frame.framePosition !== carrier.pending.expectedPosition) {
-            if (frame.framePosition === 0) {
-                carrier.pending = {
-                    numberOfFrames: n,
-                    frames: new Array(n).fill(null),
-                    filled: 0,
-                    expectedPosition: 0
-                };
-            } else {
-                carrier.pending = undefined;
-                return;
-            }
+        if (frame.framePosition < 0 || frame.framePosition >= n) {
+            return;
         }
-
         if (!carrier.pending.frames[frame.framePosition]) {
             carrier.pending.frames[frame.framePosition] = frame;
             carrier.pending.filled += 1;
         }
-        carrier.pending.expectedPosition += 1;
 
         if (carrier.pending.filled === carrier.pending.numberOfFrames) {
             this._maybeApplyOffsets();
@@ -407,7 +502,8 @@ export default class TLVConverter extends EventEmitter {
             }
             carrier.superframes.push({
                 numberOfFrames: carrier.pending.numberOfFrames,
-                frames: carrier.pending.frames as CarrierFrame[]
+                frames: carrier.pending.frames as CarrierFrame[],
+                signature: this._getSuperframeSignature(carrier.pending.frames as CarrierFrame[])
             });
             carrier.pending = undefined;
             this._outputAvailableSuperframes();
@@ -424,16 +520,387 @@ export default class TLVConverter extends EventEmitter {
         if (this._carrierStates.size < this._numberOfCarriers) {
             return;
         }
-
-        this._offsets = (this._offsetsFromOptions && this._offsetsFromOptions.length >= this._numberOfCarriers)
-            ? this._offsetsFromOptions.slice(0, this._numberOfCarriers)
-            : new Array(this._numberOfCarriers).fill(0);
         const carriers = this._getCarriersSorted();
-        this._offsetsPendingBySequence = new Map<number, number>();
+        const minAvailable = Math.min(...carriers.map(c => c.superframes.length));
+        if (minAvailable <= 0) {
+            return;
+        }
+        if (minAvailable < 60) {
+            return;
+        }
+
+        if (this._offsetsFromOptions && this._offsetsFromOptions.length >= this._numberOfCarriers) {
+            this._offsets = this._offsetsFromOptions.slice(0, this._numberOfCarriers);
+            this._offsetsPendingBySequence = new Map<number, number>();
+            carriers.forEach((carrier, index) => {
+                const pending = this._offsets ? this._offsets[index] || 0 : 0;
+                this._offsetsPendingBySequence!.set(carrier.carrierSequence, pending);
+            });
+            return;
+        }
+
+        const maxOffset = Math.min(12, minAvailable - 1);
+        const preview = Math.min(60, minAvailable);
+        if (maxOffset < 0 || preview < 2) {
+            return;
+        }
+
+        const headerOffsets = this._findOffsetsByHeaderSync(carriers, maxOffset, preview);
+        const tlvOffsets = this._findOffsetsByTLVHeuristics(carriers, maxOffset, preview);
+
+        let offsets = tlvOffsets;
+        if (headerOffsets) {
+            const headerScore = this._scoreTLVBuffer(
+                this._assembleTLVFromPackets(this._assemblePacketsForOffsets(carriers, headerOffsets, preview))
+            );
+            const tlvScore = this._scoreTLVBuffer(
+                this._assembleTLVFromPackets(this._assemblePacketsForOffsets(carriers, tlvOffsets, preview))
+            );
+            offsets = headerScore >= tlvScore ? headerOffsets : tlvOffsets;
+        }
+
+        this._offsets = offsets;
         carriers.forEach((carrier, index) => {
-            const pending = this._offsets ? this._offsets[index] || 0 : 0;
-            this._offsetsPendingBySequence!.set(carrier.carrierSequence, pending);
+            const drop = offsets[index] || 0;
+            if (drop > 0) {
+                carrier.superframes.splice(0, drop);
+            }
         });
+        this._offsetsPendingBySequence = null;
+    }
+
+    private _findOffsetsByTLVHeuristics(
+        carriers: CarrierState[],
+        maxOffset: number,
+        previewSuperframes: number
+    ): number[] {
+        const offsets = new Array(carriers.length).fill(0);
+        let bestScore = -1;
+        let bestOffsets = offsets.slice();
+
+        const evaluate = () => {
+            const packets = this._assemblePacketsForOffsets(carriers, offsets, previewSuperframes);
+            if (packets.length === 0) {
+                return;
+            }
+            const tlv = this._assembleTLVFromPackets(packets);
+            const score = this._scoreTLVBuffer(tlv);
+            if (score > bestScore) {
+                bestScore = score;
+                bestOffsets = offsets.slice();
+            }
+        };
+
+        const search = (index: number) => {
+            if (index >= carriers.length) {
+                evaluate();
+                return;
+            }
+            for (let o = 0; o <= maxOffset; o++) {
+                offsets[index] = o;
+                search(index + 1);
+            }
+        };
+
+        if (carriers.length > 0) {
+            offsets[0] = 0;
+            search(1);
+        } else {
+            evaluate();
+        }
+
+        return bestOffsets;
+    }
+
+    private _findOffsetsByHeaderSync(
+        carriers: CarrierState[],
+        maxOffset: number,
+        previewSuperframes: number
+    ): number[] | null {
+        if (carriers.length === 0) {
+            return null;
+        }
+
+        const offsets = new Array(carriers.length).fill(0);
+        const reference = carriers[0].superframes.map(sf => sf.signature || null);
+        const refCount = reference.length;
+        if (refCount === 0) {
+            return null;
+        }
+
+        let bestScoreAcross = 0;
+        for (let i = 1; i < carriers.length; i++) {
+            const candidate = carriers[i].superframes.map(sf => sf.signature || null);
+            if (candidate.length === 0) {
+                continue;
+            }
+
+            let bestOffset = 0;
+            let bestScore = -1;
+            let bestMatches = -1;
+            let bestTotal = 0;
+
+            for (let o = 0; o <= maxOffset; o++) {
+                const count = Math.min(refCount, candidate.length - o, previewSuperframes);
+                if (count <= 0) {
+                    continue;
+                }
+                let matches = 0;
+                let total = 0;
+                for (let k = 0; k < count; k++) {
+                    const refSig = reference[k];
+                    const candSig = candidate[o + k];
+                    if (!refSig || !candSig) {
+                        continue;
+                    }
+                    total += 1;
+                    if (refSig === candSig) {
+                        matches += 1;
+                    }
+                }
+                const score = total > 0 ? matches / total : 0;
+                if (
+                    score > bestScore ||
+                    (score === bestScore && matches > bestMatches) ||
+                    (score === bestScore && matches === bestMatches && total > bestTotal)
+                ) {
+                    bestScore = score;
+                    bestMatches = matches;
+                    bestTotal = total;
+                    bestOffset = o;
+                }
+            }
+
+            offsets[i] = bestOffset;
+            if (bestScore > bestScoreAcross) {
+                bestScoreAcross = bestScore;
+            }
+        }
+
+        if (bestScoreAcross <= 0) {
+            return null;
+        }
+
+        return offsets;
+    }
+
+    private _buildTSMFSignature(payload: Buffer): string {
+        const sig = Buffer.from(payload);
+        sig[125] = 0; // carrier_sequence
+        sig[126] &= 0xf0; // frame_position
+        return sig.toString("hex");
+    }
+
+    private _getSuperframeSignature(frames: CarrierFrame[]): string | undefined {
+        for (const frame of frames) {
+            if (frame && frame.framePosition === 0 && frame.signature) {
+                return frame.signature;
+            }
+        }
+        return undefined;
+    }
+
+    private _assemblePacketsForOffsets(
+        carriers: CarrierState[],
+        offsets: number[],
+        maxSuperframes: number
+    ): Buffer[] {
+        const minSuperframes = Math.min(
+            ...carriers.map((c, idx) => c.superframes.length - (offsets[idx] || 0))
+        );
+        const count = Math.min(minSuperframes, maxSuperframes);
+        if (count <= 0) {
+            return [];
+        }
+
+        const outputChunks: Buffer[] = [];
+        for (let sf = 0; sf < count; sf++) {
+            for (let sub = 0; sub < 53; sub++) {
+                for (let sp = 0; sp < 4; sp++) {
+                    for (let c = 0; c < carriers.length; c++) {
+                        const sfData = carriers[c].superframes[(offsets[c] || 0) + sf];
+                        const n = sfData.numberOfFrames;
+                        if (sp >= n) {
+                            continue;
+                        }
+
+                        const slotIndex = sub * n + sp;
+                        const framePosition = Math.floor(slotIndex / 53);
+                        const slotInFrame = slotIndex % 53;
+                        if (framePosition < 0 || framePosition >= n) {
+                            continue;
+                        }
+                        if (slotInFrame === 0) {
+                            continue;
+                        }
+
+                        const frame = sfData.frames[framePosition];
+                        const packetSlot = slotInFrame - 1;
+                        const chunk = frame.slots[packetSlot];
+                        if (chunk) {
+                            outputChunks.push(chunk);
+                        }
+                    }
+                }
+            }
+        }
+
+        return outputChunks;
+    }
+
+    private _assembleTLVFromPackets(packets: Buffer[]): Buffer {
+        const output: Buffer[] = [];
+        let current: Buffer | null = null;
+
+        for (const packet of packets) {
+            if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
+                continue;
+            }
+            const pusi = (packet[1] & 0x40) !== 0;
+            if (pusi) {
+                const payload = packet.subarray(3);
+                if (payload.length === 0) {
+                    continue;
+                }
+                const pointer = payload[0];
+                const data = payload.subarray(1);
+                const safePointer = Math.min(pointer, data.length);
+                const before = data.subarray(0, safePointer);
+                const after = data.subarray(safePointer);
+
+                if (before.length > 0) {
+                    if (!current) {
+                        current = Buffer.from(before);
+                    } else {
+                        current = Buffer.concat([current, before]);
+                    }
+                }
+                if (current) {
+                    output.push(current);
+                }
+                current = after.length > 0 ? Buffer.from(after) : null;
+            } else {
+                const tlvChunk = packet.subarray(3);
+                if (tlvChunk.length === 0) {
+                    continue;
+                }
+                if (!current) {
+                    current = Buffer.from(tlvChunk);
+                } else {
+                    current = Buffer.concat([current, tlvChunk]);
+                }
+            }
+        }
+
+        if (current) {
+            output.push(current);
+        }
+
+        return Buffer.concat(output);
+    }
+
+    private _scoreTLVBuffer(buffer: Buffer): number {
+        const maxPackets = 5000;
+        const maxStart = Math.min(16384, buffer.length > 4 ? buffer.length - 4 : 0);
+        let bestScore = 0;
+
+        const evaluate = (start: number): number => {
+            let offset = start;
+            let validHeaders = 0;
+            let validTypes = 0;
+            let validIpv6 = 0;
+            let validNull = 0;
+            let total = 0;
+
+            while (offset + 4 <= buffer.length && total < maxPackets) {
+                if (buffer[offset] !== 0x7f) {
+                    break;
+                }
+                const type = buffer[offset + 1];
+                const length = (buffer[offset + 2] << 8) | buffer[offset + 3];
+                const next = offset + 4 + length;
+                if (next > buffer.length) {
+                    break;
+                }
+                const payload = buffer.subarray(offset + 4, next);
+                const typeValid = type === 0x01 || type === 0x02 || type === 0x03 || type === 0xfe || type === 0xff;
+                if (!typeValid) {
+                    break;
+                }
+                validHeaders += 1;
+                if (typeValid) {
+                    validTypes += 1;
+                }
+                if (type === 0x02 && payload.length >= 40 && (payload[0] >> 4) === 0x06) {
+                    const payloadLength = (payload[4] << 8) | payload[5];
+                    if (payloadLength + 40 === payload.length) {
+                        validIpv6 += 1;
+                    }
+                }
+                if (type === 0xff) {
+                    let ok = true;
+                    for (let i = 0; i < payload.length; i++) {
+                        if (payload[i] !== 0xff) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (ok) {
+                        validNull += 1;
+                    }
+                }
+                if (next < buffer.length && buffer[next] !== 0x7f) {
+                    break;
+                }
+                offset = next;
+                total += 1;
+            }
+
+            if (total === 0) {
+                return 0;
+            }
+            const headerRatio = validHeaders / total;
+            const ipv6Ratio = validIpv6 / total;
+            return headerRatio * 1000000 + ipv6Ratio * 500000 + validNull * 500 + validTypes * 100 + total;
+        };
+
+        for (let start = 0; start < maxStart; start++) {
+            const score = evaluate(start);
+            if (score > bestScore) {
+                bestScore = score;
+            }
+        }
+
+        return bestScore;
+    }
+
+    private _isValidIpPacket(payload: Buffer): boolean {
+        if (payload.length < 1) {
+            return false;
+        }
+        const version = payload[0] >> 4;
+        if (version === 4) {
+            if (payload.length < 20) {
+                return false;
+            }
+            const ihl = payload[0] & 0x0f;
+            if (ihl < 5) {
+                return false;
+            }
+            const totalLength = (payload[2] << 8) | payload[3];
+            if (totalLength !== payload.length) {
+                return false;
+            }
+            return totalLength >= ihl * 4;
+        }
+        if (version === 6) {
+            if (payload.length < 40) {
+                return false;
+            }
+            const payloadLength = (payload[4] << 8) | payload[5];
+            return payloadLength + 40 === payload.length;
+        }
+        return false;
     }
 
     private _outputAvailableSuperframes(): void {
@@ -509,20 +976,35 @@ export default class TLVConverter extends EventEmitter {
         if (this._closed || this._closing || !this._buffer) {
             return;
         }
+        if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
+            return;
+        }
         const pusi = (packet[1] & 0x40) !== 0;
         if (pusi) {
+            const payload = packet.subarray(3);
+            if (payload.length === 0) {
+                return;
+            }
+            const pointer = payload[0];
+            const data = payload.subarray(1);
+            const safePointer = Math.min(pointer, data.length);
+            const before = data.subarray(0, safePointer);
+            const after = data.subarray(safePointer);
+            if (before.length > 0) {
+                this._buffer.push(before);
+            }
             if (this._buffer.length > 0) {
                 this._flushBufferedOutput();
             }
-            const tlvChunk = packet.subarray(4);
-            if (tlvChunk.length > 0) {
-                this._buffer.push(tlvChunk);
+            if (after.length > 0) {
+                this._buffer.push(after);
             }
         } else {
             const tlvChunk = packet.subarray(3);
-            if (tlvChunk.length > 0) {
-                this._buffer.push(tlvChunk);
+            if (tlvChunk.length === 0) {
+                return;
             }
+            this._buffer.push(tlvChunk);
         }
     }
 
@@ -694,6 +1176,40 @@ export default class TLVConverter extends EventEmitter {
             }
         }
         return best || 1;
+    }
+
+    private _resolveTargetStream(relative: number[], streamTypeBits: number): number {
+        let targetStream = this._targetRelStream;
+        if (targetStream === null) {
+            targetStream = this._selectTargetStream(relative, streamTypeBits);
+            this._targetRelStream = targetStream;
+        }
+
+        if (!this._isTLVStream(streamTypeBits, targetStream)) {
+            const fallback = this._selectTargetStream(relative, streamTypeBits);
+            if (this._isTLVStream(streamTypeBits, fallback)) {
+                log.warn(
+                    "TunerDevice#%d TLVConverter target stream %d is not TLV, fallback to %d",
+                    this._tunerIndex,
+                    targetStream,
+                    fallback
+                );
+                if (this._targetRelStream === null) {
+                    this._targetRelStream = fallback;
+                }
+                targetStream = fallback;
+            }
+        }
+
+        return targetStream ?? 1;
+    }
+
+    private _isTLVStream(streamTypeBits: number, streamNumber: number): boolean {
+        if (streamNumber < 1 || streamNumber > 15) {
+            return false;
+        }
+        const typeBit = (streamTypeBits >> (15 - streamNumber)) & 1;
+        return typeBit === 0;
     }
 
     private _validateTSMFFrame(payload: Buffer): {
