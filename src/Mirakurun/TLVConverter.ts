@@ -560,6 +560,10 @@ export default class TLVConverter extends EventEmitter {
         }
 
         this._offsets = offsets;
+        if (this._buffer && this._buffer.length > 0) {
+            // Drop pre-offset TLV fragments to avoid feeding invalid data to decoder.
+            this._buffer.length = 0;
+        }
         carriers.forEach((carrier, index) => {
             const drop = offsets[index] || 0;
             if (drop > 0) {
@@ -768,8 +772,8 @@ export default class TLVConverter extends EventEmitter {
                 const before = data.subarray(0, safePointer);
                 const after = data.subarray(safePointer);
 
-                if (before.length > 0) {
-                    current = current ? Buffer.concat([current, before]) : Buffer.from(before);
+                if (before.length > 0 && current) {
+                    current = Buffer.concat([current, before]);
                 }
                 if (current) {
                     output.push(current);
@@ -982,7 +986,7 @@ export default class TLVConverter extends EventEmitter {
             const safePointer = Math.min(pointer, data.length);
             const before = data.subarray(0, safePointer);
             const after = data.subarray(safePointer);
-            if (before.length > 0) {
+            if (before.length > 0 && this._buffer.length > 0) {
                 this._buffer.push(before);
             }
             if (this._buffer.length > 0) {
