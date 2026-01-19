@@ -15,6 +15,7 @@ const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
 const AFC_ADAPTATION_ONLY = 0x01;
 const AFC_WITH_ADAPTATION = 0x03;
+const OFFSET_MIN_SUPERFRAMES = 3;
 
 interface CarrierFrame {
     framePosition: number;
@@ -515,7 +516,7 @@ export default class TLVConverter extends EventEmitter {
         if (minAvailable <= 0) {
             return;
         }
-        if (minAvailable < 10) {
+        if (minAvailable < OFFSET_MIN_SUPERFRAMES) {
             return;
         }
 
