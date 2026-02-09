@@ -412,6 +412,20 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                                 setEditing([...editing]);
                             }}
                         />
+                        <TextField
+                            style={{ width: 70 }}
+                            label="TsmfGroupId"
+                            value={`${ch.tsmfGroupId != null ? ch.tsmfGroupId : ""}`}
+                            onChange={(ev, newValue) => {
+                                if (newValue === "") {
+                                    delete ch.tsmfGroupId;
+                                } else if (/^[0-9]+$/.test(newValue)) {
+                                    const tsmfGroupId = parseInt(newValue, 10);
+                                    ch.tsmfGroupId = tsmfGroupId;
+                                }
+                                setEditing([...editing]);
+                            }}
+                        />
 
                         {/* Command Vars Section - Styled like other fields */}
                         <div style={{ flexGrow: 1 }}>

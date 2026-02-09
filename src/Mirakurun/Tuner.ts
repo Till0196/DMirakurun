@@ -394,6 +394,10 @@ export class Tuner {
             if (device.isAvailable !== true || !device.channel) {
                 continue;
             }
+            // Skip devices in carrier mode — they have no TLVConverter/decoder
+            if (device.isCarrierOnly) {
+                continue;
+            }
             if (device.channel === channel || device.channel.isSameTsmfGroup(channel)) {
                 return device;
             }
@@ -417,7 +421,7 @@ export class Tuner {
         if (priority >= 0) {
             devices.sort((t1, t2) => t1.getPriority() - t2.getPriority());
             for (const device of devices) {
-                if (device.isUsing === true && device.getPriority() < priority) {
+                if (device.isUsing === true && !device.isCarrierOnly && device.getPriority() < priority) {
                     return device;
                 }
             }
