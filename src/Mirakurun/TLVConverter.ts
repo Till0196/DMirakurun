@@ -572,13 +572,6 @@ export default class TLVConverter extends EventEmitter {
             );
         }
 
-        if (source.carrierSequence && source.carrierSequence !== carrierSequence) {
-            log.warn(
-                "TunerDevice#%d TLVConverter source carrier sequence changed %d -> %d",
-                this._tunerIndex, source.carrierSequence, carrierSequence
-            );
-        }
-
         source.carrierSequence = carrierSequence;
         source.numberOfCarriers = numberOfCarriers;
 
