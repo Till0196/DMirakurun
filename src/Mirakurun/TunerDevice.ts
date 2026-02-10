@@ -891,16 +891,7 @@ export default class TunerDevice extends EventEmitter {
                             device.config.types.includes("BS4K")
                         ) as TunerDevice[];
 
-                let freeCandidates = findFreeTuners();
-
-                // Retry waiting for tuners to be released
-                if (freeCandidates.length < 2 - selected.length) {
-                    for (let retry = 0; retry < 5 && freeCandidates.length < 2 - selected.length; retry++) {
-                        log.info("TunerDevice#%d waiting for BS4K tuners to be released (retry=%d, available=%d)", this._index, retry + 1, freeCandidates.length);
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                        freeCandidates = findFreeTuners();
-                    }
-                }
+                const freeCandidates = findFreeTuners();
 
                 const remainingChannels = groupChannels.filter(c => !selectedChannels.includes(c));
                 for (let i = 0; i < freeCandidates.length && selected.length < 2; i++) {
@@ -923,7 +914,7 @@ export default class TunerDevice extends EventEmitter {
                             !device.isRemote &&
                             device.isUsing &&
                             device.config.types.includes("BS4K") &&
-                            device.getPriority() < myPriority
+                            device.getPriority() <= myPriority
                         )
                         .sort((a, b) => a.getPriority() - b.getPriority()) as TunerDevice[];
 
@@ -932,7 +923,7 @@ export default class TunerDevice extends EventEmitter {
                     for (const device of preemptable) {
                         if (selected.length >= 2) { break; }
                         log.info(
-                            "TunerDevice#%d preempting tuner #%d (priority=%d < %d) for additional carrier",
+                            "TunerDevice#%d preempting tuner #%d (priority=%d <= %d) for additional carrier",
                             this._index, device.index, device.getPriority(), myPriority
                         );
                         selected.push(device);
