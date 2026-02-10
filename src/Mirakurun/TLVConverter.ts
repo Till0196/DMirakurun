@@ -25,10 +25,14 @@ const TLV_SYNC_BYTE = 0x7f;
 const TLV_HEADER_SIZE = 4; // sync(1) + type(1) + length(2)
 const TLV_TYPE_HEADER_COMPRESSED_IP = 0x03;
 
-// Compressed IP header sizes (ARIB STD-B32 Table 3-2)
-// headerType upper nibble: 0x2x = partial (3-byte header), 0x6x = full (3+42 byte header)
-const CID_PARTIAL_HEADER_SIZE = 3;
-const CID_FULL_HEADER_SIZE = 3 + 42;
+// Compressed IP header sizes
+// CID(2 bytes) + headerType(1 byte) = 3 bytes base, plus type-specific fields:
+//   0x20: PartialIpv4AndPartialUdp — no extra fields (3 bytes total)
+//   0x21: Ipv4Identifier — no extra fields (3 bytes total)
+//   0x60: PartialIpv6AndPartialUdp — ipv6(38) + udp(4) = 42 extra (45 bytes total)
+//   0x61: NoCompressedHeader — no extra fields (3 bytes total)
+const CID_HEADER_BASE = 3;
+const CID_HEADER_0x60_EXTRA = 42;
 
 // Offset detection parameters
 const OFFSET_MIN_SFS_PER_CARRIER = 140;
@@ -182,8 +186,8 @@ export default class TLVConverter extends EventEmitter {
     private _pendingOutputSize = 0;
     private _ready = false;
     private _crcTable?: number[];
-    private _tlvSyncFound = false;
     private _ccGraceUntil = 0;
+    private _probeInProgress = false;
     private _probeMinSfAtNextAttempt = 0;
 
     constructor(tunerIndex: number, output: Writable | null, options?: MultiCarrierOptions | number) {
@@ -248,7 +252,7 @@ export default class TLVConverter extends EventEmitter {
         this._ready = false;
         this._loggedOffsetsBeforeReady = false;
         this._freezeHeader = false;
-        this._tlvSyncFound = false;
+        this._probeInProgress = false;
         this._probeMinSfAtNextAttempt = 0;
         if (this._buffer) {
             this._buffer.length = 0;
@@ -445,8 +449,6 @@ export default class TLVConverter extends EventEmitter {
             if (this._buffer && this._buffer.length > 0) {
                 this._buffer.length = 0;
             }
-            this._tlvSyncFound = false;
-
             for (const s of this._sources.values()) {
                 s.tsmfDroppedFrames = 0;
                 s.currentFrame = undefined;
@@ -565,11 +567,6 @@ export default class TLVConverter extends EventEmitter {
 
         if (this._numberOfCarriers === 0) {
             this._numberOfCarriers = numberOfCarriers;
-        } else if (this._numberOfCarriers !== numberOfCarriers) {
-            log.warn(
-                "TunerDevice#%d TLVConverter carrier count mismatch: got=%d expected=%d",
-                this._tunerIndex, numberOfCarriers, this._numberOfCarriers
-            );
         }
 
         source.carrierSequence = carrierSequence;
@@ -603,6 +600,13 @@ export default class TLVConverter extends EventEmitter {
         const n = frame.numberOfFrames;
         if (n <= 0 || n > 15) {
             return;
+        }
+        if (frame.slots.length !== SLOT_COUNT) {
+            log.warn(
+                "TunerDevice#%d TLVConverter incomplete frame: slots=%d/%d carrier=%d fp=%d",
+                this._tunerIndex, frame.slots.length, SLOT_COUNT,
+                carrier.carrierSequence, frame.framePosition
+            );
         }
         carrier.blocks.push(frame);
         this._buildSuperframes(carrier);
@@ -641,13 +645,14 @@ export default class TLVConverter extends EventEmitter {
                 numberOfFrames: n,
                 frames
             });
+
             this._maybeApplyOffsets();
             this._outputAvailableSuperframes();
         }
     }
 
     private _maybeApplyOffsets(): void {
-        if (this._offsets) {
+        if (this._offsets || this._probeInProgress) {
             return;
         }
         if (this._carrierStates.size < this._numberOfCarriers) {
@@ -671,13 +676,8 @@ export default class TLVConverter extends EventEmitter {
         }
 
         const candidates = this._buildProbeCandidates(carriers);
-        const result = this._probeOffsets(carriers, candidates);
-        if (result) {
-            this._finalizeOffsets(result);
-        } else {
-            // Require more SFs before retrying to avoid repeated probe on every SF
-            this._probeMinSfAtNextAttempt = minSf + 60;
-        }
+        this._probeInProgress = true;
+        this._probeOffsetsAsync(carriers, candidates, minSf);
     }
 
     private _finalizeOffsets(offsets: number[]): void {
@@ -688,7 +688,6 @@ export default class TLVConverter extends EventEmitter {
         if (this._buffer && this._buffer.length > 0) {
             this._buffer.length = 0;
         }
-        this._tlvSyncFound = false;
         // Reset dropped frame counters AND set CC grace period.
         // Offset detection blocks the event loop briefly, causing pipe buffer overflow
         // and TSMF frame loss. A 2-second grace period covers the buffer drain period.
@@ -741,30 +740,82 @@ export default class TLVConverter extends EventEmitter {
         return candidates;
     }
 
-    private _probeOffsets(carriers: CarrierState[], candidates: number[][]): number[] | null {
-        for (const offsets of candidates) {
+    /**
+     * Probe offset candidates asynchronously, yielding the event loop between
+     * each candidate via setImmediate. This prevents DVR buffer overflow (EOVERFLOW)
+     * caused by blocking the event loop during probing at ~73 Mbps.
+     * The first candidate is tested synchronously (common case: SF-based offset is exact).
+     */
+    private _probeOffsetsAsync(carriers: CarrierState[], candidates: number[][], minSf: number): void {
+        let idx = 0;
+        let bestOffsets: number[] | null = null;
+        let bestMmtpPackets = 0;
+        let bestMmtpDrops = Infinity;
+
+        const tryNext = () => {
+            if (this._closed || this._closing) {
+                this._probeInProgress = false;
+                return;
+            }
+
+            if (idx >= candidates.length) {
+                // All candidates tested — accept best if good enough
+                if (bestOffsets && bestMmtpPackets >= OFFSET_MMTP_MIN_PACKETS &&
+                    bestMmtpDrops / bestMmtpPackets < 0.05) {
+                    log.info(
+                        "TunerDevice#%d TLVConverter offsets=[%s] (mmtpPkts=%d, drops=%d, best of %d)",
+                        this._tunerIndex, bestOffsets.join(","), bestMmtpPackets, bestMmtpDrops,
+                        candidates.length
+                    );
+                    this._probeInProgress = false;
+                    this._finalizeOffsets(bestOffsets);
+                    return;
+                }
+                this._probeInProgress = false;
+                this._probeMinSfAtNextAttempt = minSf + 60;
+                return;
+            }
+
+            const offsets = candidates[idx];
+            idx++;
+
             const packets = this._assemblePacketsForOffsets(carriers, offsets, 30);
-            if (packets.length === 0) {
-                continue;
+            if (packets.length > 0) {
+                const tlv = this._assembleTLVFromPackets(packets);
+                const syncStart = TLVConverter._findTlvSync(tlv);
+
+                if (syncStart >= 0) {
+                    const stats = this._collectMmtpStats(tlv, syncStart);
+
+                    if (stats.mmtpPackets >= OFFSET_MMTP_MIN_PACKETS) {
+                        // Immediate accept on perfect continuity
+                        if (stats.mmtpDrops === 0) {
+                            log.info(
+                                "TunerDevice#%d TLVConverter offsets=[%s] (mmtpPkts=%d, drops=0, candidate %d/%d)",
+                                this._tunerIndex, offsets.join(","), stats.mmtpPackets,
+                                idx, candidates.length
+                            );
+                            this._probeInProgress = false;
+                            this._finalizeOffsets(offsets);
+                            return;
+                        }
+
+                        // Track best candidate
+                        if (stats.mmtpDrops < bestMmtpDrops ||
+                            (stats.mmtpDrops === bestMmtpDrops && stats.mmtpPackets > bestMmtpPackets)) {
+                            bestOffsets = offsets;
+                            bestMmtpPackets = stats.mmtpPackets;
+                            bestMmtpDrops = stats.mmtpDrops;
+                        }
+                    }
+                }
             }
 
-            const tlv = this._assembleTLVFromPackets(packets);
-            const syncStart = TLVConverter._findTlvSync(tlv);
-            if (syncStart < 0) {
-                continue;
-            }
-            const stats = this._collectMmtpStats(tlv, syncStart);
+            setImmediate(tryNext);
+        };
 
-            if (stats.mmtpDrops === 0 && stats.mmtpPackets >= OFFSET_MMTP_MIN_PACKETS) {
-                log.info(
-                    "TunerDevice#%d TLVConverter offsets=[%s] (mmtpPkts=%d, candidate %d/%d)",
-                    this._tunerIndex, offsets.join(","), stats.mmtpPackets,
-                    candidates.indexOf(offsets) + 1, candidates.length
-                );
-                return offsets;
-            }
-        }
-        return null;
+        // First candidate tested synchronously (zero overhead for common case)
+        tryNext();
     }
 
     private _assemblePacketsForOffsets(
@@ -820,9 +871,9 @@ export default class TLVConverter extends EventEmitter {
 
     /**
      * Assemble a TLV byte stream from TS packets for offset probing.
-     * Uses subarray(4) to get clean TS payload (184 bytes), avoiding the
-     * subarray(3) used in the output path which includes byte 3 (CC/flags)
-     * as noise — tolerated by dantto4k but fatal for TLV sync detection.
+     * TSMF data slots: PUSI=1 has pointer field at byte 3 (skip to byte 4),
+     * PUSI=0 has data starting at byte 3 (no pointer field).
+     * Must match the output path and reference implementation exactly.
      */
     private _assembleTLVFromPackets(packets: Buffer[]): Buffer {
         const chunks: Buffer[] = [];
@@ -830,7 +881,8 @@ export default class TLVConverter extends EventEmitter {
             if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
                 continue;
             }
-            chunks.push(packet.subarray(4));
+            const pusi = (packet[1] & 0x40) !== 0;
+            chunks.push(packet.subarray(pusi ? 4 : 3));
         }
         return Buffer.concat(chunks);
     }
@@ -916,12 +968,19 @@ export default class TLVConverter extends EventEmitter {
         }
 
         // Skip compressed IP header to reach MMTP payload
-        const cidType = tlvPayload[2] & 0xf0;
-        const mmtpStart = cidType === 0x20 ? CID_PARTIAL_HEADER_SIZE
-                        : cidType === 0x60 ? CID_FULL_HEADER_SIZE
-                        : -1;
-        if (mmtpStart < 0) {
-            return null;
+        const headerType = tlvPayload[2];
+        let mmtpStart: number;
+        switch (headerType) {
+            case 0x20: // PartialIpv4AndPartialUdp
+            case 0x21: // Ipv4Identifier
+            case 0x61: // NoCompressedHeader
+                mmtpStart = CID_HEADER_BASE;
+                break;
+            case 0x60: // PartialIpv6AndPartialUdp
+                mmtpStart = CID_HEADER_BASE + CID_HEADER_0x60_EXTRA;
+                break;
+            default:
+                return null;
         }
 
         const mmtp = tlvPayload.subarray(mmtpStart);
@@ -1039,7 +1098,7 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _flushBufferedOutput(): void {
-        if (!this._buffer || this._buffer.length === 0 || this._sinkClosed || this._drainWaiting) {
+        if (!this._buffer || this._buffer.length === 0 || this._sinkClosed) {
             return;
         }
         if (!this._offsets && this._numberOfCarriers > 1) {
@@ -1081,19 +1140,8 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        let outputData = Buffer.concat(this._buffer);
+        const outputData = Buffer.concat(this._buffer);
         this._buffer.length = 0;
-
-        // Ensure output starts with TLV sync byte
-        if (!this._tlvSyncFound && outputData.length > 0) {
-            const syncIndex = outputData.indexOf(TLV_SYNC_BYTE);
-            if (syncIndex > 0) {
-                outputData = outputData.subarray(syncIndex);
-            } else if (syncIndex < 0) {
-                return;
-            }
-            this._tlvSyncFound = true;
-        }
 
         this._pendingOutputChunks.push(outputData);
         this._pendingOutputSize += outputData.length;
@@ -1122,9 +1170,6 @@ export default class TLVConverter extends EventEmitter {
                     this._drainWaiting = false;
                     if (this._pendingOutputChunks.length > 0 && !this._sinkClosed) {
                         this._writePendingOutput();
-                    }
-                    if (this._buffer.length > 0 && !this._sinkClosed) {
-                        this._flushBufferedOutput();
                     }
                 });
             }

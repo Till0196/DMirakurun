@@ -909,6 +909,38 @@ export default class TunerDevice extends EventEmitter {
                 }
             }
 
+            // Fill remaining slots by preempting lower-priority tuners
+            if (selected.length < 2) {
+                const myPriority = this.getPriority();
+                if (myPriority >= 0) {
+                    const preemptable = _.tuner.devices
+                        .map(device => _.tuner.get(device.index))
+                        .filter(device =>
+                            device &&
+                            device !== this &&
+                            !selected.includes(device) &&
+                            !device.isCarrierOnly &&
+                            !device.isRemote &&
+                            device.isUsing &&
+                            device.config.types.includes("BS4K") &&
+                            device.getPriority() < myPriority
+                        )
+                        .sort((a, b) => a.getPriority() - b.getPriority()) as TunerDevice[];
+
+                    const remainingChannels = groupChannels.filter(c => !selectedChannels.includes(c));
+                    let remIdx = 0;
+                    for (const device of preemptable) {
+                        if (selected.length >= 2) { break; }
+                        log.info(
+                            "TunerDevice#%d preempting tuner #%d (priority=%d < %d) for additional carrier",
+                            this._index, device.index, device.getPriority(), myPriority
+                        );
+                        selected.push(device);
+                        selectedChannels.push(remainingChannels[remIdx++]);
+                    }
+                }
+            }
+
             if (selected.length < 2) {
                 log.warn("TunerDevice#%d not enough BS4K tuners for multi-carrier (need=2, available=%d)", this._index, selected.length);
                 this._resetCarrierGates();
