@@ -852,89 +852,123 @@ export default class TunerDevice extends EventEmitter {
                 return;
             }
 
-            // First, try to reuse tuners already tuned to the needed carrier channels (in grace period)
-            const selected: TunerDevice[] = [];
-            const selectedChannels: ChannelItem[] = [];
+            // Retry loop: carrier tuners from a previous session may still be releasing (~1s delay)
+            const MAX_CARRIER_FIND_ATTEMPTS = 6;
+            const CARRIER_FIND_RETRY_DELAY_MS = 500;
+            let selected: TunerDevice[] = [];
+            let selectedChannels: ChannelItem[] = [];
 
-            for (const neededChannel of groupChannels) {
-                if (selected.length >= 2) { break; }
-                const reusable = _.tuner.devices
-                    .map(device => _.tuner.get(device.index))
-                    .find(device =>
-                        device &&
-                        device !== this &&
-                        !selected.includes(device) &&
-                        (device as any)._isAvailable !== false &&
-                        (device as any)._closing !== true &&
-                        (device as any)._channel?.channel === neededChannel.channel &&
-                        (device as any)._process !== null
-                    ) as TunerDevice | undefined;
-
-                if (reusable) {
-                    log.info("TunerDevice#%d reusing tuner #%d already tuned to %s", this._index, reusable.index, neededChannel.channel);
-                    selected.push(reusable);
-                    selectedChannels.push(neededChannel);
+            for (let _attempt = 0; _attempt < MAX_CARRIER_FIND_ATTEMPTS; _attempt++) {
+                if (this._closing || this._tlvConverter !== combiner) {
+                    return;
                 }
-            }
-
-            // Fill remaining slots with free tuners
-            if (selected.length < 2) {
-                const findFreeTuners = () =>
-                    _.tuner.devices
-                        .map(device => _.tuner.get(device.index))
-                        .filter(device =>
-                            device &&
-                            device !== this &&
-                            !selected.includes(device) &&
-                            device.isFree &&
-                            !device.isRemote &&
-                            device.config.types.includes("BS4K")
-                        ) as TunerDevice[];
-
-                const freeCandidates = findFreeTuners();
-
-                const remainingChannels = groupChannels.filter(c => !selectedChannels.includes(c));
-                for (let i = 0; i < freeCandidates.length && selected.length < 2; i++) {
-                    selected.push(freeCandidates[i]);
-                    selectedChannels.push(remainingChannels[i]);
-                }
-            }
-
-            // Fill remaining slots by preempting lower-priority tuners
-            if (selected.length < 2) {
-                const myPriority = this.getPriority();
-                if (myPriority >= 0) {
-                    const preemptable = _.tuner.devices
-                        .map(device => _.tuner.get(device.index))
-                        .filter(device =>
-                            device &&
-                            device !== this &&
-                            !selected.includes(device) &&
-                            !device.isCarrierOnly &&
-                            !device.isRemote &&
-                            device.isUsing &&
-                            device.config.types.includes("BS4K") &&
-                            device.getPriority() <= myPriority
-                        )
-                        .sort((a, b) => a.getPriority() - b.getPriority()) as TunerDevice[];
-
-                    const remainingChannels = groupChannels.filter(c => !selectedChannels.includes(c));
-                    let remIdx = 0;
-                    for (const device of preemptable) {
-                        if (selected.length >= 2) { break; }
-                        log.info(
-                            "TunerDevice#%d preempting tuner #%d (priority=%d <= %d) for additional carrier",
-                            this._index, device.index, device.getPriority(), myPriority
-                        );
-                        selected.push(device);
-                        selectedChannels.push(remainingChannels[remIdx++]);
+                if (_attempt > 0) {
+                    log.debug(
+                        "TunerDevice#%d retrying carrier tuner search (attempt %d/%d)...",
+                        this._index, _attempt + 1, MAX_CARRIER_FIND_ATTEMPTS
+                    );
+                    await new Promise(resolve => setTimeout(resolve, CARRIER_FIND_RETRY_DELAY_MS));
+                    if (this._closing || this._tlvConverter !== combiner) {
+                        return;
                     }
                 }
+
+                selected = [];
+                selectedChannels = [];
+
+                // First, try to reuse tuners already tuned to the needed carrier channels
+                for (const neededChannel of groupChannels) {
+                    if (selected.length >= 2) { break; }
+                    const reusable = _.tuner.devices
+                        .map(device => _.tuner.get(device.index))
+                        .find(device =>
+                            device &&
+                            device !== this &&
+                            !selected.includes(device) &&
+                            (device as any)._isAvailable !== false &&
+                            (device as any)._closing !== true &&
+                            (device as any)._channel?.channel === neededChannel.channel &&
+                            (device as any)._process !== null
+                        ) as TunerDevice | undefined;
+
+                    if (reusable) {
+                        log.info("TunerDevice#%d reusing tuner #%d already tuned to %s", this._index, reusable.index, neededChannel.channel);
+                        selected.push(reusable);
+                        selectedChannels.push(neededChannel);
+                    }
+                }
+
+                // Fill remaining slots with free tuners
+                if (selected.length < 2) {
+                    const findFreeTuners = () =>
+                        _.tuner.devices
+                            .map(device => _.tuner.get(device.index))
+                            .filter(device =>
+                                device &&
+                                device !== this &&
+                                !selected.includes(device) &&
+                                device.isFree &&
+                                !device.isRemote &&
+                                device.config.types.includes("BS4K")
+                            ) as TunerDevice[];
+
+                    const freeCandidates = findFreeTuners();
+
+                    const remainingChannels = groupChannels.filter(c => !selectedChannels.includes(c));
+                    for (let i = 0; i < freeCandidates.length && selected.length < 2; i++) {
+                        selected.push(freeCandidates[i]);
+                        selectedChannels.push(remainingChannels[i]);
+                    }
+                }
+
+                // Fill remaining slots by preempting lower-priority tuners
+                if (selected.length < 2) {
+                    const myPriority = this.getPriority();
+                    if (myPriority >= 0) {
+                        const preemptable = _.tuner.devices
+                            .map(device => _.tuner.get(device.index))
+                            .filter(device =>
+                                device &&
+                                device !== this &&
+                                !selected.includes(device) &&
+                                !device.isCarrierOnly &&
+                                !device.isRemote &&
+                                device.isUsing &&
+                                device.config.types.includes("BS4K") &&
+                                device.getPriority() <= myPriority
+                            )
+                            .sort((a, b) => a.getPriority() - b.getPriority()) as TunerDevice[];
+
+                        const remainingChannels = groupChannels.filter(c => !selectedChannels.includes(c));
+                        let remIdx = 0;
+                        for (const device of preemptable) {
+                            if (selected.length >= 2) { break; }
+                            log.info(
+                                "TunerDevice#%d preempting tuner #%d (priority=%d <= %d) for additional carrier",
+                                this._index, device.index, device.getPriority(), myPriority
+                            );
+                            selected.push(device);
+                            selectedChannels.push(remainingChannels[remIdx++]);
+                        }
+                    }
+                }
+
+                if (selected.length >= 2) {
+                    break;
+                }
             }
 
             if (selected.length < 2) {
-                log.warn("TunerDevice#%d not enough BS4K tuners for multi-carrier (need=2, available=%d)", this._index, selected.length);
+                log.error(
+                    "TunerDevice#%d not enough BS4K tuners for multi-carrier (need=2, available=%d) after %d attempts",
+                    this._index, selected.length, MAX_CARRIER_FIND_ATTEMPTS
+                );
                 this._resetCarrierGates();
+                setImmediate(() => {
+                    if (!this._closing && this._process) {
+                        this._kill(true).catch(log.error);
+                    }
+                });
                 return;
             }
 
@@ -946,6 +980,12 @@ export default class TunerDevice extends EventEmitter {
 
             let startedCount = 0;
             for (let i = 0; i < selected.length; i++) {
+                if (this._closing || this._tlvConverter !== combiner) {
+                    this._cleanupCarrierLinks();
+                    this._resetCarrierGates();
+                    return;
+                }
+
                 const device = selected[i];
                 const channel = selectedChannels[i];
                 const input = combiner.createInput();
