@@ -1,6 +1,6 @@
 import { Writable } from "stream";
 import * as stream from "stream";
-import { EventEmitter } from "eventemitter3";
+import EventEmitter = require("eventemitter3");
 import * as log from "./log";
 
 // TS packet constants
@@ -13,12 +13,8 @@ const TSMF_PID = 0x2f;
 const SLOT_COUNT = 52 as const;
 
 // TSMF sync patterns (ARIB STD-B32)
-// AFL=0xfa → ((0xfa << 8) | AF[0]) & 0x1fff = 0x1a86
-// AFL=0xe5 → ((0xe5 << 8) | AF[0]) & 0x1fff = 0x0579
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
-const AFC_ADAPTATION_ONLY = 0x01;
-const AFC_WITH_ADAPTATION = 0x03;
 
 // TLV packet constants (ARIB STD-B32)
 const TLV_SYNC_BYTE = 0x7f;
@@ -26,11 +22,6 @@ const TLV_HEADER_SIZE = 4; // sync(1) + type(1) + length(2)
 const TLV_TYPE_HEADER_COMPRESSED_IP = 0x03;
 
 // Compressed IP header sizes
-// CID(2 bytes) + headerType(1 byte) = 3 bytes base, plus type-specific fields:
-//   0x20: PartialIpv4AndPartialUdp — no extra fields (3 bytes total)
-//   0x21: Ipv4Identifier — no extra fields (3 bytes total)
-//   0x60: PartialIpv6AndPartialUdp — ipv6(38) + udp(4) = 42 extra (45 bytes total)
-//   0x61: NoCompressedHeader — no extra fields (3 bytes total)
 const CID_HEADER_BASE = 3;
 const CID_HEADER_0x60_EXTRA = 42;
 
@@ -47,7 +38,6 @@ interface CarrierFrame {
     frameSync: number;
     slots: Buffer[];
     targetSlots: boolean[];
-    filledSlots: number;
 }
 
 interface CarrierSuperframe {
@@ -65,15 +55,11 @@ interface CarrierState {
 interface SourceState {
     sourceId: number;
     carrierSequence?: number;
-    numberOfCarriers?: number;
     packet: Buffer;
     offset: number;
     currentFrame?: CarrierFrame;
     headerLocked: boolean;
     activeHeaderCRC: number;
-    candidateHeaderCRC: number;
-    candidateSeen: number;
-    slotIndex: number;
     effectiveTargetStreamNumber: number;
     tsmfRelativeStreamNumber: number[];
     streamTypeBits: number;
@@ -118,7 +104,6 @@ export default class TLVConverter extends EventEmitter {
     /**
      * Find a valid TLV sync position by verifying that at least 3 consecutive
      * TLV packets chain correctly (each packet's end points to the next 0x7F).
-     * A bare indexOf(0x7F) can hit data bytes that coincidentally equal 0x7F.
      */
     private static _findTlvSync(buffer: Buffer): number {
         let searchFrom = 0;
@@ -149,7 +134,7 @@ export default class TLVConverter extends EventEmitter {
         return -1;
     }
 
-    /** Extract TLV payload from a TSMF TS packet (no pointer field — payload starts at byte 3 or 4). */
+    /** Extract TLV payload from a TSMF TS packet (PUSI=1: skip pointer field). */
     private static _extractTlvPayload(packet: Buffer): Buffer | null {
         if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
             return null;
@@ -159,8 +144,8 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _tunerIndex: number;
-    private _output: Writable;
-    private _buffer: Buffer[] = [];
+    private _output: Writable | null;
+    private _buffer: Buffer[] | null = [];
 
     private _sources = new Map<number, SourceState>();
     private _carrierStates = new Map<number, CarrierState>();
@@ -183,7 +168,6 @@ export default class TLVConverter extends EventEmitter {
     private _sinkClosed = false;
     private _drainWaiting = false;
     private _pendingOutputChunks: Buffer[] = [];
-    private _pendingOutputSize = 0;
     private _ready = false;
     private _crcTable?: number[];
     private _ccGraceUntil = 0;
@@ -195,7 +179,6 @@ export default class TLVConverter extends EventEmitter {
         this._tunerIndex = tunerIndex;
         this._output = output;
         if (typeof options === "number") {
-            this._offsetsFromOptions = undefined;
             this._targetRelStream = options;
             this._expectedGroupId = null;
         } else {
@@ -225,9 +208,6 @@ export default class TLVConverter extends EventEmitter {
             offset: -1,
             headerLocked: false,
             activeHeaderCRC: -1,
-            candidateHeaderCRC: -1,
-            candidateSeen: 0,
-            slotIndex: -1,
             effectiveTargetStreamNumber: 0,
             tsmfRelativeStreamNumber: [],
             streamTypeBits: 0,
@@ -259,13 +239,9 @@ export default class TLVConverter extends EventEmitter {
         }
         for (const source of this._sources.values()) {
             source.carrierSequence = undefined;
-            source.numberOfCarriers = undefined;
             source.currentFrame = undefined;
             source.headerLocked = false;
             source.activeHeaderCRC = -1;
-            source.candidateHeaderCRC = -1;
-            source.candidateSeen = 0;
-            source.slotIndex = -1;
             source.effectiveTargetStreamNumber = 0;
             source.tsmfRelativeStreamNumber = [];
             source.streamTypeBits = 0;
@@ -283,7 +259,7 @@ export default class TLVConverter extends EventEmitter {
         if (!source) {
             return;
         }
-        if (this._output && (this._output.destroyed || (this._output as any).writableEnded)) {
+        if (this._output?.destroyed || (this._output as any)?.writableEnded) {
             this._sinkClosed = true;
             this._close();
             return;
@@ -379,20 +355,17 @@ export default class TLVConverter extends EventEmitter {
 
             if (pid === TLV_PID && source.currentFrame && source.currentFrame.slots.length < SLOT_COUNT) {
                 source.currentFrame.slots.push(Buffer.from(packet));
-                source.currentFrame.filledSlots += 1;
             }
         }
     }
 
     private _handleTSMFPacket(source: SourceState, packet: Buffer): void {
-        // Track TSMF CC for ALL packets to detect frame drops
-        // Skip during grace period after offset detection (event loop was blocked → pipe overflow)
+        // Track TSMF CC to detect frame drops (skip during grace period after offset detection)
         const cc = packet[3] & 0x0f;
         if (source.lastTsmfCC >= 0 && Date.now() >= this._ccGraceUntil) {
             const expected = (source.lastTsmfCC + 1) & 0x0f;
             if (cc !== expected) {
-                const gap = (cc - expected + 16) & 0x0f;
-                source.tsmfDroppedFrames += gap;
+                source.tsmfDroppedFrames += ((cc - expected + 16) & 0x0f);
             }
         }
         source.lastTsmfCC = cc;
@@ -412,9 +385,7 @@ export default class TLVConverter extends EventEmitter {
             source.firstTSMFAt = Date.now();
             log.info(
                 "TunerDevice#%d TLVConverter first TSMF from sourceId=%d seq=%d",
-                this._tunerIndex,
-                source.sourceId,
-                frameInfo.carriers.carrierSequence
+                this._tunerIndex, source.sourceId, frameInfo.carriers.carrierSequence
             );
         }
         if (this._expectedGroupId !== null && frameInfo.groupId !== this._expectedGroupId) {
@@ -432,7 +403,7 @@ export default class TLVConverter extends EventEmitter {
             this._addBlock(carrierState, source.currentFrame);
         }
 
-        // Soft reset on TSMF frame drops: clear all carrier buffers and let them re-align naturally
+        // Soft reset on TSMF frame drops: clear all carrier buffers and re-align
         if (source.tsmfDroppedFrames > 0 && this._offsets) {
             log.warn(
                 "TunerDevice#%d TLVConverter TSMF frame drop: carrier=%d dropped=%d — soft reset",
@@ -445,8 +416,7 @@ export default class TLVConverter extends EventEmitter {
                 carrier.blocks.length = 0;
                 carrier.superframes.length = 0;
             }
-
-            if (this._buffer && this._buffer.length > 0) {
+            if (this._buffer?.length) {
                 this._buffer.length = 0;
             }
             for (const s of this._sources.values()) {
@@ -457,17 +427,13 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        const targetSlots = this._buildTargetSlots(source);
-        const continuityCounter = packet[3] & 0x0f;
-
         source.currentFrame = {
             framePosition: frameInfo.framePosition,
             numberOfFrames: frameInfo.numberOfFrames,
-            continuityCounter,
+            continuityCounter: packet[3] & 0x0f,
             frameSync: frameInfo.frameSync,
             slots: [],
-            targetSlots,
-            filledSlots: 0
+            targetSlots: this._buildTargetSlots(source)
         };
     }
 
@@ -475,81 +441,49 @@ export default class TLVConverter extends EventEmitter {
         source: SourceState,
         payload: Buffer,
         frameInfo: {
-            frameType: number;
             headerCRC: number;
             framePosition: number;
             carriers: { numberOfCarriers: number; carrierSequence: number };
-            groupId: number;
         }
     ): void {
-        const { headerCRC, framePosition, carriers, groupId } = frameInfo;
-        const atFrameStart = framePosition === 0;
+        const { headerCRC, framePosition } = frameInfo;
 
-        if (this._freezeHeader) {
-            if (!source.headerLocked && atFrameStart) {
-                this._lockTSMFHeader(source, payload, headerCRC, carriers, groupId);
-            }
+        // When header is frozen and source already locked, skip processing
+        if (this._freezeHeader && source.headerLocked) {
             return;
         }
 
-        if (!source.headerLocked) {
-            if (atFrameStart) {
-                this._lockTSMFHeader(source, payload, headerCRC, carriers, groupId);
-            }
+        // Current header still valid
+        if (source.headerLocked && headerCRC === source.activeHeaderCRC) {
             return;
         }
 
-        if (headerCRC === source.activeHeaderCRC) {
-            source.slotIndex = 0;
-            return;
-        }
-
-        if (atFrameStart) {
-            this._lockTSMFHeader(source, payload, headerCRC, carriers, groupId);
+        // Lock/re-lock header at frame boundaries
+        if (framePosition === 0) {
+            this._applyTSMFHeader(source, payload, headerCRC);
         }
     }
 
-    private _lockTSMFHeader(
-        source: SourceState,
-        payload: Buffer,
-        headerCRC: number,
-        carriers: { numberOfCarriers: number; carrierSequence: number },
-        groupId: number
-    ): void {
-        this._applyTSMFHeader(source, payload, headerCRC, carriers, groupId);
-    }
-
-    private _applyTSMFHeader(
-        source: SourceState,
-        payload: Buffer,
-        headerCRC: number,
-        _carriers: { numberOfCarriers: number; carrierSequence: number },
-        _groupId: number
-    ): void {
+    private _applyTSMFHeader(source: SourceState, payload: Buffer, headerCRC: number): void {
         source.tsmfRelativeStreamNumber = this._parseRelativeStreamNumbers(payload);
         source.streamTypeBits = this._parseStreamTypeBits(payload);
         source.effectiveTargetStreamNumber = this._resolveTargetStream(
             source.tsmfRelativeStreamNumber,
             source.streamTypeBits
         );
-
         source.headerLocked = true;
         source.activeHeaderCRC = headerCRC;
-        source.slotIndex = 0;
-        source.candidateHeaderCRC = -1;
-        source.candidateSeen = 0;
     }
 
     private _buildTargetSlots(source: SourceState): boolean[] {
         if (!source.headerLocked || source.effectiveTargetStreamNumber <= 0) {
             return new Array(SLOT_COUNT).fill(true);
         }
-        const slots = new Array(SLOT_COUNT).fill(false);
-        for (let i = 0; i < SLOT_COUNT; i++) {
-            const value = source.tsmfRelativeStreamNumber[i] || 0;
-            slots[i] = value === source.effectiveTargetStreamNumber && this._isTLVStream(source.streamTypeBits, value);
-        }
-        return slots;
+        const target = source.effectiveTargetStreamNumber;
+        const bits = source.streamTypeBits;
+        return source.tsmfRelativeStreamNumber.map(
+            value => value === target && this._isTLVStream(bits, value)
+        );
     }
 
     private _getOrCreateCarrier(
@@ -570,7 +504,6 @@ export default class TLVConverter extends EventEmitter {
         }
 
         source.carrierSequence = carrierSequence;
-        source.numberOfCarriers = numberOfCarriers;
 
         let carrier = this._carrierStates.get(carrierSequence);
         if (!carrier) {
@@ -617,12 +550,12 @@ export default class TLVConverter extends EventEmitter {
         while (i < carrier.blocks.length) {
             const first = carrier.blocks[i];
             if (first.framePosition !== 0) {
-                i += 1;
+                i++;
                 continue;
             }
             const n = first.numberOfFrames;
             if (n <= 0 || n > 15) {
-                i += 1;
+                i++;
                 continue;
             }
 
@@ -635,16 +568,13 @@ export default class TLVConverter extends EventEmitter {
                 }
             }
             if (!ok) {
-                i += 1;
+                i++;
                 continue;
             }
 
             const frames = carrier.blocks.slice(i, i + n);
             carrier.blocks.splice(i, n);
-            carrier.superframes.push({
-                numberOfFrames: n,
-                frames
-            });
+            carrier.superframes.push({ numberOfFrames: n, frames });
 
             this._maybeApplyOffsets();
             this._outputAvailableSuperframes();
@@ -685,10 +615,10 @@ export default class TLVConverter extends EventEmitter {
         this._freezeHeader = true;
         this._offsetsApplied = false;
         log.info("TunerDevice#%d TLVConverter offsets finalized: %s", this._tunerIndex, offsets.join(","));
-        if (this._buffer && this._buffer.length > 0) {
+        if (this._buffer?.length) {
             this._buffer.length = 0;
         }
-        // Reset dropped frame counters AND set CC grace period.
+        // Reset dropped frame counters and set CC grace period.
         // Offset detection blocks the event loop briefly, causing pipe buffer overflow
         // and TSMF frame loss. A 2-second grace period covers the buffer drain period.
         for (const source of this._sources.values()) {
@@ -742,9 +672,7 @@ export default class TLVConverter extends EventEmitter {
 
     /**
      * Probe offset candidates asynchronously, yielding the event loop between
-     * each candidate via setImmediate. This prevents DVR buffer overflow (EOVERFLOW)
-     * caused by blocking the event loop during probing at ~73 Mbps.
-     * The first candidate is tested synchronously (common case: SF-based offset is exact).
+     * each candidate via setImmediate to prevent DVR buffer overflow (EOVERFLOW).
      */
     private _probeOffsetsAsync(carriers: CarrierState[], candidates: number[][], minSf: number): void {
         let idx = 0;
@@ -776,9 +704,7 @@ export default class TLVConverter extends EventEmitter {
                 return;
             }
 
-            const offsets = candidates[idx];
-            idx++;
-
+            const offsets = candidates[idx++];
             const packets = this._assemblePacketsForOffsets(carriers, offsets, 30);
             if (packets.length > 0) {
                 const tlv = this._assembleTLVFromPackets(packets);
@@ -818,71 +744,69 @@ export default class TLVConverter extends EventEmitter {
         tryNext();
     }
 
+    /** Iterate over interleaved slots across carrier superframes in TSMF order. */
+    private _forEachSlotInSuperframes(
+        superframes: CarrierSuperframe[],
+        callback: (packet: Buffer) => void
+    ): void {
+        for (let sub = 0; sub < 53; sub++) {
+            for (let sp = 0; sp < 4; sp++) {
+                for (let c = 0; c < superframes.length; c++) {
+                    const sf = superframes[c];
+                    const n = sf.numberOfFrames;
+                    if (sp >= n) {
+                        continue;
+                    }
+                    const slotIndex = sub * n + sp;
+                    const framePosition = Math.floor(slotIndex / 53);
+                    const slotInFrame = slotIndex % 53;
+                    if (framePosition >= n || slotInFrame === 0) {
+                        continue;
+                    }
+
+                    const frame = sf.frames[framePosition];
+                    const packetSlot = slotInFrame - 1;
+                    if (!frame.targetSlots[packetSlot]) {
+                        continue;
+                    }
+                    const packet = frame.slots[packetSlot];
+                    if (packet) {
+                        callback(packet);
+                    }
+                }
+            }
+        }
+    }
+
     private _assemblePacketsForOffsets(
         carriers: CarrierState[],
         offsets: number[],
         maxSuperframes: number
     ): Buffer[] {
-        const minSuperframes = Math.min(
-            ...carriers.map((c, idx) => c.superframes.length - (offsets[idx] || 0))
+        const minAvailable = Math.min(
+            ...carriers.map((c, i) => c.superframes.length - (offsets[i] || 0))
         );
-        const count = Math.min(minSuperframes, maxSuperframes);
+        const count = Math.min(minAvailable, maxSuperframes);
         if (count <= 0) {
             return [];
         }
 
         const outputChunks: Buffer[] = [];
         for (let sf = 0; sf < count; sf++) {
-            for (let sub = 0; sub < 53; sub++) {
-                for (let sp = 0; sp < 4; sp++) {
-                    for (let c = 0; c < carriers.length; c++) {
-                        const sfData = carriers[c].superframes[(offsets[c] || 0) + sf];
-                        const n = sfData.numberOfFrames;
-                        if (sp >= n) {
-                            continue;
-                        }
-
-                        const slotIndex = sub * n + sp;
-                        const framePosition = Math.floor(slotIndex / 53);
-                        const slotInFrame = slotIndex % 53;
-                        if (framePosition < 0 || framePosition >= n) {
-                            continue;
-                        }
-                        if (slotInFrame === 0) {
-                            continue;
-                        }
-
-                        const frame = sfData.frames[framePosition];
-                        const packetSlot = slotInFrame - 1;
-                        if (frame.targetSlots && frame.targetSlots.length > packetSlot && !frame.targetSlots[packetSlot]) {
-                            continue;
-                        }
-                        const chunk = frame.slots[packetSlot];
-                        if (chunk) {
-                            outputChunks.push(chunk);
-                        }
-                    }
-                }
-            }
+            const sfs = carriers.map((c, i) => c.superframes[(offsets[i] || 0) + sf]);
+            this._forEachSlotInSuperframes(sfs, packet => outputChunks.push(packet));
         }
-
         return outputChunks;
     }
 
-    /**
-     * Assemble a TLV byte stream from TS packets for offset probing.
-     * TSMF data slots: PUSI=1 has pointer field at byte 3 (skip to byte 4),
-     * PUSI=0 has data starting at byte 3 (no pointer field).
-     * Must match the output path and reference implementation exactly.
-     */
+    /** Assemble a TLV byte stream from TS packets for offset probing. */
     private _assembleTLVFromPackets(packets: Buffer[]): Buffer {
         const chunks: Buffer[] = [];
         for (const packet of packets) {
-            if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
-                continue;
+            const payload = TLVConverter._extractTlvPayload(packet);
+            if (payload) {
+                chunks.push(payload);
             }
-            const pusi = (packet[1] & 0x40) !== 0;
-            chunks.push(packet.subarray(pusi ? 4 : 3));
         }
         return Buffer.concat(chunks);
     }
@@ -890,11 +814,10 @@ export default class TLVConverter extends EventEmitter {
     private _collectMmtpStats(
         buffer: Buffer,
         start: number
-    ): { mmtpPackets: number; mmtpDrops: number; mmtpBestRun: number } {
+    ): { mmtpPackets: number; mmtpDrops: number } {
         let mmtpPackets = 0;
         let mmtpDrops = 0;
-        let mmtpBestRun = 0;
-        const runs = new Map<number, { lastSeq: number; run: number }>();
+        const runs = new Map<number, { lastSeq: number }>();
 
         this._forEachTlvPacket(buffer, start, (type, payload) => {
             const mmtp = this._parseMmtpHeader(type, payload);
@@ -904,21 +827,16 @@ export default class TLVConverter extends EventEmitter {
             mmtpPackets++;
             const state = runs.get(mmtp.packetId);
             if (!state) {
-                runs.set(mmtp.packetId, { lastSeq: mmtp.packetSequenceNumber, run: 1 });
-                mmtpBestRun = Math.max(mmtpBestRun, 1);
+                runs.set(mmtp.packetId, { lastSeq: mmtp.packetSequenceNumber });
                 return;
             }
-            if (state.lastSeq + 1 === mmtp.packetSequenceNumber) {
-                state.run++;
-            } else {
-                state.run = 1;
+            if (state.lastSeq + 1 !== mmtp.packetSequenceNumber) {
                 mmtpDrops++;
             }
             state.lastSeq = mmtp.packetSequenceNumber;
-            mmtpBestRun = Math.max(mmtpBestRun, state.run);
         });
 
-        return { mmtpPackets, mmtpDrops, mmtpBestRun };
+        return { mmtpPackets, mmtpDrops };
     }
 
     /** Iterate over TLV packets in a buffer, re-syncing on noise bytes. */
@@ -951,13 +869,6 @@ export default class TLVConverter extends EventEmitter {
     /**
      * Parse MMTP header from a TLV packet payload.
      * Only TLV type 0x03 (HeaderCompressedIP) contains MMTP.
-     *
-     * TLV payload structure for type 0x03:
-     *   [CID(2)] [headerType(1)] [optional: context+addr(38)+seq(4)] [MMTP packet...]
-     *
-     * MMTP header structure (first 12+ bytes):
-     *   [V/flags(1)] [??(1)] [packetId(2)] [timestamp(4)] [packetSequenceNumber(4)]
-     *   [optional: packetCounter(4)] [optional: extensionHeader(variable)]
      */
     private _parseMmtpHeader(
         tlvType: number,
@@ -968,9 +879,8 @@ export default class TLVConverter extends EventEmitter {
         }
 
         // Skip compressed IP header to reach MMTP payload
-        const headerType = tlvPayload[2];
         let mmtpStart: number;
-        switch (headerType) {
+        switch (tlvPayload[2]) {
             case 0x20: // PartialIpv4AndPartialUdp
             case 0x21: // Ipv4Identifier
             case 0x61: // NoCompressedHeader
@@ -984,17 +894,15 @@ export default class TLVConverter extends EventEmitter {
         }
 
         const mmtp = tlvPayload.subarray(mmtpStart);
-        // MMTP minimum: V/flags(1) + ??(1) + packetId(2) + timestamp(4) + seqNum(4) = 12
+        // MMTP minimum: V/flags(1) + reserved(1) + packetId(2) + timestamp(4) + seqNum(4) = 12
         if (mmtp.length < 12) {
             return null;
         }
 
-        const packetId = (mmtp[2] << 8) | mmtp[3];
-        const packetSequenceNumber = (
-            (mmtp[8] << 24) | (mmtp[9] << 16) | (mmtp[10] << 8) | mmtp[11]
-        ) >>> 0;
-
-        return { packetId, packetSequenceNumber };
+        return {
+            packetId: (mmtp[2] << 8) | mmtp[3],
+            packetSequenceNumber: ((mmtp[8] << 24) | (mmtp[9] << 16) | (mmtp[10] << 8) | mmtp[11]) >>> 0
+        };
     }
 
     private _outputAvailableSuperframes(): void {
@@ -1026,47 +934,13 @@ export default class TLVConverter extends EventEmitter {
 
         for (let i = 0; i < outputCount; i++) {
             const sfs = carriers.map(c => c.superframes[i]);
-            this._outputSuperframe(sfs);
-            this._readySuperframes += 1;
+            this._forEachSlotInSuperframes(sfs, packet => this._handleTLVPacket(packet));
+            this._readySuperframes++;
         }
 
         this._writePendingOutput();
-
-        carriers.forEach(carrier => {
+        for (const carrier of carriers) {
             carrier.superframes.splice(0, outputCount);
-        });
-    }
-
-    private _outputSuperframe(superframes: CarrierSuperframe[]): void {
-        for (let sub = 0; sub < 53; sub++) {
-            for (let sp = 0; sp < 4; sp++) {
-                for (let c = 0; c < superframes.length; c++) {
-                    const sf = superframes[c];
-                    const n = sf.numberOfFrames;
-                    if (sp >= n) {
-                        continue;
-                    }
-                    const slotIndex = sub * n + sp;
-                    const framePosition = Math.floor(slotIndex / 53);
-                    const slotInFrame = slotIndex % 53;
-                    if (framePosition < 0 || framePosition >= n) {
-                        continue;
-                    }
-                    if (slotInFrame === 0) {
-                        continue;
-                    }
-
-                    const frame = sf.frames[framePosition];
-                    const packetSlot = slotInFrame - 1;
-                    if (frame.targetSlots && frame.targetSlots.length > packetSlot && !frame.targetSlots[packetSlot]) {
-                        continue;
-                    }
-                    const packet = frame.slots[packetSlot];
-                    if (packet) {
-                        this._handleTLVPacket(packet);
-                    }
-                }
-            }
         }
     }
 
@@ -1098,7 +972,7 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _flushBufferedOutput(): void {
-        if (!this._buffer || this._buffer.length === 0 || this._sinkClosed) {
+        if (!this._buffer?.length || this._sinkClosed) {
             return;
         }
         if (!this._offsets && this._numberOfCarriers > 1) {
@@ -1106,14 +980,12 @@ export default class TLVConverter extends EventEmitter {
         }
 
         if (!this._ready) {
-            if (this._numberOfCarriers > 1) {
-                if (!this._offsets || !this._offsetsApplied) {
-                    return;
-                }
-                if (this._readySuperframes < READY_MIN_SUPERFRAMES) {
-                    return;
-                }
-            } else if (this._offsets && !this._offsetsApplied) {
+            // Wait until offsets are applied (when applicable)
+            if (this._offsets && !this._offsetsApplied) {
+                return;
+            }
+            // Multi-carrier requires minimum superframes before emitting
+            if (this._numberOfCarriers > 1 && (!this._offsets || this._readySuperframes < READY_MIN_SUPERFRAMES)) {
                 return;
             }
             if (this._offsets && !this._loggedOffsetsBeforeReady) {
@@ -1126,25 +998,19 @@ export default class TLVConverter extends EventEmitter {
             }
             this._ready = true;
             log.debug("TunerDevice#%d TLVConverter: first TLV packet ready, emitting ready event", this._tunerIndex);
-            process.nextTick(() => {
-                this.emit("ready");
-            });
+            process.nextTick(() => this.emit("ready"));
         }
 
-        if (!this._output) {
-            return;
-        }
-
-        if (this._output.destroyed || (this._output as any).writableEnded) {
-            this._sinkClosed = true;
+        if (!this._output || this._output.destroyed || (this._output as any).writableEnded) {
+            if (this._output) {
+                this._sinkClosed = true;
+            }
             return;
         }
 
         const outputData = Buffer.concat(this._buffer);
         this._buffer.length = 0;
-
         this._pendingOutputChunks.push(outputData);
-        this._pendingOutputSize += outputData.length;
     }
 
     private _writePendingOutput(): void {
@@ -1160,11 +1026,9 @@ export default class TLVConverter extends EventEmitter {
             ? this._pendingOutputChunks[0]
             : Buffer.concat(this._pendingOutputChunks);
         this._pendingOutputChunks = [];
-        this._pendingOutputSize = 0;
 
         try {
-            const writeSuccess = this._output.write(outputData);
-            if (!writeSuccess) {
+            if (!this._output.write(outputData)) {
                 this._drainWaiting = true;
                 this._output.once("drain", () => {
                     this._drainWaiting = false;
@@ -1193,30 +1057,24 @@ export default class TLVConverter extends EventEmitter {
         this._writePendingOutput();
         this._sinkClosed = true;
 
-        if (this._buffer && this._buffer.length > 0 && this._output && !this._output.destroyed) {
+        // Last-ditch write for data that couldn't be flushed (e.g., not ready)
+        if (this._buffer?.length && this._output && !this._output.destroyed) {
             try {
-                const outputData = Buffer.concat(this._buffer);
-                this._output.write(outputData);
-            } catch (e) {
-                log.debug("TunerDevice#%d TLVConverter: error writing remaining buffer: %s", this._tunerIndex, (e as Error).message);
+                this._output.write(Buffer.concat(this._buffer));
+            } catch {
+                // ignore
             }
         }
+        this._buffer = null;
 
-        setImmediate(() => {
-            this._buffer = undefined as any;
-        });
-
-        if (this._output && !this._output.destroyed) {
+        if (this._output && !this._output.destroyed && !(this._output as any).writableEnded) {
             try {
-                if (!(this._output as any).writableEnded) {
-                    this._output.end();
-                }
-            } catch (e) {
-                const err = e as any;
-                log.debug("TunerDevice#%d TLVConverter output end error: %s", this._tunerIndex, err?.message ?? String(err));
+                this._output.end();
+            } catch {
+                // ignore
             }
         }
-        this._output = null as any;
+        this._output = null;
 
         this._closed = true;
         this._closing = false;
@@ -1231,38 +1089,20 @@ export default class TLVConverter extends EventEmitter {
         if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
             return null;
         }
-
         const afc = (packet[3] & 0x30) >> 4;
-
-        if (afc !== AFC_ADAPTATION_ONLY && afc !== AFC_WITH_ADAPTATION) {
+        // AFC 0x01: payload only; AFC 0x03: adaptation field + payload
+        if (afc !== 0x01 && afc !== 0x03) {
             return null;
         }
-
-        let base = 4;
-        if (afc === AFC_WITH_ADAPTATION) {
-            const afl = packet[4];
-            base = 5 + afl;
-            if (base > PACKET_SIZE) {
-                return null;
-            }
-        }
-
-        if (base + 184 > PACKET_SIZE) {
-            return null;
-        }
-
-        return packet.subarray(base, base + 184);
+        const base = afc === 0x03 ? 5 + packet[4] : 4;
+        return base + 184 <= PACKET_SIZE ? packet.subarray(base, base + 184) : null;
     }
 
     private _parseRelativeStreamNumbers(payload: Buffer): number[] {
         const relative = [];
         for (let i = 0; i < SLOT_COUNT; i++) {
             const b = payload[69 + (i >> 1)];
-            if ((i & 1) === 0) {
-                relative.push((b >> 4) & 0x0f);
-            } else {
-                relative.push(b & 0x0f);
-            }
+            relative.push((i & 1) === 0 ? (b >> 4) & 0x0f : b & 0x0f);
         }
         return relative;
     }
@@ -1272,75 +1112,59 @@ export default class TLVConverter extends EventEmitter {
     }
 
     private _selectTargetStream(relative: number[], streamTypeBits: number): number {
-        const counts = new Array(16).fill(0);
+        const tlvCounts = new Array(16).fill(0);
+        const allCounts = new Array(16).fill(0);
         for (const value of relative) {
             if (value >= 1 && value <= 15) {
-                const typeBit = (streamTypeBits >> (15 - value)) & 1;
-                if (typeBit === 0) {
-                    counts[value] += 1;
+                allCounts[value]++;
+                if (this._isTLVStream(streamTypeBits, value)) {
+                    tlvCounts[value]++;
                 }
             }
         }
 
-        let best = 0;
-        let bestCount = 0;
-        for (let i = 1; i <= 15; i++) {
-            if (counts[i] > bestCount) {
-                best = i;
-                bestCount = counts[i];
+        // Find stream with most TLV slots; fall back to most slots of any type
+        for (const counts of [tlvCounts, allCounts]) {
+            let best = 0;
+            let bestCount = 0;
+            for (let i = 1; i <= 15; i++) {
+                if (counts[i] > bestCount) {
+                    best = i;
+                    bestCount = counts[i];
+                }
+            }
+            if (best > 0) {
+                return best;
             }
         }
-        if (best > 0) {
-            return best;
-        }
-
-        const fallback = new Array(16).fill(0);
-        for (const value of relative) {
-            if (value >= 1 && value <= 15) {
-                fallback[value] += 1;
-            }
-        }
-        for (let i = 1; i <= 15; i++) {
-            if (fallback[i] > bestCount) {
-                best = i;
-                bestCount = fallback[i];
-            }
-        }
-        return best || 1;
+        return 1;
     }
 
     private _resolveTargetStream(relative: number[], streamTypeBits: number): number {
-        let targetStream = this._targetRelStream;
-        if (targetStream === null) {
-            targetStream = this._selectTargetStream(relative, streamTypeBits);
-            this._targetRelStream = targetStream;
+        if (this._targetRelStream === null) {
+            this._targetRelStream = this._selectTargetStream(relative, streamTypeBits);
         }
 
-        if (!this._isTLVStream(streamTypeBits, targetStream)) {
+        let target = this._targetRelStream;
+        if (!this._isTLVStream(streamTypeBits, target)) {
             const fallback = this._selectTargetStream(relative, streamTypeBits);
             if (this._isTLVStream(streamTypeBits, fallback)) {
                 log.warn(
                     "TunerDevice#%d TLVConverter target stream %d is not TLV, fallback to %d",
-                    this._tunerIndex,
-                    targetStream,
-                    fallback
+                    this._tunerIndex, target, fallback
                 );
-                if (this._targetRelStream === null) {
-                    this._targetRelStream = fallback;
-                }
-                targetStream = fallback;
+                target = fallback;
             }
         }
 
-        return targetStream ?? 1;
+        return target;
     }
 
     private _isTLVStream(streamTypeBits: number, streamNumber: number): boolean {
         if (streamNumber < 1 || streamNumber > 15) {
             return false;
         }
-        const typeBit = (streamTypeBits >> (15 - streamNumber)) & 1;
-        return typeBit === 0;
+        return ((streamTypeBits >> (15 - streamNumber)) & 1) === 0;
     }
 
     private _validateTSMFFrame(payload: Buffer): {
@@ -1365,7 +1189,6 @@ export default class TLVConverter extends EventEmitter {
             return null;
         }
 
-        const groupId = payload[123];
         const numberOfCarriers = payload[124];
         const carrierSequence = payload[125];
         if (numberOfCarriers < 1 || numberOfCarriers > 16 || carrierSequence < 1 || carrierSequence > numberOfCarriers) {
@@ -1373,20 +1196,15 @@ export default class TLVConverter extends EventEmitter {
         }
 
         const frameRaw = payload[126];
-        const numberOfFrames = (frameRaw >> 4) & 0x0f;
-        const framePosition = frameRaw & 0x0f;
-
-        const frameType = payload[2] & 0x0f;
-        const headerCRC = (payload[180] << 24) | (payload[181] << 16) | (payload[182] << 8) | payload[183];
 
         return {
-            frameType,
-            headerCRC,
-            framePosition,
-            numberOfFrames,
+            frameType: payload[2] & 0x0f,
+            headerCRC: (payload[180] << 24) | (payload[181] << 16) | (payload[182] << 8) | payload[183],
+            framePosition: frameRaw & 0x0f,
+            numberOfFrames: (frameRaw >> 4) & 0x0f,
             frameSync,
             carriers: { numberOfCarriers, carrierSequence },
-            groupId
+            groupId: payload[123]
         };
     }
 
