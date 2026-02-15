@@ -160,8 +160,8 @@ export default class TLVConverter extends EventEmitter {
     private _expectedGroupId: number | null;
     private _freezeHeader = false;
     private _offsetsApplied = false;
-    private _readySuperframes = 0;
-    private _loggedOffsetsBeforeReady = false;
+    private _outputSuperframeCount = 0;
+    private _offsetsLogged = false;
 
     private _closed = false;
     private _closing = false;
@@ -172,7 +172,7 @@ export default class TLVConverter extends EventEmitter {
     private _crcTable?: number[];
     private _ccGraceUntil = 0;
     private _probeInProgress = false;
-    private _probeMinSfAtNextAttempt = 0;
+    private _nextProbeThreshold = 0;
 
     constructor(tunerIndex: number, output: Writable | null, options?: MultiCarrierOptions | number) {
         super();
@@ -228,12 +228,12 @@ export default class TLVConverter extends EventEmitter {
         this._carrierStates.clear();
         this._offsets = null;
         this._offsetsApplied = false;
-        this._readySuperframes = 0;
+        this._outputSuperframeCount = 0;
         this._ready = false;
-        this._loggedOffsetsBeforeReady = false;
+        this._offsetsLogged = false;
         this._freezeHeader = false;
         this._probeInProgress = false;
-        this._probeMinSfAtNextAttempt = 0;
+        this._nextProbeThreshold = 0;
         if (this._buffer) {
             this._buffer.length = 0;
         }
@@ -576,12 +576,12 @@ export default class TLVConverter extends EventEmitter {
             carrier.blocks.splice(i, n);
             carrier.superframes.push({ numberOfFrames: n, frames });
 
-            this._maybeApplyOffsets();
-            this._outputAvailableSuperframes();
+            this._tryDetectOffsets();
+            this._drainAlignedSuperframes();
         }
     }
 
-    private _maybeApplyOffsets(): void {
+    private _tryDetectOffsets(): void {
         if (this._offsets || this._probeInProgress) {
             return;
         }
@@ -589,17 +589,17 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        const carriers = this._getCarriersSorted();
-        const minSf = Math.min(...carriers.map(c => c.superframes.length));
-        const effectiveMin = Math.max(OFFSET_MIN_SFS_PER_CARRIER, this._probeMinSfAtNextAttempt);
-        if (minSf < effectiveMin) {
+        const carriers = this._carriersBySequence();
+        const accumulated = Math.min(...carriers.map(c => c.superframes.length));
+        const threshold = Math.max(OFFSET_MIN_SFS_PER_CARRIER, this._nextProbeThreshold);
+        if (accumulated < threshold) {
             return;
         }
 
         // Option-specified offsets (for testing)
         if (this._offsetsFromOptions?.length >= this._numberOfCarriers) {
-            const minNeeded = Math.max(...this._offsetsFromOptions) + 30;
-            if (carriers.every(c => c.superframes.length >= minNeeded)) {
+            const required = Math.max(...this._offsetsFromOptions) + 30;
+            if (carriers.every(c => c.superframes.length >= required)) {
                 this._finalizeOffsets(this._offsetsFromOptions.slice(0, this._numberOfCarriers));
             }
             return;
@@ -607,7 +607,7 @@ export default class TLVConverter extends EventEmitter {
 
         const candidates = this._buildProbeCandidates(carriers);
         this._probeInProgress = true;
-        this._probeOffsetsAsync(carriers, candidates, minSf);
+        this._probeOffsetsAsync(carriers, candidates, accumulated);
     }
 
     private _finalizeOffsets(offsets: number[]): void {
@@ -631,8 +631,8 @@ export default class TLVConverter extends EventEmitter {
     private _buildProbeCandidates(carriers: CarrierState[]): number[][] {
         const count = carriers.length;
         const sfCounts = carriers.map(c => c.superframes.length);
-        const minSf = Math.min(...sfCounts);
-        const base = sfCounts.map(sf => sf - minSf);
+        const aligned = Math.min(...sfCounts);
+        const base = sfCounts.map(sf => sf - aligned);
 
         const candidates: number[][] = [];
         const seen = new Set<string>();
@@ -674,7 +674,7 @@ export default class TLVConverter extends EventEmitter {
      * Probe offset candidates asynchronously, yielding the event loop between
      * each candidate via setImmediate to prevent DVR buffer overflow (EOVERFLOW).
      */
-    private _probeOffsetsAsync(carriers: CarrierState[], candidates: number[][], minSf: number): void {
+    private _probeOffsetsAsync(carriers: CarrierState[], candidates: number[][], accumulated: number): void {
         let idx = 0;
         let bestOffsets: number[] | null = null;
         let bestMmtpPackets = 0;
@@ -700,12 +700,12 @@ export default class TLVConverter extends EventEmitter {
                     return;
                 }
                 this._probeInProgress = false;
-                this._probeMinSfAtNextAttempt = minSf + 60;
+                this._nextProbeThreshold = accumulated + 60;
                 return;
             }
 
             const offsets = candidates[idx++];
-            const packets = this._assemblePacketsForOffsets(carriers, offsets, 30);
+            const packets = this._extractAlignedPackets(carriers, offsets, 30);
             if (packets.length > 0) {
                 const tlv = this._assembleTLVFromPackets(packets);
                 const syncStart = TLVConverter._findTlvSync(tlv);
@@ -778,15 +778,15 @@ export default class TLVConverter extends EventEmitter {
         }
     }
 
-    private _assemblePacketsForOffsets(
+    private _extractAlignedPackets(
         carriers: CarrierState[],
         offsets: number[],
         maxSuperframes: number
     ): Buffer[] {
-        const minAvailable = Math.min(
+        const available = Math.min(
             ...carriers.map((c, i) => c.superframes.length - (offsets[i] || 0))
         );
-        const count = Math.min(minAvailable, maxSuperframes);
+        const count = Math.min(available, maxSuperframes);
         if (count <= 0) {
             return [];
         }
@@ -905,11 +905,11 @@ export default class TLVConverter extends EventEmitter {
         };
     }
 
-    private _outputAvailableSuperframes(): void {
+    private _drainAlignedSuperframes(): void {
         if (!this._offsets || this._carrierStates.size === 0) {
             return;
         }
-        const carriers = this._getCarriersSorted();
+        const carriers = this._carriersBySequence();
         if (!this._offsetsApplied) {
             for (let i = 0; i < carriers.length; i++) {
                 const needed = this._offsets[i] || 0;
@@ -926,25 +926,25 @@ export default class TLVConverter extends EventEmitter {
             this._offsetsApplied = true;
         }
 
-        const minAvailable = Math.min(...carriers.map(c => c.superframes.length));
-        const outputCount = minAvailable - OUTPUT_MIN_BUFFER_SFS;
-        if (outputCount <= 0) {
+        const readyCount = Math.min(...carriers.map(c => c.superframes.length));
+        const drainCount = readyCount - OUTPUT_MIN_BUFFER_SFS;
+        if (drainCount <= 0) {
             return;
         }
 
-        for (let i = 0; i < outputCount; i++) {
+        for (let i = 0; i < drainCount; i++) {
             const sfs = carriers.map(c => c.superframes[i]);
             this._forEachSlotInSuperframes(sfs, packet => this._handleTLVPacket(packet));
-            this._readySuperframes++;
+            this._outputSuperframeCount++;
         }
 
         this._writePendingOutput();
         for (const carrier of carriers) {
-            carrier.superframes.splice(0, outputCount);
+            carrier.superframes.splice(0, drainCount);
         }
     }
 
-    private _getCarriersSorted(): CarrierState[] {
+    private _carriersBySequence(): CarrierState[] {
         return Array.from(this._carrierStates.values()).sort((a, b) => a.carrierSequence - b.carrierSequence);
     }
 
@@ -985,16 +985,16 @@ export default class TLVConverter extends EventEmitter {
                 return;
             }
             // Multi-carrier requires minimum superframes before emitting
-            if (this._numberOfCarriers > 1 && (!this._offsets || this._readySuperframes < READY_MIN_SUPERFRAMES)) {
+            if (this._numberOfCarriers > 1 && (!this._offsets || this._outputSuperframeCount < READY_MIN_SUPERFRAMES)) {
                 return;
             }
-            if (this._offsets && !this._loggedOffsetsBeforeReady) {
+            if (this._offsets && !this._offsetsLogged) {
                 log.info(
                     "TunerDevice#%d TLVConverter ready offsets: %s",
                     this._tunerIndex,
                     this._offsets.join(",")
                 );
-                this._loggedOffsetsBeforeReady = true;
+                this._offsetsLogged = true;
             }
             this._ready = true;
             log.debug("TunerDevice#%d TLVConverter: first TLV packet ready, emitting ready event", this._tunerIndex);
@@ -1051,7 +1051,7 @@ export default class TLVConverter extends EventEmitter {
         this._closing = true;
 
         if (this._offsets) {
-            this._outputAvailableSuperframes();
+            this._drainAlignedSuperframes();
         }
         this._flushBufferedOutput();
         this._writePendingOutput();
