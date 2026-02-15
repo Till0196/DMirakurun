@@ -409,11 +409,13 @@ export default class TunerDevice extends EventEmitter {
                     log.info("TunerDevice#%d carrier mode (raw stream for multi-carrier)", this._index);
                     this._stream = cat.stdout;
                 } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
+                    const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
                     log.info(
-                        "TunerDevice#%d TLVConverter combine mode (tsmfRelTs=%d, groupId=%s)",
+                        "TunerDevice#%d TLVConverter %s (tsmfRelTs=%d%s)",
                         this._index,
+                        hasGroup ? "combine mode" : "single-carrier mode",
                         ch.tsmfRelTs,
-                        ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined ? String(ch.tsmfGroupId) : "none"
+                        hasGroup ? `, groupId=${ch.tsmfGroupId}` : ""
                     );
 
                     const outputStream = new stream.PassThrough();
@@ -502,7 +504,7 @@ export default class TunerDevice extends EventEmitter {
                     primaryGate.once("data", () => {
                         if (primaryFirstDataAt === null) {
                             primaryFirstDataAt = Date.now();
-                            log.info("TunerDevice#%d primary carrier first data at=%d", this._index, primaryFirstDataAt);
+                            log.debug("TunerDevice#%d primary carrier first data at=%d", this._index, primaryFirstDataAt);
                         }
                     });
 
@@ -568,11 +570,13 @@ export default class TunerDevice extends EventEmitter {
                     log.info("TunerDevice#%d carrier mode (raw stream for multi-carrier)", this._index);
                     this._stream = this._process.stdout;
                 } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
+                    const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
                     log.info(
-                        "TunerDevice#%d TLVConverter combine mode (tsmfRelTs=%d, groupId=%s)",
+                        "TunerDevice#%d TLVConverter %s (tsmfRelTs=%d%s)",
                         this._index,
+                        hasGroup ? "combine mode" : "single-carrier mode",
                         ch.tsmfRelTs,
-                        ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined ? String(ch.tsmfGroupId) : "none"
+                        hasGroup ? `, groupId=${ch.tsmfGroupId}` : ""
                     );
 
                     const outputStream = new stream.PassThrough();
@@ -662,7 +666,7 @@ export default class TunerDevice extends EventEmitter {
                     primaryGate.once("data", () => {
                         if (primaryFirstDataAt === null) {
                             primaryFirstDataAt = Date.now();
-                            log.info("TunerDevice#%d primary carrier first data at=%d", this._index, primaryFirstDataAt);
+                            log.debug("TunerDevice#%d primary carrier first data at=%d", this._index, primaryFirstDataAt);
                         }
                     });
 
