@@ -534,13 +534,6 @@ export default class TLVConverter extends EventEmitter {
         if (n <= 0 || n > 15) {
             return;
         }
-        if (frame.slots.length !== SLOT_COUNT) {
-            log.warn(
-                "TunerDevice#%d TLVConverter incomplete frame: slots=%d/%d carrier=%d fp=%d",
-                this._tunerIndex, frame.slots.length, SLOT_COUNT,
-                carrier.carrierSequence, frame.framePosition
-            );
-        }
         carrier.blocks.push(frame);
         this._buildSuperframes(carrier);
     }
