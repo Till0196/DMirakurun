@@ -63,13 +63,11 @@ interface SourceState {
     effectiveTargetStreamNumber: number;
     tsmfRelativeStreamNumber: number[];
     streamTypeBits: number;
-    firstTSMFAt?: number;
     lastTsmfCC: number;
     tsmfDroppedFrames: number;
 }
 
 interface MultiCarrierOptions {
-    offsets?: number[];
     tsmfRelTs?: number;
     groupId?: number;
 }
@@ -155,7 +153,6 @@ export default class TLVConverter extends EventEmitter {
     private _carrierInfoEmitted = false;
 
     private _offsets: number[] | null = null;
-    private _offsetsFromOptions?: number[];
     private _targetRelStream: number | null;
     private _expectedGroupId: number | null;
     private _freezeHeader = false;
@@ -174,18 +171,12 @@ export default class TLVConverter extends EventEmitter {
     private _probeInProgress = false;
     private _nextProbeThreshold = 0;
 
-    constructor(tunerIndex: number, output: Writable | null, options?: MultiCarrierOptions | number) {
+    constructor(tunerIndex: number, output: Writable | null, options?: MultiCarrierOptions) {
         super();
         this._tunerIndex = tunerIndex;
         this._output = output;
-        if (typeof options === "number") {
-            this._targetRelStream = options;
-            this._expectedGroupId = null;
-        } else {
-            this._offsetsFromOptions = options?.offsets;
-            this._targetRelStream = typeof options?.tsmfRelTs === "number" ? options.tsmfRelTs : null;
-            this._expectedGroupId = typeof options?.groupId === "number" ? options.groupId : null;
-        }
+        this._targetRelStream = typeof options?.tsmfRelTs === "number" ? options.tsmfRelTs : null;
+        this._expectedGroupId = typeof options?.groupId === "number" ? options.groupId : null;
 
         if (this._output) {
             this._setupOutputHandlers();
@@ -385,14 +376,6 @@ export default class TLVConverter extends EventEmitter {
             source.tsmfDroppedFrames += 1;
             return;
         }
-        if (!source.firstTSMFAt) {
-            source.firstTSMFAt = Date.now();
-            const logFn = this._isMultiCarrier ? log.info : log.debug;
-            logFn(
-                "TunerDevice#%d TLVConverter first TSMF from sourceId=%d seq=%d",
-                this._tunerIndex, source.sourceId, frameInfo.carriers.carrierSequence
-            );
-        }
         if (this._expectedGroupId !== null && frameInfo.groupId !== this._expectedGroupId) {
             return;
         }
@@ -591,15 +574,6 @@ export default class TLVConverter extends EventEmitter {
         const accumulated = Math.min(...carriers.map(c => c.superframes.length));
         const threshold = Math.max(OFFSET_MIN_SFS_PER_CARRIER, this._nextProbeThreshold);
         if (accumulated < threshold) {
-            return;
-        }
-
-        // Option-specified offsets (for testing)
-        if (this._offsetsFromOptions?.length >= this._numberOfCarriers) {
-            const required = Math.max(...this._offsetsFromOptions) + 30;
-            if (carriers.every(c => c.superframes.length >= required)) {
-                this._finalizeOffsets(this._offsetsFromOptions.slice(0, this._numberOfCarriers));
-            }
             return;
         }
 
