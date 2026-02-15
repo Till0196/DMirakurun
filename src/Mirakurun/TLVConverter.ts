@@ -200,6 +200,10 @@ export default class TLVConverter extends EventEmitter {
         return this._closed;
     }
 
+    private get _isMultiCarrier(): boolean {
+        return this._numberOfCarriers > 1;
+    }
+
     createInput(): stream.Writable {
         const sourceId = this._nextSourceId++;
         const state: SourceState = {
@@ -383,7 +387,8 @@ export default class TLVConverter extends EventEmitter {
         }
         if (!source.firstTSMFAt) {
             source.firstTSMFAt = Date.now();
-            log.info(
+            const logFn = this._isMultiCarrier ? log.info : log.debug;
+            logFn(
                 "TunerDevice#%d TLVConverter first TSMF from sourceId=%d seq=%d",
                 this._tunerIndex, source.sourceId, frameInfo.carriers.carrierSequence
             );
@@ -607,7 +612,9 @@ export default class TLVConverter extends EventEmitter {
         this._offsets = offsets;
         this._freezeHeader = true;
         this._offsetsApplied = false;
-        log.info("TunerDevice#%d TLVConverter offsets finalized: %s", this._tunerIndex, offsets.join(","));
+        (this._isMultiCarrier ? log.info : log.debug)(
+            "TunerDevice#%d TLVConverter offsets finalized: %s", this._tunerIndex, offsets.join(",")
+        );
         if (this._buffer?.length) {
             this._buffer.length = 0;
         }
@@ -683,7 +690,7 @@ export default class TLVConverter extends EventEmitter {
                 // All candidates tested — accept best if good enough
                 if (bestOffsets && bestMmtpPackets >= OFFSET_MMTP_MIN_PACKETS &&
                     bestMmtpDrops / bestMmtpPackets < 0.05) {
-                    log.info(
+                    (this._isMultiCarrier ? log.info : log.debug)(
                         "TunerDevice#%d TLVConverter offsets=[%s] (mmtpPkts=%d, drops=%d, best of %d)",
                         this._tunerIndex, bestOffsets.join(","), bestMmtpPackets, bestMmtpDrops,
                         candidates.length
@@ -709,7 +716,7 @@ export default class TLVConverter extends EventEmitter {
                     if (stats.mmtpPackets >= OFFSET_MMTP_MIN_PACKETS) {
                         // Immediate accept on perfect continuity
                         if (stats.mmtpDrops === 0) {
-                            log.info(
+                            (this._isMultiCarrier ? log.info : log.debug)(
                                 "TunerDevice#%d TLVConverter offsets=[%s] (mmtpPkts=%d, drops=0, candidate %d/%d)",
                                 this._tunerIndex, offsets.join(","), stats.mmtpPackets,
                                 idx, candidates.length
@@ -982,7 +989,7 @@ export default class TLVConverter extends EventEmitter {
                 return;
             }
             if (this._offsets && !this._offsetsLogged) {
-                log.info(
+                (this._isMultiCarrier ? log.info : log.debug)(
                     "TunerDevice#%d TLVConverter ready offsets: %s",
                     this._tunerIndex,
                     this._offsets.join(",")
