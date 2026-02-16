@@ -45,6 +45,13 @@ export const parameters = [
         type: "integer",
         minimum: 0,
         maximum: 1
+    },
+    {
+        in: "query",
+        name: "tsmfRelTs",
+        type: "integer",
+        minimum: 0,
+        maximum: 15
     }
 ];
 
@@ -72,13 +79,15 @@ export const get: Operation = (req, res) => {
     (<any> res.socket)._writableState.highWaterMark = Math.max(res.writableHighWaterMark, 1024 * 1024 * 16);
     res.socket.setNoDelay(true);
 
+    const tsmfRelTs = req.query.tsmfRelTs !== undefined ? parseInt(req.query.tsmfRelTs as string, 10) : undefined;
+
     channel.getStream({
         id: userId,
         priority: parseInt(req.get("X-Mirakurun-Priority"), 10) || 0,
         agent: req.get("User-Agent"),
         url: req.url,
         disableDecoder: (<number> <any> req.query.decode === 0)
-    }, res)
+    }, res, tsmfRelTs)
         .then(tsFilter => {
             if (requestAborted === true || req.aborted === true) {
                 return tsFilter.close();

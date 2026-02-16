@@ -175,7 +175,7 @@ export default class TLVConverter extends EventEmitter {
         super();
         this._tunerIndex = tunerIndex;
         this._output = output;
-        this._targetRelStream = typeof options?.tsmfRelTs === "number" ? options.tsmfRelTs : null;
+        this._targetRelStream = options?.tsmfRelTs ? options.tsmfRelTs : null;
         this._expectedGroupId = typeof options?.groupId === "number" ? options.groupId : null;
 
         if (this._output) {

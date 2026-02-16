@@ -42,6 +42,8 @@ export interface Channel {
     type: ChannelType;
     channel: string;
     name?: string;
+    tsmfRelTs?: number;
+    tsmfGroupId?: number;
     services?: Service[];
 }
 
@@ -203,6 +205,7 @@ interface StreamSetting {
     parseNIT?: boolean;
     parseSDT?: boolean;
     parseEIT?: boolean;
+    tsmfRelTs?: number;
 }
 
 export interface StreamInfo {

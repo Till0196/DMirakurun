@@ -170,11 +170,20 @@ export class Channel {
                 return;
             }
 
-            if (!this.get(channel.type, channel.channel)) {
+            const existing = this.get(channel.type, channel.channel);
+            if (existing) {
+                if (channel.serviceId && channel.tsmfRelTs !== undefined && channel.tsmfRelTs !== null) {
+                    existing.addTsmfRelTsMapping(channel.serviceId, channel.tsmfRelTs);
+                }
+            } else {
                 if (channel.serviceId) {
                     (<any> channel).name = `${channel.type}:${channel.channel}`;
                 }
-                this.add(new ChannelItem(channel));
+                const item = new ChannelItem(channel);
+                if (channel.serviceId && channel.tsmfRelTs !== undefined && channel.tsmfRelTs !== null) {
+                    item.addTsmfRelTsMapping(channel.serviceId, channel.tsmfRelTs);
+                }
+                this.add(item);
             }
         });
     }

@@ -223,14 +223,29 @@ const TunersManager: React.FC<{ tuners: TunerDevice[], rpc: RPCClient }> = ({ tu
                         <Text style={{ marginLeft: 8 }}>{user.priority}</Text>
                     </>
                 ),
-                ch: (
-                    <>
-                        <Icon title="Channel" iconName="TVMonitor" />
-                        <Text style={{ marginLeft: 8 }}>
-                            {user.streamSetting?.channel ? `${user.streamSetting.channel.type} / ${user.streamSetting.channel.channel}` : "-"}
-                        </Text>
-                    </>
-                ),
+                ch: (() => {
+                    const setting = user.streamSetting;
+                    const ch = setting?.channel;
+                    const tsmfRelTs = setting?.tsmfRelTs ?? ch?.tsmfRelTs;
+                    const tsmfGroupId = ch?.tsmfGroupId;
+                    const chLabel = ch ? `${ch.type} / ${ch.channel}` : "-";
+                    const tsmfParts: string[] = [];
+                    if (tsmfRelTs != null) tsmfParts.push(`RelTs=${tsmfRelTs}`);
+                    if (tsmfGroupId != null) tsmfParts.push(`Group=${tsmfGroupId}`);
+                    const tsmfLabel = tsmfParts.length > 0 ? ` (TSMF: ${tsmfParts.join(", ")})` : "";
+                    return (
+                        <>
+                            <Icon title="Channel" iconName="TVMonitor" />
+                            <Text style={{ marginLeft: 8 }}>{chLabel}</Text>
+                            {tsmfLabel && (
+                                <Text
+                                    style={{ marginLeft: 4 }}
+                                    className={ColorClassNames.neutralTertiaryAlt}
+                                >{tsmfLabel}</Text>
+                            )}
+                        </>
+                    );
+                })(),
                 sid: (
                     <>
                         <Icon title="Service ID" iconName="Filter" />

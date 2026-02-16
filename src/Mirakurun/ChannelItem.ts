@@ -27,6 +27,7 @@ export default class ChannelItem {
     readonly tsmfRelTs: number;
     readonly tsmfGroupId: number;
     readonly commandVars: apid.ConfigChannelsItem["commandVars"];
+    private _relTsMap = new Map<number, number>(); // <serviceId, tsmfRelTs>
 
     constructor(config: apid.ConfigChannelsItem) {
         this.name = config.name;
@@ -35,6 +36,17 @@ export default class ChannelItem {
         this.tsmfRelTs = config.tsmfRelTs;
         this.tsmfGroupId = config.tsmfGroupId;
         this.commandVars = config.commandVars;
+    }
+
+    addTsmfRelTsMapping(serviceId: number, tsmfRelTs: number): void {
+        this._relTsMap.set(serviceId, tsmfRelTs);
+    }
+
+    getTsmfRelTs(serviceId?: number): number | undefined {
+        if (serviceId !== undefined && serviceId !== null && this._relTsMap.has(serviceId)) {
+            return this._relTsMap.get(serviceId);
+        }
+        return this.tsmfRelTs;
     }
 
     getServices(): ServiceItem[] {
@@ -63,7 +75,7 @@ export default class ChannelItem {
         return this.tsmfGroupId === other.tsmfGroupId && this.tsmfRelTs === other.tsmfRelTs;
     }
 
-    getStream(user: common.User, output: stream.Writable): Promise<TSFilter> {
-        return _.tuner.initChannelStream(this, user, output);
+    getStream(user: common.User, output: stream.Writable, tsmfRelTs?: number): Promise<TSFilter> {
+        return _.tuner.initChannelStream(this, user, output, tsmfRelTs);
     }
 }

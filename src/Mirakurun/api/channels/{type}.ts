@@ -18,7 +18,7 @@ import sift from "sift";
 import * as api from "../../api";
 import * as apid from "../../../../api";
 import _ from "../../_";
-import { deepClone, channelTypes } from "../../common";
+import { channelTypes } from "../../common";
 
 export const parameters = [
     {
@@ -32,15 +32,18 @@ export const parameters = [
 
 export const get: Operation = (req, res) => {
     const channels: apid.Channel[] = _.channel.findByType(req.params.type as apid.ChannelType).map(channel => {
-        const ch: apid.Channel = deepClone(channel);
-
-        ch.services = channel.getServices().map(service => ({
-            id: service.id,
-            serviceId: service.serviceId,
-            networkId: service.networkId,
-            name: service.name,
-            type: service.type
-        }));
+        const ch: apid.Channel = {
+            type: channel.type,
+            channel: channel.channel,
+            name: channel.name,
+            services: channel.getServices().map(service => ({
+                id: service.id,
+                serviceId: service.serviceId,
+                networkId: service.networkId,
+                name: service.name,
+                type: service.type
+            }))
+        };
 
         return ch;
     }).filter(sift(req.query));

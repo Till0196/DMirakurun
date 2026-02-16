@@ -395,7 +395,7 @@ export class Service {
 
         let services: Awaited<ReturnType<typeof _.tuner.getServices>>;
         try {
-            services = await _.tuner.getServices(channel);
+            services = await _.tuner.getServices(channel, { serviceId });
         } catch (e) {
             log.warn("ChannelItem#'%s' serviceId=%d check has failed [%s]", channel.name, serviceId, e);
             throw new Error("Service check failed");

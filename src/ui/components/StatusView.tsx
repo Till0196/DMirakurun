@@ -156,7 +156,9 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
                         `SID: 0x${service.serviceId.toString(16).toUpperCase()} (${service.serviceId})\n` +
                         `NID: 0x${service.networkId.toString(16).toUpperCase()} (${service.networkId})\n` +
                         `Type: 0x${service.type.toString(16).toUpperCase()} (${service.type})\n` +
-                        `Channel: ${service.channel.type} / ${service.channel.channel}`
+                        `Channel: ${service.channel.type} / ${service.channel.channel}` +
+                        (service.channel.tsmfRelTs != null ? `\nTSMF RelTs: ${service.channel.tsmfRelTs}` : "") +
+                        (service.channel.tsmfGroupId != null ? `\nTSMF GroupId: ${service.channel.tsmfGroupId}` : "")
                     )}
                 >
                     <div className="ms-Grid" area-describeby={tooltipId} style={{ margin: 4 }}>

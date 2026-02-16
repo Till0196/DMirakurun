@@ -81,7 +81,7 @@ export class Tuner {
         return false;
     }
 
-    initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable): Promise<TSFilter> {
+    initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable, tsmfRelTs?: number): Promise<TSFilter> {
         let networkId: number;
 
         const services = channel.getServices();
@@ -94,7 +94,8 @@ export class Tuner {
             streamSetting: {
                 channel,
                 networkId,
-                parseEIT: true
+                parseEIT: true,
+                tsmfRelTs
             }
         }, output);
     }
@@ -168,7 +169,19 @@ export class Tuner {
         });
     }
 
-    async getServices(channel: ChannelItem, user: Partial<common.User> = {}): Promise<apid.Service[]> {
+    async getServices(
+        channel: ChannelItem,
+        userOrOptions: Partial<common.User> | { serviceId?: number } = {}
+    ): Promise<apid.Service[]> {
+        const serviceId = "serviceId" in userOrOptions ? userOrOptions.serviceId : undefined;
+        const user: Partial<common.User> = "id" in userOrOptions || "priority" in userOrOptions
+            ? userOrOptions as Partial<common.User>
+            : {};
+
+        const tsmfRelTs = serviceId !== undefined && serviceId !== null
+            ? channel.getTsmfRelTs(serviceId)
+            : undefined;
+
         const tsFilter = await this._initTS({
             id: "Mirakurun:getServices()",
             priority: -1,
@@ -176,7 +189,8 @@ export class Tuner {
             streamSetting: {
                 channel,
                 parseNIT: true,
-                parseSDT: true
+                parseSDT: true,
+                tsmfRelTs
             },
             ...user
         });
@@ -335,7 +349,7 @@ export class Tuner {
                     parseNIT: setting.parseNIT,
                     parseSDT: setting.parseSDT,
                     parseEIT: setting.parseEIT,
-                    tsmfRelTs: useMmtsDecoder ? undefined : setting.channel.tsmfRelTs
+                    tsmfRelTs: useMmtsDecoder ? undefined : (setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId))
                 });
 
                 Object.defineProperty(user, "streamInfo", {
