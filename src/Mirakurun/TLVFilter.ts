@@ -53,13 +53,9 @@ export default class TLVFilter {
             return { outputStream: inputStream, isCarrierOnly: true };
         }
 
-        // Mode 2: TSMFFilter + mmtsDecoder
-        if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
-            return this._setupTsmfPipeline(inputStream, ch);
-        }
-
-        // Mode 3: Direct mmtsDecoder
-        return this._setupDirectDecoder(inputStream);
+        // TSMFFilter + mmtsDecoder
+        // TSMFDemuxer auto-selects TLV stream from stream_type bits if tsmfRelTs is not configured
+        return this._setupTsmfPipeline(inputStream, ch);
     }
 
     syncPriorities(newPriority: number): void {
@@ -152,22 +148,6 @@ export default class TLVFilter {
         });
 
         return { outputStream, isCarrierOnly: false };
-    }
-
-    private _setupDirectDecoder(inputStream: stream.Readable): TLVFilterResult {
-        log.info("TunerDevice#%d Direct mmtsDecoder mode", this._tunerIndex);
-        const proc = this._spawnDecoder();
-        if (!proc) {
-            return { outputStream: inputStream, isCarrierOnly: false };
-        }
-
-        stream.pipeline(inputStream, proc.stdin, (err) => {
-            if (err && !this._closed) {
-                log.error("TunerDevice#%d pipeline error: %s", this._tunerIndex, (err as Error).message);
-            }
-        });
-
-        return { outputStream: proc.stdout, isCarrierOnly: false };
     }
 
     private _spawnDecoder(): child_process.ChildProcess | null {
