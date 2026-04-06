@@ -33,7 +33,7 @@ export default class TSMFFilter {
     private _demuxer: TSMFDemuxer;
     private _carrierLinks: CarrierLink[] = [];
     private _carrierInitPending = false;
-    private _disposed = false;
+    private _closed = false;
     private _onFatal: () => void;
 
     constructor(tunerIndex: number, options: { tsmfRelTs?: number; groupId?: number }, onFatal: () => void) {
@@ -103,6 +103,7 @@ export default class TSMFFilter {
     }
 
     releaseCarriers(): void {
+        this._closed = true;
         for (const link of this._carrierLinks) {
             try { link.sourceStream.removeAllListeners(); } catch (e) { /* ignore */ }
             try { link.demuxerInput.end(); } catch (e) { /* ignore */ }
@@ -174,7 +175,7 @@ export default class TSMFFilter {
 
             let started = 0;
             for (let i = 0; i < selected.length; i++) {
-                if (this._disposed) {
+                if (this._closed) {
                     this.releaseCarriers();
                     return;
                 }
@@ -199,16 +200,23 @@ export default class TSMFFilter {
                     continue;
                 }
 
+                // Re-check after await — cleanup may have been called during startStream
+                if (this._closed) {
+                    device.endStream(user, true);
+                    this.releaseCarriers();
+                    return;
+                }
+
                 started++;
                 stream.pipeline(sourceStream, demuxerInput, (err) => {
-                    if (err && !this._disposed) {
+                    if (err && !this._closed) {
                         log.error("TunerDevice#%d pipeline error: %s", this._tunerIndex, (err as Error).message);
                     }
                 });
 
                 sourceStream.once("end", () => {
                     try { demuxerInput.end(); } catch (e) { /* ignore */ }
-                    if (!this._disposed) {
+                    if (!this._closed) {
                         log.warn("TunerDevice#%d carrier stream ended on tuner #%d", this._tunerIndex, device.index);
                         this._onFatal();
                     }
@@ -231,12 +239,12 @@ export default class TSMFFilter {
 
     private async _selectDevices(required: number): Promise<TunerDevice[]> {
         for (let attempt = 0; attempt < CARRIER_MAX_ATTEMPTS; attempt++) {
-            if (this._disposed) {
+            if (this._closed) {
                 return [];
             }
             if (attempt > 0) {
                 await new Promise(r => setTimeout(r, CARRIER_RETRY_DELAY_MS));
-                if (this._disposed) {
+                if (this._closed) {
                     return [];
                 }
             }

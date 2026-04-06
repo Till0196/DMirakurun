@@ -26,7 +26,7 @@ export default class TLVFilter {
     private _config: apid.ConfigTunersItem;
     private _mmtsDecoderProcess: child_process.ChildProcess | null = null;
     private _tsmfFilter: TSMFFilter | null = null;
-    private _disposed = false;
+    private _closed = false;
     private _isCarrierOnly = false;
     private _onFatal: () => void;
 
@@ -103,7 +103,7 @@ export default class TLVFilter {
             }
         }
         this._tsmfFilter = null;
-        this._disposed = true;
+        this._closed = true;
     }
 
     // --- Private ---
@@ -148,7 +148,7 @@ export default class TLVFilter {
         });
 
         stream.pipeline(inputStream, primaryInput, (err) => {
-            if (err && !this._disposed) {
+            if (err && !this._closed) {
                 log.error("TunerDevice#%d pipeline error: %s", this._tunerIndex, (err as Error).message);
             }
         });
@@ -171,7 +171,7 @@ export default class TLVFilter {
         }
 
         stream.pipeline(inputStream, proc.stdin, (err) => {
-            if (err && !this._disposed) {
+            if (err && !this._closed) {
                 log.error("TunerDevice#%d pipeline error: %s", this._tunerIndex, (err as Error).message);
             }
         });
@@ -208,7 +208,7 @@ export default class TLVFilter {
                 "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
                 this._tunerIndex, code, signal, pid
             );
-            if (!this._disposed) {
+            if (!this._closed) {
                 this._onFatal();
             }
         });
