@@ -161,7 +161,7 @@ export default class TSMFDemuxer extends EventEmitter {
     private _offsets: number[] | null = null;
     private _targetRelStream: number | null;
     private _expectedGroupId: number | null;
-    private _freezeHeader = false;
+    private _headerFinalized = false;
     private _offsetsApplied = false;
     private _outputSuperframeCount = 0;
     private _offsetsLogged = false;
@@ -232,7 +232,7 @@ export default class TSMFDemuxer extends EventEmitter {
         this._outputSuperframeCount = 0;
         this._ready = false;
         this._offsetsLogged = false;
-        this._freezeHeader = false;
+        this._headerFinalized = false;
         this._probeInProgress = false;
         this._nextProbeThreshold = 0;
         if (this._buffer) {
@@ -444,7 +444,7 @@ export default class TSMFDemuxer extends EventEmitter {
         const { headerCRC, framePosition } = frameInfo;
 
         // When header is frozen and source already locked, skip processing
-        if (this._freezeHeader && source.headerLocked) {
+        if (this._headerFinalized && source.headerLocked) {
             return;
         }
 
@@ -619,7 +619,7 @@ export default class TSMFDemuxer extends EventEmitter {
 
     private _finalizeOffsets(offsets: number[]): void {
         this._offsets = offsets;
-        this._freezeHeader = true;
+        this._headerFinalized = true;
         this._offsetsApplied = false;
         (this._isMultiCarrier ? log.info : log.debug)(
             "TunerDevice#%d TSMFDemuxer offsets finalized: %s", this._tunerIndex, offsets.join(",")
