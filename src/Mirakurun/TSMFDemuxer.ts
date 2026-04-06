@@ -306,7 +306,7 @@ export default class TSMFDemuxer extends EventEmitter {
         }
 
         this._output.once("error", (err: any) => {
-            log.debug("TunerDevice#%d TSMFDemuxer output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
+            log.debug("TunerDevice#%d TSMF output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
             this._close();
         });
         this._output.once("finish", this._close.bind(this));
@@ -427,7 +427,7 @@ export default class TSMFDemuxer extends EventEmitter {
             } else {
                 if (this._carrierConfirmValue !== 0) {
                     log.debug(
-                        "TunerDevice#%d TSMFDemuxer carrier count changed during confirmation: %d -> %d (reset)",
+                        "TunerDevice#%d TSMF carrier count changed %d -> %d, resetting confirmation",
                         this._tunerIndex, this._carrierConfirmValue, numberOfCarriers
                     );
                 }
@@ -439,7 +439,7 @@ export default class TSMFDemuxer extends EventEmitter {
             }
             this._numberOfCarriers = numberOfCarriers;
             log.info(
-                "TunerDevice#%d TSMFDemuxer confirmed numberOfCarriers=%d",
+                "TunerDevice#%d TSMF confirmed %d carriers",
                 this._tunerIndex, numberOfCarriers
             );
         }
@@ -546,7 +546,7 @@ export default class TSMFDemuxer extends EventEmitter {
         this._headerFinalized = true;
         this._offsetsApplied = false;
         (this._isMultiCarrier ? log.info : log.debug)(
-            "TunerDevice#%d TSMFDemuxer offsets finalized: %s", this._tunerIndex, offsets.join(",")
+            "TunerDevice#%d TSMF offsets finalized: %s", this._tunerIndex, offsets.join(",")
         );
         if (this._buffer.length) {
             this._buffer.length = 0;
@@ -609,7 +609,7 @@ export default class TSMFDemuxer extends EventEmitter {
             // Perfect match — accept immediately
             if (stats.mmtpDrops === 0) {
                 (this._isMultiCarrier ? log.info : log.debug)(
-                    "TunerDevice#%d TSMFDemuxer offsets=%s mmtpPkts=%d drops=0 candidate %d/%d",
+                    "TunerDevice#%d TSMF offsets=%s (mmtp=%d, drops=0, candidate %d/%d)",
                     this._tunerIndex, offsets.join(","), stats.mmtpPackets,
                     candidates.indexOf(offsets) + 1, candidates.length
                 );
@@ -628,7 +628,7 @@ export default class TSMFDemuxer extends EventEmitter {
         if (bestOffsets && bestPackets >= OFFSET_MMTP_MIN_PACKETS &&
             bestDrops / bestPackets < OFFSET_MAX_DROP_RATIO) {
             (this._isMultiCarrier ? log.info : log.debug)(
-                "TunerDevice#%d TSMFDemuxer offsets=%s mmtpPkts=%d drops=%d best of %d",
+                "TunerDevice#%d TSMF offsets=%s (mmtp=%d, drops=%d, best of %d)",
                 this._tunerIndex, bestOffsets.join(","), bestPackets, bestDrops, candidates.length
             );
             return bestOffsets;
@@ -883,14 +883,14 @@ export default class TSMFDemuxer extends EventEmitter {
             }
             if (this._offsets && !this._offsetsLogged) {
                 (this._isMultiCarrier ? log.info : log.debug)(
-                    "TunerDevice#%d TSMFDemuxer ready offsets: %s",
+                    "TunerDevice#%d TSMF ready with offsets: %s",
                     this._tunerIndex,
                     this._offsets.join(",")
                 );
                 this._offsetsLogged = true;
             }
             this._ready = true;
-            log.debug("TunerDevice#%d TSMFDemuxer: first TLV packet ready, emitting ready event", this._tunerIndex);
+            log.debug("TunerDevice#%d TSMF first TLV packet ready", this._tunerIndex);
             process.nextTick(() => this.emit("ready"));
         }
 
@@ -931,7 +931,7 @@ export default class TSMFDemuxer extends EventEmitter {
                 });
             }
         } catch (err: any) {
-            log.debug("TunerDevice#%d TSMFDemuxer output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
+            log.debug("TunerDevice#%d TSMF output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
             this._sinkClosed = true;
             this._close();
         }
@@ -1043,7 +1043,7 @@ export default class TSMFDemuxer extends EventEmitter {
             const fallback = this._selectTargetStream(relative, streamTypeBits);
             if (this._isTLVStream(streamTypeBits, fallback)) {
                 log.warn(
-                    "TunerDevice#%d TSMFDemuxer target stream %d is not TLV, fallback to %d",
+                    "TunerDevice#%d TSMF target stream %d is not TLV, fallback to %d",
                     this._tunerIndex, target, fallback
                 );
                 target = fallback;
