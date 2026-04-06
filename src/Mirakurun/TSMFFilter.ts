@@ -55,6 +55,8 @@ export default class TSMFFilter {
     }
 
     close(): void {
+        this._closed = true;
+        this.releaseCarriers();
         this._demuxer.close();
     }
 
