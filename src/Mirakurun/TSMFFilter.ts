@@ -73,10 +73,10 @@ interface MultiCarrierOptions {
 }
 
 class CarrierInput extends stream.Writable {
-    private _combiner: TLVConverter;
+    private _combiner: TSMFFilter;
     private _sourceId: number;
 
-    constructor(combiner: TLVConverter, sourceId: number) {
+    constructor(combiner: TSMFFilter, sourceId: number) {
         super();
         this._combiner = combiner;
         this._sourceId = sourceId;
@@ -98,7 +98,7 @@ class CarrierInput extends stream.Writable {
     }
 }
 
-export default class TLVConverter extends EventEmitter {
+export default class TSMFFilter extends EventEmitter {
     /**
      * Find a valid TLV sync position by verifying that at least 3 consecutive
      * TLV packets chain correctly (each packet's end points to the next 0x7F).
@@ -221,7 +221,7 @@ export default class TLVConverter extends EventEmitter {
     }
 
     resetForSynchronizedStart(): void {
-        log.info("TunerDevice#%d TLVConverter reset for synchronized start", this._tunerIndex);
+        log.info("TunerDevice#%d TSMFFilter reset for synchronized start", this._tunerIndex);
         this._carrierStates.clear();
         this._offsets = null;
         this._offsetsApplied = false;
@@ -336,7 +336,7 @@ export default class TLVConverter extends EventEmitter {
         }
 
         this._output.once("error", (err: any) => {
-            log.debug("TunerDevice#%d TLVConverter output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
+            log.debug("TunerDevice#%d TSMFFilter output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
             this._close();
         });
         this._output.once("finish", this._close.bind(this));
@@ -347,7 +347,7 @@ export default class TLVConverter extends EventEmitter {
         for (const packet of packets) {
             const pid = ((packet[1] & 0x1f) << 8) | packet[2];
             if (pid === TSMF_PID) {
-                this._handleTSMFPacket(source, packet);
+                this._onTSMF(source, packet);
             }
 
             if (pid === TLV_PID && source.currentFrame && source.currentFrame.slots.length < SLOT_COUNT) {
@@ -356,7 +356,7 @@ export default class TLVConverter extends EventEmitter {
         }
     }
 
-    private _handleTSMFPacket(source: SourceState, packet: Buffer): void {
+    private _onTSMF(source: SourceState, packet: Buffer): void {
         // Track TSMF CC to detect frame drops (skip during grace period after offset detection)
         const cc = packet[3] & 0x0f;
         if (source.lastTsmfCC >= 0 && Date.now() >= this._ccGraceUntil) {
@@ -388,7 +388,7 @@ export default class TLVConverter extends EventEmitter {
             return;
         }
 
-        this._processTSMFHeader(source, payload, frameInfo);
+        this._parseTSMFHeader(source, payload, frameInfo);
 
         if (source.currentFrame && source.currentFrame.slots.length > 0) {
             this._addBlock(carrierState, source.currentFrame);
@@ -397,11 +397,11 @@ export default class TLVConverter extends EventEmitter {
         // Soft reset on TSMF frame drops: clear all carrier buffers and re-align
         if (source.tsmfDroppedFrames > 0 && this._offsets) {
             log.warn(
-                "TunerDevice#%d TLVConverter TSMF frame drop: carrier=%d dropped=%d — soft reset",
+                "TunerDevice#%d TSMFFilter TSMF frame drop: carrier=%d dropped=%d — soft reset",
                 this._tunerIndex, carrierState.carrierSequence, source.tsmfDroppedFrames
             );
 
-            this._writePendingOutput();
+            this._drain();
 
             for (const carrier of this._carrierStates.values()) {
                 carrier.blocks.length = 0;
@@ -428,7 +428,7 @@ export default class TLVConverter extends EventEmitter {
         };
     }
 
-    private _processTSMFHeader(
+    private _parseTSMFHeader(
         source: SourceState,
         payload: Buffer,
         frameInfo: {
@@ -499,7 +499,7 @@ export default class TLVConverter extends EventEmitter {
             } else {
                 if (this._carrierConfirmValue !== 0) {
                     log.debug(
-                        "TunerDevice#%d TLVConverter carrier count changed during confirmation: %d -> %d (reset)",
+                        "TunerDevice#%d TSMFFilter carrier count changed during confirmation: %d -> %d (reset)",
                         this._tunerIndex, this._carrierConfirmValue, numberOfCarriers
                     );
                 }
@@ -511,7 +511,7 @@ export default class TLVConverter extends EventEmitter {
             }
             this._numberOfCarriers = numberOfCarriers;
             log.info(
-                "TunerDevice#%d TLVConverter confirmed numberOfCarriers=%d",
+                "TunerDevice#%d TSMFFilter confirmed numberOfCarriers=%d",
                 this._tunerIndex, numberOfCarriers
             );
         }
@@ -604,7 +604,7 @@ export default class TLVConverter extends EventEmitter {
 
         const candidates = this._buildProbeCandidates(carriers);
         this._probeInProgress = true;
-        this._probeOffsetsAsync(carriers, candidates, accumulated);
+        this._probeOffsets(carriers, candidates, accumulated);
     }
 
     private _finalizeOffsets(offsets: number[]): void {
@@ -612,7 +612,7 @@ export default class TLVConverter extends EventEmitter {
         this._freezeHeader = true;
         this._offsetsApplied = false;
         (this._isMultiCarrier ? log.info : log.debug)(
-            "TunerDevice#%d TLVConverter offsets finalized: %s", this._tunerIndex, offsets.join(",")
+            "TunerDevice#%d TSMFFilter offsets finalized: %s", this._tunerIndex, offsets.join(",")
         );
         if (this._buffer?.length) {
             this._buffer.length = 0;
@@ -673,7 +673,7 @@ export default class TLVConverter extends EventEmitter {
      * Probe offset candidates asynchronously, yielding the event loop between
      * each candidate via setImmediate to prevent DVR buffer overflow (EOVERFLOW).
      */
-    private _probeOffsetsAsync(carriers: CarrierState[], candidates: number[][], accumulated: number): void {
+    private _probeOffsets(carriers: CarrierState[], candidates: number[][], accumulated: number): void {
         let idx = 0;
         let bestOffsets: number[] | null = null;
         let bestMmtpPackets = 0;
@@ -690,7 +690,7 @@ export default class TLVConverter extends EventEmitter {
                 if (bestOffsets && bestMmtpPackets >= OFFSET_MMTP_MIN_PACKETS &&
                     bestMmtpDrops / bestMmtpPackets < 0.05) {
                     (this._isMultiCarrier ? log.info : log.debug)(
-                        "TunerDevice#%d TLVConverter offsets=[%s] (mmtpPkts=%d, drops=%d, best of %d)",
+                        "TunerDevice#%d TSMFFilter offsets=[%s] (mmtpPkts=%d, drops=%d, best of %d)",
                         this._tunerIndex, bestOffsets.join(","), bestMmtpPackets, bestMmtpDrops,
                         candidates.length
                     );
@@ -704,19 +704,19 @@ export default class TLVConverter extends EventEmitter {
             }
 
             const offsets = candidates[idx++];
-            const packets = this._extractAlignedPackets(carriers, offsets, 30);
+            const packets = this._alignPackets(carriers, offsets, 30);
             if (packets.length > 0) {
-                const tlv = this._assembleTLVFromPackets(packets);
-                const syncStart = TLVConverter._findTlvSync(tlv);
+                const tlv = this._assembleTlv(packets);
+                const syncStart = TSMFFilter._findTlvSync(tlv);
 
                 if (syncStart >= 0) {
-                    const stats = this._collectMmtpStats(tlv, syncStart);
+                    const stats = this._probeMmtp(tlv, syncStart);
 
                     if (stats.mmtpPackets >= OFFSET_MMTP_MIN_PACKETS) {
                         // Immediate accept on perfect continuity
                         if (stats.mmtpDrops === 0) {
                             (this._isMultiCarrier ? log.info : log.debug)(
-                                "TunerDevice#%d TLVConverter offsets=[%s] (mmtpPkts=%d, drops=0, candidate %d/%d)",
+                                "TunerDevice#%d TSMFFilter offsets=[%s] (mmtpPkts=%d, drops=0, candidate %d/%d)",
                                 this._tunerIndex, offsets.join(","), stats.mmtpPackets,
                                 idx, candidates.length
                             );
@@ -744,7 +744,7 @@ export default class TLVConverter extends EventEmitter {
     }
 
     /** Iterate over interleaved slots across carrier superframes in TSMF order. */
-    private _forEachSlotInSuperframes(
+    private _iterateSlots(
         superframes: CarrierSuperframe[],
         callback: (packet: Buffer) => void
     ): void {
@@ -777,7 +777,7 @@ export default class TLVConverter extends EventEmitter {
         }
     }
 
-    private _extractAlignedPackets(
+    private _alignPackets(
         carriers: CarrierState[],
         offsets: number[],
         maxSuperframes: number
@@ -793,16 +793,16 @@ export default class TLVConverter extends EventEmitter {
         const outputChunks: Buffer[] = [];
         for (let sf = 0; sf < count; sf++) {
             const sfs = carriers.map((c, i) => c.superframes[(offsets[i] || 0) + sf]);
-            this._forEachSlotInSuperframes(sfs, packet => outputChunks.push(packet));
+            this._iterateSlots(sfs, packet => outputChunks.push(packet));
         }
         return outputChunks;
     }
 
     /** Assemble a TLV byte stream from TS packets for offset probing. */
-    private _assembleTLVFromPackets(packets: Buffer[]): Buffer {
+    private _assembleTlv(packets: Buffer[]): Buffer {
         const chunks: Buffer[] = [];
         for (const packet of packets) {
-            const payload = TLVConverter._extractTlvPayload(packet);
+            const payload = TSMFFilter._extractTlvPayload(packet);
             if (payload) {
                 chunks.push(payload);
             }
@@ -810,7 +810,7 @@ export default class TLVConverter extends EventEmitter {
         return Buffer.concat(chunks);
     }
 
-    private _collectMmtpStats(
+    private _probeMmtp(
         buffer: Buffer,
         start: number
     ): { mmtpPackets: number; mmtpDrops: number } {
@@ -818,7 +818,7 @@ export default class TLVConverter extends EventEmitter {
         let mmtpDrops = 0;
         const runs = new Map<number, { lastSeq: number }>();
 
-        this._forEachTlvPacket(buffer, start, (type, payload) => {
+        this._iterateTlv(buffer, start, (type, payload) => {
             const mmtp = this._parseMmtpHeader(type, payload);
             if (!mmtp) {
                 return;
@@ -839,7 +839,7 @@ export default class TLVConverter extends EventEmitter {
     }
 
     /** Iterate over TLV packets in a buffer, re-syncing on noise bytes. */
-    private _forEachTlvPacket(
+    private _iterateTlv(
         buffer: Buffer,
         start: number,
         callback: (type: number, payload: Buffer) => void
@@ -933,11 +933,11 @@ export default class TLVConverter extends EventEmitter {
 
         for (let i = 0; i < drainCount; i++) {
             const sfs = carriers.map(c => c.superframes[i]);
-            this._forEachSlotInSuperframes(sfs, packet => this._handleTLVPacket(packet));
+            this._iterateSlots(sfs, packet => this._onTLV(packet));
             this._outputSuperframeCount++;
         }
 
-        this._writePendingOutput();
+        this._drain();
         for (const carrier of carriers) {
             carrier.superframes.splice(0, drainCount);
         }
@@ -947,11 +947,11 @@ export default class TLVConverter extends EventEmitter {
         return Array.from(this._carrierStates.values()).sort((a, b) => a.carrierSequence - b.carrierSequence);
     }
 
-    private _handleTLVPacket(packet: Buffer): void {
+    private _onTLV(packet: Buffer): void {
         if (this._closed || this._closing || !this._buffer) {
             return;
         }
-        const tlvChunk = TLVConverter._extractTlvPayload(packet);
+        const tlvChunk = TSMFFilter._extractTlvPayload(packet);
         if (!tlvChunk) {
             return;
         }
@@ -959,7 +959,7 @@ export default class TLVConverter extends EventEmitter {
         const pusi = (packet[1] & 0x40) !== 0;
         if (pusi) {
             if (this._buffer.length > 0) {
-                this._flushBufferedOutput();
+                this._flush();
             }
             this._buffer.push(Buffer.from(tlvChunk));
         } else {
@@ -970,7 +970,7 @@ export default class TLVConverter extends EventEmitter {
         }
     }
 
-    private _flushBufferedOutput(): void {
+    private _flush(): void {
         if (!this._buffer?.length || this._sinkClosed) {
             return;
         }
@@ -989,14 +989,14 @@ export default class TLVConverter extends EventEmitter {
             }
             if (this._offsets && !this._offsetsLogged) {
                 (this._isMultiCarrier ? log.info : log.debug)(
-                    "TunerDevice#%d TLVConverter ready offsets: %s",
+                    "TunerDevice#%d TSMFFilter ready offsets: %s",
                     this._tunerIndex,
                     this._offsets.join(",")
                 );
                 this._offsetsLogged = true;
             }
             this._ready = true;
-            log.debug("TunerDevice#%d TLVConverter: first TLV packet ready, emitting ready event", this._tunerIndex);
+            log.debug("TunerDevice#%d TSMFFilter: first TLV packet ready, emitting ready event", this._tunerIndex);
             process.nextTick(() => this.emit("ready"));
         }
 
@@ -1012,7 +1012,7 @@ export default class TLVConverter extends EventEmitter {
         this._pendingOutputChunks.push(outputData);
     }
 
-    private _writePendingOutput(): void {
+    private _drain(): void {
         if (this._pendingOutputChunks.length === 0 || this._sinkClosed || this._drainWaiting) {
             return;
         }
@@ -1032,12 +1032,12 @@ export default class TLVConverter extends EventEmitter {
                 this._output.once("drain", () => {
                     this._drainWaiting = false;
                     if (this._pendingOutputChunks.length > 0 && !this._sinkClosed) {
-                        this._writePendingOutput();
+                        this._drain();
                     }
                 });
             }
         } catch (err: any) {
-            log.debug("TunerDevice#%d TLVConverter output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
+            log.debug("TunerDevice#%d TSMFFilter output error: %s (code: %s)", this._tunerIndex, err.message, err.code);
             this._sinkClosed = true;
             this._close();
         }
@@ -1052,8 +1052,8 @@ export default class TLVConverter extends EventEmitter {
         if (this._offsets) {
             this._drainAlignedSuperframes();
         }
-        this._flushBufferedOutput();
-        this._writePendingOutput();
+        this._flush();
+        this._drain();
         this._sinkClosed = true;
 
         // Last-ditch write for data that couldn't be flushed (e.g., not ready)
@@ -1149,7 +1149,7 @@ export default class TLVConverter extends EventEmitter {
             const fallback = this._selectTargetStream(relative, streamTypeBits);
             if (this._isTLVStream(streamTypeBits, fallback)) {
                 log.warn(
-                    "TunerDevice#%d TLVConverter target stream %d is not TLV, fallback to %d",
+                    "TunerDevice#%d TSMFFilter target stream %d is not TLV, fallback to %d",
                     this._tunerIndex, target, fallback
                 );
                 target = fallback;

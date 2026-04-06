@@ -408,7 +408,7 @@ export class Tuner {
             if (device.isAvailable !== true || !device.channel) {
                 continue;
             }
-            // Skip devices in carrier mode — they have no TLVConverter/decoder
+            // Skip devices in carrier mode — they have no TSMFFilter/decoder
             if (device.isCarrierOnly) {
                 continue;
             }

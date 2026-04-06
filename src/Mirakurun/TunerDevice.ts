@@ -25,7 +25,7 @@ import status from "./status";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
-import TLVConverter from "./TLVConverter";
+import TSMFFilter from "./TSMFFilter";
 import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
@@ -387,7 +387,7 @@ export default class TunerDevice extends EventEmitter {
                 } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
                     const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
                     log.info(
-                        "TunerDevice#%d TLVConverter %s (tsmfRelTs=%d%s)",
+                        "TunerDevice#%d TSMFFilter %s (tsmfRelTs=%d%s)",
                         this._index,
                         hasGroup ? "multi-carrier mode" : "single-carrier mode",
                         ch.tsmfRelTs,
@@ -395,7 +395,7 @@ export default class TunerDevice extends EventEmitter {
                     );
 
                     const outputStream = new stream.PassThrough();
-                    this._tlvConverter = new TLVConverter(this._index, null, {
+                    this._tlvConverter = new TSMFFilter(this._index, null, {
                         tsmfRelTs: ch.tsmfRelTs,
                         groupId: ch.tsmfGroupId ?? undefined
                     });
@@ -420,17 +420,17 @@ export default class TunerDevice extends EventEmitter {
                                 log.warn("TunerDevice#%d needCarriers mismatch (converterNeedCarriers=%d, parsedGroupCarrierCount=%d), using parsed group count",
                                     this._index, count, parsedCarrierCount);
                             }
-                            // Pause primary gate - TLVConverter will be reset when all carriers are ready
+                            // Pause primary gate - TSMFFilter will be reset when all carriers are ready
                             primaryGate.close();
                             this._prepareCarrierGates(parsedCarrierCount);
                             this._registerCarrierGate(primaryGate);
                             log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
-                            this._startAdditionalCarriers(ch, this._tlvConverter as TLVConverter).catch(log.error);
+                            this._startAdditionalCarriers(ch, this._tlvConverter as TSMFFilter).catch(log.error);
                         }
                     });
 
                     this._tlvConverter.once("ready", () => {
-                        log.info("TunerDevice#%d TLVConverter ready, starting mmtsDecoder", this._index);
+                        log.info("TunerDevice#%d TSMFFilter ready, starting mmtsDecoder", this._index);
 
                         const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
                         this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
@@ -444,7 +444,7 @@ export default class TunerDevice extends EventEmitter {
 
                         this._mmtsDecoderProcess.once("exit", () => {
                             this._mmtsDecoderProcess?.stdin?.destroy();
-                            // TLVConverterをクリーンアップ
+                            // TSMFFilterをクリーンアップ
                             if (this._tlvConverter) {
                                 try {
                                     this._tlvConverter.close();
@@ -472,7 +472,7 @@ export default class TunerDevice extends EventEmitter {
                         this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
 
                         this._tlvConverter.once("close", () => {
-                            log.debug("TunerDevice#%d TLVConverter closed", this._index);
+                            log.debug("TunerDevice#%d TSMFFilter closed", this._index);
                             if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
                                 if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
                                     this._mmtsDecoderProcess.stdin.end();
@@ -482,7 +482,7 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     this._tlvConverter.once("error", (err) => {
-                        log.error("TunerDevice#%d TLVConverter error: %s", this._index, err.message);
+                        log.error("TunerDevice#%d TSMFFilter error: %s", this._index, err.message);
                         this._kill(false);
                     });
 
@@ -493,7 +493,7 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     cat.stdout.once("end", () => {
-                        log.debug("TunerDevice#%d cat stdout ended, closing TLVConverter", this._index);
+                        log.debug("TunerDevice#%d cat stdout ended, closing TSMFFilter", this._index);
                         if (this._tlvConverter) {
                             this._tlvConverter.close();
                         }
@@ -550,7 +550,7 @@ export default class TunerDevice extends EventEmitter {
                 } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
                     const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
                     log.info(
-                        "TunerDevice#%d TLVConverter %s (tsmfRelTs=%d%s)",
+                        "TunerDevice#%d TSMFFilter %s (tsmfRelTs=%d%s)",
                         this._index,
                         hasGroup ? "multi-carrier mode" : "single-carrier mode",
                         ch.tsmfRelTs,
@@ -558,10 +558,10 @@ export default class TunerDevice extends EventEmitter {
                     );
 
                     const outputStream = new stream.PassThrough();
-                    this._tlvConverter = new TLVConverter(this._index, null, {
+                    this._tlvConverter = new TSMFFilter(this._index, null, {
                         tsmfRelTs: ch.tsmfRelTs,
                         groupId: ch.tsmfGroupId ?? undefined
-                        // offsets: auto-detected by TLVConverter
+                        // offsets: auto-detected by TSMFFilter
                     });
                     const primaryInput = this._tlvConverter.createInput();
                     const primaryGate = new StreamGate(8 * 1024 * 1024);
@@ -584,17 +584,17 @@ export default class TunerDevice extends EventEmitter {
                                 log.warn("TunerDevice#%d needCarriers mismatch (converterNeedCarriers=%d, parsedGroupCarrierCount=%d), using parsed group count",
                                     this._index, count, parsedCarrierCount);
                             }
-                            // Pause primary gate - TLVConverter will be reset when all carriers are ready
+                            // Pause primary gate - TSMFFilter will be reset when all carriers are ready
                             primaryGate.close();
                             this._prepareCarrierGates(parsedCarrierCount);
                             this._registerCarrierGate(primaryGate);
                             log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
-                            this._startAdditionalCarriers(ch, this._tlvConverter as TLVConverter).catch(log.error);
+                            this._startAdditionalCarriers(ch, this._tlvConverter as TSMFFilter).catch(log.error);
                         }
                     });
 
                     this._tlvConverter.once("ready", () => {
-                        log.info("TunerDevice#%d TLVConverter ready, starting mmtsDecoder", this._index);
+                        log.info("TunerDevice#%d TSMFFilter ready, starting mmtsDecoder", this._index);
 
                         const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
                         this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
@@ -608,7 +608,7 @@ export default class TunerDevice extends EventEmitter {
 
                         this._mmtsDecoderProcess.once("exit", () => {
                             this._mmtsDecoderProcess?.stdin?.destroy();
-                            // TLVConverterをクリーンアップ
+                            // TSMFFilterをクリーンアップ
                             if (this._tlvConverter) {
                                 try {
                                     this._tlvConverter.close();
@@ -636,7 +636,7 @@ export default class TunerDevice extends EventEmitter {
                         this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
 
                         this._tlvConverter.once("close", () => {
-                            log.debug("TunerDevice#%d TLVConverter closed", this._index);
+                            log.debug("TunerDevice#%d TSMFFilter closed", this._index);
                             if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
                                 if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
                                     this._mmtsDecoderProcess.stdin.end();
@@ -646,7 +646,7 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     this._tlvConverter.once("error", (err) => {
-                        log.error("TunerDevice#%d TLVConverter error: %s", this._index, err.message);
+                        log.error("TunerDevice#%d TSMFFilter error: %s", this._index, err.message);
                         this._kill(false);
                     });
 
@@ -657,7 +657,7 @@ export default class TunerDevice extends EventEmitter {
                     });
 
                     this._process.stdout.once("end", () => {
-                        log.debug("TunerDevice#%d process stdout ended, closing TLVConverter", this._index);
+                        log.debug("TunerDevice#%d process stdout ended, closing TSMFFilter", this._index);
                         if (this._tlvConverter) {
                             this._tlvConverter.close();
                         }
@@ -785,15 +785,15 @@ export default class TunerDevice extends EventEmitter {
             return;
         }
         this._carrierGatesOpened = true;
-        // Reset TLVConverter NOW (when all carriers are ready) so all carriers start from the same broadcast point
+        // Reset TSMFFilter NOW (when all carriers are ready) so all carriers start from the same broadcast point
         // This ensures TSMF alignment works correctly
         if (this._tlvConverter?.resetForSynchronizedStart) {
-            log.info("TunerDevice#%d resetting TLVConverter for synchronized start (all %d carriers ready)",
+            log.info("TunerDevice#%d resetting TSMFFilter for synchronized start (all %d carriers ready)",
                 this._index, this._carrierGatesExpected);
             this._tlvConverter.resetForSynchronizedStart();
         }
         for (const gate of this._carrierGates) {
-            // Discard any buffered data — after TLVConverter reset, old data would have
+            // Discard any buffered data — after TSMFFilter reset, old data would have
             // discontinuities (gate buffer overflow) that corrupt offset detection
             gate.open(true);
         }
@@ -809,7 +809,7 @@ export default class TunerDevice extends EventEmitter {
         this._carrierGatesOpened = false;
     }
 
-    private async _startAdditionalCarriers(ch: ChannelItem, combiner: TLVConverter): Promise<void> {
+    private async _startAdditionalCarriers(ch: ChannelItem, combiner: TSMFFilter): Promise<void> {
         if (this._carrierInitInProgress || this._carrierLinks.length > 0) {
             return;
         }
