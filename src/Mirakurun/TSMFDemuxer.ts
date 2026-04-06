@@ -341,7 +341,7 @@ export default class TSMFDemuxer extends EventEmitter {
             return;
         }
 
-        const carrierState = this._getOrCreateCarrier(source, frameInfo);
+        const carrierState = this._resolveCarrier(source, frameInfo);
         if (!carrierState) {
             return;
         }
@@ -358,7 +358,7 @@ export default class TSMFDemuxer extends EventEmitter {
             continuityCounter: packet[3] & 0x0f,
             frameSync: frameInfo.frameSync,
             slots: [],
-            targetSlots: this._buildTargetSlots(source)
+            targetSlots: this._getTargetSlots(source)
         };
     }
 
@@ -384,7 +384,7 @@ export default class TSMFDemuxer extends EventEmitter {
     }
 
     private _applyTSMFHeader(source: SourceState, payload: Buffer, headerCRC: number): void {
-        source.tsmfRelativeStreamNumber = this._parseRelativeStreamNumbers(payload);
+        source.tsmfRelativeStreamNumber = this._parseSlotMap(payload);
         source.streamTypeBits = this._parseStreamTypeBits(payload);
         source.effectiveTargetStreamNumber = this._resolveTargetStream(
             source.tsmfRelativeStreamNumber,
@@ -394,7 +394,7 @@ export default class TSMFDemuxer extends EventEmitter {
         source.activeHeaderCRC = headerCRC;
     }
 
-    private _buildTargetSlots(source: SourceState): boolean[] {
+    private _getTargetSlots(source: SourceState): boolean[] {
         if (!source.headerLocked || source.effectiveTargetStreamNumber <= 0) {
             return new Array(SLOT_COUNT).fill(true);
         }
@@ -405,7 +405,7 @@ export default class TSMFDemuxer extends EventEmitter {
         );
     }
 
-    private _getOrCreateCarrier(
+    private _resolveCarrier(
         source: SourceState,
         frameInfo: {
             numberOfFrames: number;
@@ -476,10 +476,10 @@ export default class TSMFDemuxer extends EventEmitter {
             return;
         }
         carrier.blocks.push(frame);
-        this._buildSuperframes(carrier);
+        this._packFrames(carrier);
     }
 
-    private _buildSuperframes(carrier: CarrierState): void {
+    private _packFrames(carrier: CarrierState): void {
         let i = 0;
         while (i < carrier.blocks.length) {
             const first = carrier.blocks[i];
@@ -510,12 +510,12 @@ export default class TSMFDemuxer extends EventEmitter {
             carrier.blocks.splice(i, n);
             carrier.superframes.push({ numberOfFrames: n, frames });
 
-            this._tryDetectOffsets();
-            this._drainAlignedSuperframes();
+            this._detectOffsets();
+            this._drainFrames();
         }
     }
 
-    private _tryDetectOffsets(): void {
+    private _detectOffsets(): void {
         if (this._offsets || this._probeInProgress) {
             return;
         }
@@ -535,13 +535,13 @@ export default class TSMFDemuxer extends EventEmitter {
         this._probeInProgress = false;
 
         if (result) {
-            this._finalizeOffsets(result);
+            this._commitOffsets(result);
         } else {
             this._nextProbeThreshold = accumulated + OFFSET_RETRY_SFS;
         }
     }
 
-    private _finalizeOffsets(offsets: number[]): void {
+    private _commitOffsets(offsets: number[]): void {
         this._offsets = offsets;
         this._headerFinalized = true;
         this._offsetsApplied = false;
@@ -553,7 +553,7 @@ export default class TSMFDemuxer extends EventEmitter {
         }
     }
 
-    private _buildCandidates(carriers: CarrierState[]): number[][] {
+    private _candidates(carriers: CarrierState[]): number[][] {
         const sfCounts = carriers.map(c => c.superframes.length);
         const minSf = Math.min(...sfCounts);
         const base = sfCounts.map(sf => sf - minSf);
@@ -580,7 +580,7 @@ export default class TSMFDemuxer extends EventEmitter {
 
     /** Probe offset candidates synchronously. Returns best offsets or null. */
     private _probeOffsets(carriers: CarrierState[]): number[] | null {
-        const candidates = this._buildCandidates(carriers);
+        const candidates = this._candidates(carriers);
         let bestOffsets: number[] | null = null;
         let bestDrops = Infinity;
         let bestPackets = 0;
@@ -798,7 +798,7 @@ export default class TSMFDemuxer extends EventEmitter {
         };
     }
 
-    private _drainAlignedSuperframes(): void {
+    private _drainFrames(): void {
         if (!this._offsets || this._carrierStates.size === 0) {
             return;
         }
@@ -944,7 +944,7 @@ export default class TSMFDemuxer extends EventEmitter {
         this._closing = true;
 
         if (this._offsets) {
-            this._drainAlignedSuperframes();
+            this._drainFrames();
         }
         this._flush();
         this._drain();
@@ -991,7 +991,7 @@ export default class TSMFDemuxer extends EventEmitter {
         return base + 184 <= PACKET_SIZE ? packet.subarray(base, base + 184) : null;
     }
 
-    private _parseRelativeStreamNumbers(payload: Buffer): number[] {
+    private _parseSlotMap(payload: Buffer): number[] {
         const relative = [];
         for (let i = 0; i < SLOT_COUNT; i++) {
             const b = payload[69 + (i >> 1)];
