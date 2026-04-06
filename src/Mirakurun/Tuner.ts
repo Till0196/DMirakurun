@@ -353,7 +353,8 @@ export class Tuner {
                     parseEIT: setting.parseEIT
                 });
                 if (tsmfRelTs) {
-                    tsFilter.setSlotFilter(new TSMFSlotFilter(tsmfRelTs));
+                    const passHeader = !setting.serviceId;
+                    tsFilter.setSlotFilter(new TSMFSlotFilter(tsmfRelTs, passHeader));
                 }
 
                 Object.defineProperty(user, "streamInfo", {

@@ -1134,7 +1134,7 @@ export class TSMFSlotFilter extends stream.Transform {
     private _partial = Buffer.alloc(PACKET_SIZE);
     private _partialLen = 0;
 
-    constructor(tsmfRelTs: number) {
+    constructor(tsmfRelTs: number, private _passHeader = false) {
         super();
         this._targetStream = tsmfRelTs;
     }
@@ -1191,7 +1191,9 @@ export class TSMFSlotFilter extends stream.Transform {
                 }
                 this._slotCounter = 0;
             }
-            this.push(packet);
+            if (this._passHeader) {
+                this.push(packet);
+            }
             return;
         }
 
