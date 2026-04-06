@@ -26,8 +26,12 @@ const CID_HEADER_BASE = 3;
 const CID_HEADER_0x60_EXTRA = 42;
 
 // Offset detection parameters
-const OFFSET_MIN_SFS_PER_CARRIER = 140;
+const OFFSET_MIN_SFS = 30;
+const OFFSET_RETRY_SFS = 30;
 const OFFSET_MMTP_MIN_PACKETS = 16;
+const OFFSET_MAX_DROP_RATIO = 0.05;
+const CARRIER_CONFIRM_THRESHOLD = 3;
+const CC_GRACE_PERIOD_MS = 2000;
 const READY_MIN_SUPERFRAMES = 2;
 const OUTPUT_MIN_BUFFER_SFS = 2;
 
@@ -506,7 +510,7 @@ export default class TSMFDemuxer extends EventEmitter {
                 this._carrierConfirmValue = numberOfCarriers;
                 this._carrierConfirmCount = 1;
             }
-            if (this._carrierConfirmCount < 3) {
+            if (this._carrierConfirmCount < CARRIER_CONFIRM_THRESHOLD) {
                 return null;
             }
             this._numberOfCarriers = numberOfCarriers;
@@ -597,14 +601,20 @@ export default class TSMFDemuxer extends EventEmitter {
 
         const carriers = this._carriersBySequence();
         const accumulated = Math.min(...carriers.map(c => c.superframes.length));
-        const threshold = Math.max(OFFSET_MIN_SFS_PER_CARRIER, this._nextProbeThreshold);
+        const threshold = Math.max(OFFSET_MIN_SFS, this._nextProbeThreshold);
         if (accumulated < threshold) {
             return;
         }
 
-        const candidates = this._buildProbeCandidates(carriers);
         this._probeInProgress = true;
-        this._probeOffsets(carriers, candidates, accumulated);
+        const result = this._probeOffsets(carriers);
+        this._probeInProgress = false;
+
+        if (result) {
+            this._finalizeOffsets(result);
+        } else {
+            this._nextProbeThreshold = accumulated + OFFSET_RETRY_SFS;
+        }
     }
 
     private _finalizeOffsets(offsets: number[]): void {
@@ -617,130 +627,95 @@ export default class TSMFDemuxer extends EventEmitter {
         if (this._buffer?.length) {
             this._buffer.length = 0;
         }
-        // Reset dropped frame counters and set CC grace period.
-        // Offset detection blocks the event loop briefly, causing pipe buffer overflow
-        // and TSMF frame loss. A 2-second grace period covers the buffer drain period.
         for (const source of this._sources.values()) {
             source.tsmfDroppedFrames = 0;
             source.lastTsmfCC = -1;
         }
-        this._ccGraceUntil = Date.now() + 2000;
+        this._ccGraceUntil = Date.now() + CC_GRACE_PERIOD_MS;
     }
 
-    private _buildProbeCandidates(carriers: CarrierState[]): number[][] {
-        const count = carriers.length;
+    private _buildCandidates(carriers: CarrierState[]): number[][] {
         const sfCounts = carriers.map(c => c.superframes.length);
-        const aligned = Math.min(...sfCounts);
-        const base = sfCounts.map(sf => sf - aligned);
+        const minSf = Math.min(...sfCounts);
+        const base = sfCounts.map(sf => sf - minSf);
 
-        const candidates: number[][] = [];
-        const seen = new Set<string>();
-        const push = (offsets: number[]) => {
+        const candidates: number[][] = [base];
+        const seen = new Set<string>([base.join(",")]);
+        const add = (offsets: number[]) => {
             const key = offsets.join(",");
-            if (!seen.has(key)) { seen.add(key); candidates.push(offsets); }
+            if (!seen.has(key)) {
+                seen.add(key);
+                candidates.push(offsets);
+            }
         };
 
-        push(base);
-        // Single-axis ±1
-        for (let i = 0; i < count; i++) {
-            const plus = base.slice(); plus[i] += 1; push(plus);
-            const minus = base.slice(); minus[i] = Math.max(0, base[i] - 1); push(minus);
-        }
-        // 2-axis simultaneous ±1
-        for (let i = 0; i < count; i++) {
-            for (let j = i + 1; j < count; j++) {
-                for (const di of [-1, 1]) {
-                    for (const dj of [-1, 1]) {
-                        const combo = base.slice();
-                        combo[i] = Math.max(0, base[i] + di);
-                        combo[j] = Math.max(0, base[j] + dj);
-                        push(combo);
-                    }
-                }
-            }
-        }
-        // Single-axis ±2, ±4
-        for (const delta of [2, 4]) {
-            for (let i = 0; i < count; i++) {
-                const plus = base.slice(); plus[i] += delta; push(plus);
-                const minus = base.slice(); minus[i] = Math.max(0, base[i] - delta); push(minus);
+        // ±1 per axis only (covers 99%+ of real cases)
+        for (let i = 0; i < carriers.length; i++) {
+            const plus = base.slice(); plus[i] += 1; add(plus);
+            if (base[i] > 0) {
+                const minus = base.slice(); minus[i] -= 1; add(minus);
             }
         }
         return candidates;
     }
 
-    /**
-     * Probe offset candidates asynchronously, yielding the event loop between
-     * each candidate via setImmediate to prevent DVR buffer overflow (EOVERFLOW).
-     */
-    private _probeOffsets(carriers: CarrierState[], candidates: number[][], accumulated: number): void {
-        let idx = 0;
+    /** Probe offset candidates synchronously. Returns best offsets or null. */
+    private _probeOffsets(carriers: CarrierState[]): number[] | null {
+        const candidates = this._buildCandidates(carriers);
         let bestOffsets: number[] | null = null;
-        let bestMmtpPackets = 0;
-        let bestMmtpDrops = Infinity;
+        let bestDrops = Infinity;
+        let bestPackets = 0;
 
-        const tryNext = () => {
+        for (const offsets of candidates) {
             if (this._closed || this._closing) {
-                this._probeInProgress = false;
-                return;
+                return null;
             }
 
-            if (idx >= candidates.length) {
-                // All candidates tested — accept best if good enough
-                if (bestOffsets && bestMmtpPackets >= OFFSET_MMTP_MIN_PACKETS &&
-                    bestMmtpDrops / bestMmtpPackets < 0.05) {
-                    (this._isMultiCarrier ? log.info : log.debug)(
-                        "TunerDevice#%d TSMFDemuxer offsets=[%s] (mmtpPkts=%d, drops=%d, best of %d)",
-                        this._tunerIndex, bestOffsets.join(","), bestMmtpPackets, bestMmtpDrops,
-                        candidates.length
-                    );
-                    this._probeInProgress = false;
-                    this._finalizeOffsets(bestOffsets);
-                    return;
-                }
-                this._probeInProgress = false;
-                this._nextProbeThreshold = accumulated + 60;
-                return;
-            }
-
-            const offsets = candidates[idx++];
             const packets = this._alignPackets(carriers, offsets, 30);
-            if (packets.length > 0) {
-                const tlv = this._assembleTlv(packets);
-                const syncStart = TSMFDemuxer._findTlvSync(tlv);
-
-                if (syncStart >= 0) {
-                    const stats = this._probeMmtp(tlv, syncStart);
-
-                    if (stats.mmtpPackets >= OFFSET_MMTP_MIN_PACKETS) {
-                        // Immediate accept on perfect continuity
-                        if (stats.mmtpDrops === 0) {
-                            (this._isMultiCarrier ? log.info : log.debug)(
-                                "TunerDevice#%d TSMFDemuxer offsets=[%s] (mmtpPkts=%d, drops=0, candidate %d/%d)",
-                                this._tunerIndex, offsets.join(","), stats.mmtpPackets,
-                                idx, candidates.length
-                            );
-                            this._probeInProgress = false;
-                            this._finalizeOffsets(offsets);
-                            return;
-                        }
-
-                        // Track best candidate
-                        if (stats.mmtpDrops < bestMmtpDrops ||
-                            (stats.mmtpDrops === bestMmtpDrops && stats.mmtpPackets > bestMmtpPackets)) {
-                            bestOffsets = offsets;
-                            bestMmtpPackets = stats.mmtpPackets;
-                            bestMmtpDrops = stats.mmtpDrops;
-                        }
-                    }
-                }
+            if (packets.length === 0) {
+                continue;
             }
 
-            setImmediate(tryNext);
-        };
+            const tlv = this._assembleTlv(packets);
+            const syncStart = TSMFDemuxer._findTlvSync(tlv);
+            if (syncStart < 0) {
+                continue;
+            }
 
-        // First candidate tested synchronously (zero overhead for common case)
-        tryNext();
+            const stats = this._probeMmtp(tlv, syncStart);
+            if (stats.mmtpPackets < OFFSET_MMTP_MIN_PACKETS) {
+                continue;
+            }
+
+            // Perfect match — accept immediately
+            if (stats.mmtpDrops === 0) {
+                (this._isMultiCarrier ? log.info : log.debug)(
+                    "TunerDevice#%d TSMFDemuxer offsets=%s mmtpPkts=%d drops=0 candidate %d/%d",
+                    this._tunerIndex, offsets.join(","), stats.mmtpPackets,
+                    candidates.indexOf(offsets) + 1, candidates.length
+                );
+                return offsets;
+            }
+
+            if (stats.mmtpDrops < bestDrops ||
+                (stats.mmtpDrops === bestDrops && stats.mmtpPackets > bestPackets)) {
+                bestOffsets = offsets;
+                bestDrops = stats.mmtpDrops;
+                bestPackets = stats.mmtpPackets;
+            }
+        }
+
+        // Accept best if drop ratio is acceptable
+        if (bestOffsets && bestPackets >= OFFSET_MMTP_MIN_PACKETS &&
+            bestDrops / bestPackets < OFFSET_MAX_DROP_RATIO) {
+            (this._isMultiCarrier ? log.info : log.debug)(
+                "TunerDevice#%d TSMFDemuxer offsets=%s mmtpPkts=%d drops=%d best of %d",
+                this._tunerIndex, bestOffsets.join(","), bestPackets, bestDrops, candidates.length
+            );
+            return bestOffsets;
+        }
+
+        return null;
     }
 
     /** Iterate over interleaved slots across carrier superframes in TSMF order. */
