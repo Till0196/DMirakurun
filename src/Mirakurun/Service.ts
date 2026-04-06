@@ -226,12 +226,12 @@ export class Service {
 
             if (channelItem === null) {
                 updated = true;
-                return;
+                continue;
             }
 
             if (service.networkId === undefined || service.serviceId === undefined) {
                 updated = true;
-                return;
+                continue;
             }
 
             // migrate logo data
