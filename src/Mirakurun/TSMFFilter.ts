@@ -50,6 +50,10 @@ export default class TSMFFilter {
         return this._demuxer.detectedRelTs;
     }
 
+    get detectedGroupId(): number | null {
+        return this._demuxer.detectedGroupId;
+    }
+
     createInput(): stream.Writable {
         return this._demuxer.createInput();
     }

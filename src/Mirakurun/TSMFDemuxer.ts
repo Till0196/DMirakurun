@@ -158,6 +158,7 @@ export default class TSMFDemuxer extends EventEmitter {
     private _offsets: number[] | null = null;
     private _targetRelStream: number | null;
     private _expectedGroupId: number | null;
+    private _detectedGroupId: number | null = null;
     private _headerFinalized = false;
     private _offsetsApplied = false;
     private _outputSuperframeCount = 0;
@@ -195,6 +196,10 @@ export default class TSMFDemuxer extends EventEmitter {
 
     get detectedRelTs(): number | null {
         return this._targetRelStream;
+    }
+
+    get detectedGroupId(): number | null {
+        return this._detectedGroupId;
     }
 
     private get _isMultiCarrier(): boolean {
@@ -343,6 +348,10 @@ export default class TSMFDemuxer extends EventEmitter {
 
         if (this._expectedGroupId !== null && frameInfo.groupId !== this._expectedGroupId) {
             return;
+        }
+
+        if (this._detectedGroupId === null && frameInfo.groupId !== 255) {
+            this._detectedGroupId = frameInfo.groupId;
         }
 
         const carrierState = this._resolveCarrier(source, frameInfo);
