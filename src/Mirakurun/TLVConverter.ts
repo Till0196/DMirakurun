@@ -151,6 +151,8 @@ export default class TLVConverter extends EventEmitter {
 
     private _numberOfCarriers = 0;
     private _carrierInfoEmitted = false;
+    private _carrierConfirmCount = 0;
+    private _carrierConfirmValue = 0;
 
     private _offsets: number[] | null = null;
     private _targetRelStream: number | null;
@@ -376,6 +378,7 @@ export default class TLVConverter extends EventEmitter {
             source.tsmfDroppedFrames += 1;
             return;
         }
+
         if (this._expectedGroupId !== null && frameInfo.groupId !== this._expectedGroupId) {
             return;
         }
@@ -487,8 +490,30 @@ export default class TLVConverter extends EventEmitter {
             return null;
         }
 
+        // Require CARRIER_CONFIRM_THRESHOLD consecutive frames with the same
+        // numberOfCarriers before committing — guards against stale DVR buffer
+        // data or transient misparse at stream start.
         if (this._numberOfCarriers === 0) {
+            if (numberOfCarriers === this._carrierConfirmValue) {
+                this._carrierConfirmCount++;
+            } else {
+                if (this._carrierConfirmValue !== 0) {
+                    log.debug(
+                        "TunerDevice#%d TLVConverter carrier count changed during confirmation: %d -> %d (reset)",
+                        this._tunerIndex, this._carrierConfirmValue, numberOfCarriers
+                    );
+                }
+                this._carrierConfirmValue = numberOfCarriers;
+                this._carrierConfirmCount = 1;
+            }
+            if (this._carrierConfirmCount < 3) {
+                return null;
+            }
             this._numberOfCarriers = numberOfCarriers;
+            log.info(
+                "TunerDevice#%d TLVConverter confirmed numberOfCarriers=%d",
+                this._tunerIndex, numberOfCarriers
+            );
         }
 
         source.carrierSequence = carrierSequence;
