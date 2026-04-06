@@ -247,6 +247,11 @@ export class Service {
                 updated = true;
             }
 
+            // Restore auto-detected tsmfRelTs mapping from DB
+            if (service.channel?.tsmfRelTs !== undefined && service.channel?.tsmfRelTs !== null) {
+                channelItem.addTsmfRelTsMapping(service.serviceId, service.channel.tsmfRelTs);
+            }
+
             this.add(
                 new ServiceItem(
                     channelItem,

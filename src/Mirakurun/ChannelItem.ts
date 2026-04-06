@@ -28,6 +28,7 @@ export default class ChannelItem {
     readonly tsmfGroupId: number;
     readonly commandVars: apid.ConfigChannelsItem["commandVars"];
     private _relTsMap = new Map<number, number>(); // <serviceId, tsmfRelTs>
+    private _configRelTs = new Set<number>(); // serviceIds with config-specified tsmfRelTs
 
     constructor(config: apid.ConfigChannelsItem) {
         this.name = config.name;
@@ -38,7 +39,13 @@ export default class ChannelItem {
         this.commandVars = config.commandVars;
     }
 
-    addTsmfRelTsMapping(serviceId: number, tsmfRelTs: number): void {
+    addTsmfRelTsMapping(serviceId: number, tsmfRelTs: number, fromConfig = false): void {
+        if (fromConfig) {
+            this._configRelTs.add(serviceId);
+        }
+        if (this._configRelTs.has(serviceId) && !fromConfig) {
+            return;
+        }
         this._relTsMap.set(serviceId, tsmfRelTs);
     }
 

@@ -355,6 +355,20 @@ export class Tuner {
                 if (tsmfRelTs) {
                     const passHeader = !setting.serviceId;
                     tsFilter.setSlotFilter(new TSMFSlotFilter(tsmfRelTs, passHeader));
+                } else if (!useMmtsDecoder) {
+                    // Auto-detect TSMF mapping for channels without tsmfRelTs config
+                    const detector = TSMFSlotFilter.createDetector();
+                    detector.once("detected", (mapping: Map<number, Set<number>>) => {
+                        for (const [relTs, serviceIds] of mapping) {
+                            for (const sid of serviceIds) {
+                                setting.channel.addTsmfRelTsMapping(sid, relTs);
+                            }
+                        }
+                        log.info("TunerDevice#%d TSMF auto-detected %d streams on %s",
+                            device.index, mapping.size, setting.channel.channel);
+                        _.service.save();
+                    });
+                    tsFilter.setSlotFilter(detector);
                 }
 
                 Object.defineProperty(user, "streamInfo", {

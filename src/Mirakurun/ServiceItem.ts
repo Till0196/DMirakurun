@@ -150,7 +150,10 @@ export default class ServiceItem {
             channel: {
                 type: this._channel.type,
                 channel: this._channel.channel,
-                ...(this._channel.tsmfRelTs !== null && this._channel.tsmfRelTs !== undefined && { tsmfRelTs: this._channel.getTsmfRelTs(this._serviceId) }),
+                ...(() => {
+                    const relTs = this._channel.getTsmfRelTs(this._serviceId);
+                    return relTs !== undefined && relTs !== null ? { tsmfRelTs: relTs } : {};
+                })(),
                 ...(this._channel.tsmfGroupId !== null && this._channel.tsmfGroupId !== undefined && { tsmfGroupId: this._channel.tsmfGroupId })
             }
         };

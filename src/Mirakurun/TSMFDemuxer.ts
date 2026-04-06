@@ -1128,21 +1128,41 @@ export default class TSMFDemuxer extends EventEmitter {
  * Used for single-carrier TSMF splitting (non-TLV, e.g. BS/CS over CATV).
  */
 export class TSMFSlotFilter extends stream.Transform {
+
+    static createDetector(): TSMFSlotFilter {
+        const filter = new TSMFSlotFilter(0, true);
+        filter._detectMode = true;
+        return filter;
+    }
+
     private _targetStream: number;
+    private _detectMode: boolean;
     private _slotCounter = -1;
     private _slotMap: number[] = [];
     private _partial = Buffer.alloc(PACKET_SIZE);
     private _partialLen = 0;
+    private _detected = false;
+    private _activeStreams = new Set<number>();
+    private _serviceMap = new Map<number, Set<number>>();
+    private _detectedStreams = new Set<number>();
 
     constructor(tsmfRelTs: number, private _passHeader = false) {
         super();
         this._targetStream = tsmfRelTs;
+        this._detectMode = false;
+    }
+
+    get tsmfDetected(): boolean {
+        return this._detected;
+    }
+
+    get serviceMap(): Map<number, Set<number>> {
+        return this._serviceMap;
     }
 
     _transform(chunk: Buffer, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
         let offset = 0;
 
-        // Handle partial packet from previous chunk
         if (this._partialLen > 0) {
             const need = PACKET_SIZE - this._partialLen;
             if (chunk.length >= need) {
@@ -1169,7 +1189,6 @@ export class TSMFSlotFilter extends stream.Transform {
             offset += PACKET_SIZE;
         }
 
-        // Save partial packet for next chunk
         if (offset < chunk.length) {
             chunk.copy(this._partial, 0, offset);
             this._partialLen = chunk.length - offset;
@@ -1190,6 +1209,16 @@ export class TSMFSlotFilter extends stream.Transform {
                     this._slotMap.push(packet[73 + i] & 0x0f);
                 }
                 this._slotCounter = 0;
+                this._detected = true;
+
+                // Collect active stream numbers
+                if (this._detectMode) {
+                    for (const relTs of this._slotMap) {
+                        if (relTs > 0) {
+                            this._activeStreams.add(relTs);
+                        }
+                    }
+                }
             }
             if (this._passHeader) {
                 this.push(packet);
@@ -1198,12 +1227,86 @@ export class TSMFSlotFilter extends stream.Transform {
         }
 
         if (this._slotCounter < 0 || this._slotCounter >= SLOT_COUNT) {
+            if (this._detectMode) {
+                this.push(packet);
+            }
             return;
         }
 
         const slot = this._slotCounter++;
-        if (this._slotMap[slot] === this._targetStream) {
+        const relTs = this._slotMap[slot];
+
+        // Detection: correlate PAT with relative stream number
+        if (this._detectMode && relTs > 0 && pid === 0x0000) {
+            this._onDetectPAT(packet, relTs);
+        }
+
+        if (this._detectMode) {
+            this.push(packet);
+        } else if (relTs === this._targetStream) {
             this.push(packet);
         }
+    }
+
+    private _onDetectPAT(packet: Buffer, relTs: number): void {
+        if (this._detectedStreams.has(relTs)) {
+            return;
+        }
+
+        const serviceIds = this._parsePAT(packet);
+        if (serviceIds.length === 0) {
+            return;
+        }
+
+        if (!this._serviceMap.has(relTs)) {
+            this._serviceMap.set(relTs, new Set());
+        }
+        for (const sid of serviceIds) {
+            this._serviceMap.get(relTs).add(sid);
+        }
+        this._detectedStreams.add(relTs);
+
+        // Check if all active streams have been detected
+        if (this._activeStreams.size > 0 && this._detectedStreams.size >= this._activeStreams.size) {
+            this.emit("detected", this._serviceMap);
+        }
+    }
+
+    private _parsePAT(packet: Buffer): number[] {
+        const pusi = (packet[1] & 0x40) !== 0;
+        if (!pusi) {
+            return [];
+        }
+
+        const afc = (packet[3] & 0x30) >> 4;
+        let payloadStart = 4;
+        if (afc === 0x03) {
+            payloadStart = 5 + packet[4];
+        } else if (afc !== 0x01) {
+            return [];
+        }
+
+        const pointerField = packet[payloadStart];
+        const sectionStart = payloadStart + 1 + pointerField;
+
+        if (sectionStart + 8 > PACKET_SIZE) {
+            return [];
+        }
+        if (packet[sectionStart] !== 0x00) {
+            return [];
+        }
+
+        const sectionLength = ((packet[sectionStart + 1] & 0x0f) << 8) | packet[sectionStart + 2];
+        const serviceIds: number[] = [];
+        const end = Math.min(sectionStart + 3 + sectionLength - 4, PACKET_SIZE);
+
+        for (let i = sectionStart + 8; i + 4 <= end; i += 4) {
+            const serviceId = (packet[i] << 8) | packet[i + 1];
+            if (serviceId !== 0) {
+                serviceIds.push(serviceId);
+            }
+        }
+
+        return serviceIds;
     }
 }
