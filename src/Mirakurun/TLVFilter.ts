@@ -115,6 +115,12 @@ export default class TLVFilter {
 
         this._tsmfFilter.setupCarriers(ch);
 
+        // Store groupId as soon as detected (before ready, needed for carrier discovery)
+        this._tsmfFilter.once("groupId", (groupId: number) => {
+            ch.setTsmfGroupId(groupId);
+            log.debug("TunerDevice#%d TSMF detected groupId=%d on %s", this._tunerIndex, groupId, ch.channel);
+        });
+
         this._tsmfFilter.once("ready", () => {
             // Store auto-detected TSMF info on channel
             const detectedRelTs = this._tsmfFilter.detectedRelTs;

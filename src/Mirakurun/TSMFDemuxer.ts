@@ -352,6 +352,7 @@ export default class TSMFDemuxer extends EventEmitter {
 
         if (this._detectedGroupId === null && frameInfo.groupId !== 255) {
             this._detectedGroupId = frameInfo.groupId;
+            this.emit("groupId", frameInfo.groupId);
         }
 
         const carrierState = this._resolveCarrier(source, frameInfo);
