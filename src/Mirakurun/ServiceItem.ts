@@ -154,7 +154,7 @@ export default class ServiceItem {
                     const relTs = this._channel.getTsmfRelTs(this._serviceId);
                     return relTs !== undefined && relTs !== null ? { tsmfRelTs: relTs } : {};
                 })(),
-                ...(this._channel.tsmfGroupId !== null && this._channel.tsmfGroupId !== undefined && { tsmfGroupId: this._channel.tsmfGroupId })
+                ...(this._channel.tsmfGroupId !== null && this._channel.tsmfGroupId !== undefined && this._channel.tsmfGroupId !== 255 && { tsmfGroupId: this._channel.tsmfGroupId })
             }
         };
 

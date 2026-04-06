@@ -1216,9 +1216,13 @@ export class TSMFSlotFilter extends stream.Transform {
                 this._slotCounter = 0;
                 this._detected = true;
 
-                // Extract group_id (payload byte 123 = TS packet byte 127)
+                // Extract group_id only from Extended TSMF (frame_type=0x2)
+                // frame_type is payload byte 2 lower nibble = TS packet byte 6
                 if (this._detectMode && this._detectedGroupId === null) {
-                    this._detectedGroupId = packet[127];
+                    const frameType = packet[6] & 0x0f;
+                    if (frameType === 0x02) {
+                        this._detectedGroupId = packet[127];
+                    }
                 }
 
                 // Collect active stream numbers
