@@ -144,7 +144,7 @@ export default class TSMFDemuxer extends EventEmitter {
 
     private _tunerIndex: number;
     private _output: Writable | null;
-    private _buffer: Buffer[] | null = [];
+    private _buffer: Buffer[] = [];
 
     private _sources = new Map<number, SourceState>();
     private _carrierStates = new Map<number, CarrierState>();
@@ -216,32 +216,6 @@ export default class TSMFDemuxer extends EventEmitter {
     setOutput(output: stream.Writable): void {
         this._output = output;
         this._setupOutputHandlers();
-    }
-
-    resetForSynchronizedStart(): void {
-        log.info("TunerDevice#%d TSMFDemuxer reset for synchronized start", this._tunerIndex);
-        this._carrierStates.clear();
-        this._offsets = null;
-        this._offsetsApplied = false;
-        this._outputSuperframeCount = 0;
-        this._ready = false;
-        this._offsetsLogged = false;
-        this._headerFinalized = false;
-        this._probeInProgress = false;
-        this._nextProbeThreshold = 0;
-        if (this._buffer) {
-            this._buffer.length = 0;
-        }
-        for (const source of this._sources.values()) {
-            source.carrierSequence = undefined;
-            source.currentFrame = undefined;
-            source.headerLocked = false;
-            source.activeHeaderCRC = -1;
-            source.effectiveTargetStreamNumber = 0;
-            source.tsmfRelativeStreamNumber = [];
-            source.streamTypeBits = 0;
-            source.offset = -1;
-        }
     }
 
     writeFromSource(sourceId: number, chunk: Buffer): void {
@@ -399,13 +373,7 @@ export default class TSMFDemuxer extends EventEmitter {
     ): void {
         const { headerCRC, framePosition } = frameInfo;
 
-        // When header is frozen and source already locked, skip processing
-        if (this._headerFinalized && source.headerLocked) {
-            return;
-        }
-
-        // Current header still valid
-        if (source.headerLocked && headerCRC === source.activeHeaderCRC) {
+        if (source.headerLocked && (this._headerFinalized || headerCRC === source.activeHeaderCRC)) {
             return;
         }
 
@@ -580,7 +548,7 @@ export default class TSMFDemuxer extends EventEmitter {
         (this._isMultiCarrier ? log.info : log.debug)(
             "TunerDevice#%d TSMFDemuxer offsets finalized: %s", this._tunerIndex, offsets.join(",")
         );
-        if (this._buffer?.length) {
+        if (this._buffer.length) {
             this._buffer.length = 0;
         }
     }
@@ -874,7 +842,7 @@ export default class TSMFDemuxer extends EventEmitter {
     }
 
     private _onTLV(packet: Buffer): void {
-        if (this._closed || this._closing || !this._buffer) {
+        if (this._closed || this._closing) {
             return;
         }
         const tlvChunk = TSMFDemuxer._extractTlvPayload(packet);
@@ -897,7 +865,7 @@ export default class TSMFDemuxer extends EventEmitter {
     }
 
     private _flush(): void {
-        if (!this._buffer?.length || this._sinkClosed) {
+        if (!this._buffer.length || this._sinkClosed) {
             return;
         }
         if (!this._offsets && this._numberOfCarriers > 1) {
@@ -983,14 +951,14 @@ export default class TSMFDemuxer extends EventEmitter {
         this._sinkClosed = true;
 
         // Last-ditch write for data that couldn't be flushed (e.g., not ready)
-        if (this._buffer?.length && this._output && !this._output.destroyed) {
+        if (this._buffer.length && this._output && !this._output.destroyed) {
             try {
                 this._output.write(Buffer.concat(this._buffer));
             } catch {
                 // ignore
             }
         }
-        this._buffer = null;
+        this._buffer = [];
 
         if (this._output && !this._output.destroyed && !(this._output as any).writableEnded) {
             try {
@@ -1093,7 +1061,6 @@ export default class TSMFDemuxer extends EventEmitter {
     }
 
     private _validateTSMFFrame(payload: Buffer): {
-        frameType: number;
         headerCRC: number;
         framePosition: number;
         numberOfFrames: number;
@@ -1123,7 +1090,6 @@ export default class TSMFDemuxer extends EventEmitter {
         const frameRaw = payload[126];
 
         return {
-            frameType: payload[2] & 0x0f,
             headerCRC: (payload[180] << 24) | (payload[181] << 16) | (payload[182] << 8) | payload[183],
             framePosition: frameRaw & 0x0f,
             numberOfFrames: (frameRaw >> 4) & 0x0f,
