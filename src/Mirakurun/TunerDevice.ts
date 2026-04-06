@@ -25,7 +25,7 @@ import status from "./status";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
-import TSMFFilter from "./TSMFFilter";
+import TSMFFilter, { StreamGate } from "./TSMFFilter";
 import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
@@ -43,55 +43,6 @@ interface CarrierLink {
     output: stream.PassThrough;
     input: stream.Writable;
     firstDataAt?: number;
-}
-
-class StreamGate extends stream.Transform {
-    private _opened = false;
-    private _buffer: Buffer[] = [];
-    private _bufferedBytes = 0;
-
-    constructor(private _limitBytes: number) {
-        super();
-    }
-
-    open(discardBuffer = false): void {
-        if (this._opened) {
-            return;
-        }
-        this._opened = true;
-        if (discardBuffer) {
-            // Discard buffered data (used for synchronized start — buffered data may have discontinuities)
-            this._buffer = [];
-            this._bufferedBytes = 0;
-        } else {
-            // Flush buffered data
-            for (const chunk of this._buffer) {
-                this.push(chunk);
-            }
-            this._buffer = [];
-            this._bufferedBytes = 0;
-        }
-    }
-
-    close(): void {
-        this._opened = false;
-    }
-
-    _transform(chunk: any, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
-        if (this._opened) {
-            this.push(chunk);
-            callback();
-            return;
-        }
-        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        if (this._bufferedBytes + data.length > this._limitBytes) {
-            this._buffer = [];
-            this._bufferedBytes = 0;
-        }
-        this._buffer.push(data);
-        this._bufferedBytes += data.length;
-        callback(); // Always call immediately - no backpressure
-    }
 }
 
 export interface TunerDeviceStatus {
@@ -117,9 +68,6 @@ export default class TunerDevice extends EventEmitter {
     private _tlvConverter: any = null;
     private _carrierLinks: CarrierLink[] = [];
     private _carrierInitInProgress = false;
-    private _carrierGates: StreamGate[] = [];
-    private _carrierGatesExpected: number | null = null;
-    private _carrierGatesOpened = false;
 
     private _users = new Set<User>();
 
@@ -422,8 +370,8 @@ export default class TunerDevice extends EventEmitter {
                             }
                             // Pause primary gate - TSMFFilter will be reset when all carriers are ready
                             primaryGate.close();
-                            this._prepareCarrierGates(parsedCarrierCount);
-                            this._registerCarrierGate(primaryGate);
+                            (this._tlvConverter as TSMFFilter).initGates(parsedCarrierCount);
+                            (this._tlvConverter as TSMFFilter).addGate(primaryGate);
                             log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
                             this._startAdditionalCarriers(ch, this._tlvConverter as TSMFFilter).catch(log.error);
                         }
@@ -586,8 +534,8 @@ export default class TunerDevice extends EventEmitter {
                             }
                             // Pause primary gate - TSMFFilter will be reset when all carriers are ready
                             primaryGate.close();
-                            this._prepareCarrierGates(parsedCarrierCount);
-                            this._registerCarrierGate(primaryGate);
+                            (this._tlvConverter as TSMFFilter).initGates(parsedCarrierCount);
+                            (this._tlvConverter as TSMFFilter).addGate(primaryGate);
                             log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
                             this._startAdditionalCarriers(ch, this._tlvConverter as TSMFFilter).catch(log.error);
                         }
@@ -762,53 +710,6 @@ export default class TunerDevice extends EventEmitter {
         ).length;
     }
 
-    private _prepareCarrierGates(expected: number): void {
-        this._carrierGates = [];
-        this._carrierGatesExpected = expected;
-        this._carrierGatesOpened = false;
-    }
-
-    private _registerCarrierGate(gate: StreamGate): void {
-        if (!this._carrierGatesExpected) {
-            gate.open();
-            return;
-        }
-        this._carrierGates.push(gate);
-        this._openCarrierGatesIfReady();
-    }
-
-    private _openCarrierGatesIfReady(): void {
-        if (this._carrierGatesOpened) {
-            return;
-        }
-        if (!this._carrierGatesExpected || this._carrierGates.length < this._carrierGatesExpected) {
-            return;
-        }
-        this._carrierGatesOpened = true;
-        // Reset TSMFFilter NOW (when all carriers are ready) so all carriers start from the same broadcast point
-        // This ensures TSMF alignment works correctly
-        if (this._tlvConverter?.resetForSynchronizedStart) {
-            log.info("TunerDevice#%d resetting TSMFFilter for synchronized start (all %d carriers ready)",
-                this._index, this._carrierGatesExpected);
-            this._tlvConverter.resetForSynchronizedStart();
-        }
-        for (const gate of this._carrierGates) {
-            // Discard any buffered data — after TSMFFilter reset, old data would have
-            // discontinuities (gate buffer overflow) that corrupt offset detection
-            gate.open(true);
-        }
-    }
-
-    private _resetCarrierGates(): void {
-        // Re-open any already-registered gates (e.g., primary gate that was closed for synchronized start)
-        for (const gate of this._carrierGates) {
-            gate.open();
-        }
-        this._carrierGates = [];
-        this._carrierGatesExpected = null;
-        this._carrierGatesOpened = false;
-    }
-
     private async _startAdditionalCarriers(ch: ChannelItem, combiner: TSMFFilter): Promise<void> {
         if (this._carrierInitInProgress || this._carrierLinks.length > 0) {
             return;
@@ -872,7 +773,7 @@ export default class TunerDevice extends EventEmitter {
             if (selected.length < requiredAdditional) {
                 log.error("TunerDevice#%d not enough BS4K tuners for multi-carrier (need=%d, available=%d)",
                     this._index, requiredAdditional, selected.length);
-                this._resetCarrierGates();
+                if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
                 setImmediate(() => {
                     if (!this._closing && this._process) {
                         this._kill(true).catch(log.error);
@@ -891,7 +792,7 @@ export default class TunerDevice extends EventEmitter {
             for (let i = 0; i < selected.length; i++) {
                 if (this._closing || this._tlvConverter !== combiner) {
                     this._cleanupCarrierLinks();
-                    this._resetCarrierGates();
+                    if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
                     return;
                 }
 
@@ -916,7 +817,7 @@ export default class TunerDevice extends EventEmitter {
                     continue;
                 }
 
-                this._registerCarrierGate(gate);
+                (combiner as TSMFFilter).addGate(gate);
                 startedCount++;
                 stream.pipeline(rawStream, gate, input, (err) => {
                     if (err && !this._closing) {
@@ -938,7 +839,7 @@ export default class TunerDevice extends EventEmitter {
             if (startedCount < requiredAdditional) {
                 log.error("TunerDevice#%d only %d/%d additional carriers started", this._index, startedCount, requiredAdditional);
                 this._cleanupCarrierLinks();
-                this._resetCarrierGates();
+                if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
                 return;
             }
 
@@ -965,7 +866,7 @@ export default class TunerDevice extends EventEmitter {
         }
         this._carrierLinks = [];
         this._carrierInitInProgress = false;
-        this._resetCarrierGates();
+        if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
     }
 
     private _end(): void {

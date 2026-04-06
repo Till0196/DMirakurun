@@ -72,6 +72,53 @@ interface MultiCarrierOptions {
     groupId?: number;
 }
 
+export class StreamGate extends stream.Transform {
+    private _opened = false;
+    private _buffer: Buffer[] = [];
+    private _bufferedBytes = 0;
+
+    constructor(private _limitBytes: number) {
+        super();
+    }
+
+    open(discardBuffer = false): void {
+        if (this._opened) {
+            return;
+        }
+        this._opened = true;
+        if (discardBuffer) {
+            this._buffer = [];
+            this._bufferedBytes = 0;
+        } else {
+            for (const chunk of this._buffer) {
+                this.push(chunk);
+            }
+            this._buffer = [];
+            this._bufferedBytes = 0;
+        }
+    }
+
+    close(): void {
+        this._opened = false;
+    }
+
+    _transform(chunk: any, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
+        if (this._opened) {
+            this.push(chunk);
+            callback();
+            return;
+        }
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (this._bufferedBytes + data.length > this._limitBytes) {
+            this._buffer = [];
+            this._bufferedBytes = 0;
+        }
+        this._buffer.push(data);
+        this._bufferedBytes += data.length;
+        callback();
+    }
+}
+
 class CarrierInput extends stream.Writable {
     private _combiner: TSMFFilter;
     private _sourceId: number;
@@ -173,6 +220,11 @@ export default class TSMFFilter extends EventEmitter {
     private _probeInProgress = false;
     private _nextProbeThreshold = 0;
 
+    // Gate management for multi-carrier synchronization
+    private _gates: StreamGate[] = [];
+    private _gatesExpected: number | null = null;
+    private _gatesOpened = false;
+
     constructor(tunerIndex: number, output: Writable | null, options?: MultiCarrierOptions) {
         super();
         this._tunerIndex = tunerIndex;
@@ -246,6 +298,30 @@ export default class TSMFFilter extends EventEmitter {
             source.lastTsmfCC = -1;
             source.tsmfDroppedFrames = 0;
         }
+    }
+
+    initGates(expected: number): void {
+        this._gates = [];
+        this._gatesExpected = expected;
+        this._gatesOpened = false;
+    }
+
+    addGate(gate: StreamGate): void {
+        if (!this._gatesExpected) {
+            gate.open();
+            return;
+        }
+        this._gates.push(gate);
+        this._tryOpenGates();
+    }
+
+    resetGates(): void {
+        for (const gate of this._gates) {
+            gate.open();
+        }
+        this._gates = [];
+        this._gatesExpected = null;
+        this._gatesOpened = false;
     }
 
     writeFromSource(sourceId: number, chunk: Buffer): void {
@@ -327,6 +403,17 @@ export default class TSMFFilter extends EventEmitter {
     close(): void {
         if (!this._closed && !this._closing) {
             this._close();
+        }
+    }
+
+    private _tryOpenGates(): void {
+        if (this._gatesOpened || !this._gatesExpected || this._gates.length < this._gatesExpected) {
+            return;
+        }
+        this._gatesOpened = true;
+        this.resetForSynchronizedStart();
+        for (const gate of this._gates) {
+            gate.open(true);
         }
     }
 
@@ -1227,4 +1314,5 @@ export default class TSMFFilter extends EventEmitter {
         }
         return crc >>> 0;
     }
+
 }
