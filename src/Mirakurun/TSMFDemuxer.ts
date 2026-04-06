@@ -31,7 +31,6 @@ const OFFSET_RETRY_SFS = 30;
 const OFFSET_MMTP_MIN_PACKETS = 16;
 const OFFSET_MAX_DROP_RATIO = 0.05;
 const CARRIER_CONFIRM_THRESHOLD = 3;
-const CC_GRACE_PERIOD_MS = 2000;
 const READY_MIN_SUPERFRAMES = 2;
 const OUTPUT_MIN_BUFFER_SFS = 2;
 
@@ -67,8 +66,6 @@ interface SourceState {
     effectiveTargetStreamNumber: number;
     tsmfRelativeStreamNumber: number[];
     streamTypeBits: number;
-    lastTsmfCC: number;
-    tsmfDroppedFrames: number;
 }
 
 interface MultiCarrierOptions {
@@ -173,7 +170,6 @@ export default class TSMFDemuxer extends EventEmitter {
     private _pendingOutputChunks: Buffer[] = [];
     private _ready = false;
     private _crcTable?: number[];
-    private _ccGraceUntil = 0;
     private _probeInProgress = false;
     private _nextProbeThreshold = 0;
 
@@ -211,9 +207,7 @@ export default class TSMFDemuxer extends EventEmitter {
             activeHeaderCRC: -1,
             effectiveTargetStreamNumber: 0,
             tsmfRelativeStreamNumber: [],
-            streamTypeBits: 0,
-            lastTsmfCC: -1,
-            tsmfDroppedFrames: 0
+            streamTypeBits: 0
         };
         this._sources.set(sourceId, state);
         return new CarrierInput(this, sourceId);
@@ -247,8 +241,6 @@ export default class TSMFDemuxer extends EventEmitter {
             source.tsmfRelativeStreamNumber = [];
             source.streamTypeBits = 0;
             source.offset = -1;
-            source.lastTsmfCC = -1;
-            source.tsmfDroppedFrames = 0;
         }
     }
 
@@ -361,25 +353,13 @@ export default class TSMFDemuxer extends EventEmitter {
     }
 
     private _onTSMF(source: SourceState, packet: Buffer): void {
-        // Track TSMF CC to detect frame drops (skip during grace period after offset detection)
-        const cc = packet[3] & 0x0f;
-        if (source.lastTsmfCC >= 0 && Date.now() >= this._ccGraceUntil) {
-            const expected = (source.lastTsmfCC + 1) & 0x0f;
-            if (cc !== expected) {
-                source.tsmfDroppedFrames += ((cc - expected + 16) & 0x0f);
-            }
-        }
-        source.lastTsmfCC = cc;
-
         const payload = this._extractTSMFPayload(packet);
         if (!payload) {
-            source.tsmfDroppedFrames += 1;
             return;
         }
 
         const frameInfo = this._validateTSMFFrame(payload);
         if (!frameInfo) {
-            source.tsmfDroppedFrames += 1;
             return;
         }
 
@@ -396,30 +376,6 @@ export default class TSMFDemuxer extends EventEmitter {
 
         if (source.currentFrame && source.currentFrame.slots.length > 0) {
             this._addBlock(carrierState, source.currentFrame);
-        }
-
-        // Soft reset on TSMF frame drops: clear all carrier buffers and re-align
-        if (source.tsmfDroppedFrames > 0 && this._offsets) {
-            log.warn(
-                "TunerDevice#%d TSMFDemuxer TSMF frame drop: carrier=%d dropped=%d — soft reset",
-                this._tunerIndex, carrierState.carrierSequence, source.tsmfDroppedFrames
-            );
-
-            this._drain();
-
-            for (const carrier of this._carrierStates.values()) {
-                carrier.blocks.length = 0;
-                carrier.superframes.length = 0;
-            }
-            if (this._buffer?.length) {
-                this._buffer.length = 0;
-            }
-            for (const s of this._sources.values()) {
-                s.tsmfDroppedFrames = 0;
-                s.currentFrame = undefined;
-                s.lastTsmfCC = -1;
-            }
-            return;
         }
 
         source.currentFrame = {
@@ -627,11 +583,6 @@ export default class TSMFDemuxer extends EventEmitter {
         if (this._buffer?.length) {
             this._buffer.length = 0;
         }
-        for (const source of this._sources.values()) {
-            source.tsmfDroppedFrames = 0;
-            source.lastTsmfCC = -1;
-        }
-        this._ccGraceUntil = Date.now() + CC_GRACE_PERIOD_MS;
     }
 
     private _buildCandidates(carriers: CarrierState[]): number[][] {
