@@ -247,9 +247,12 @@ export class Service {
                 updated = true;
             }
 
-            // Restore auto-detected tsmfRelTs mapping from DB
+            // Restore auto-detected TSMF mappings from DB
             if (service.channel?.tsmfRelTs !== undefined && service.channel?.tsmfRelTs !== null) {
                 channelItem.addTsmfRelTsMapping(service.serviceId, service.channel.tsmfRelTs);
+            }
+            if (service.channel?.tsmfGroupId !== undefined && service.channel?.tsmfGroupId !== null) {
+                channelItem.setTsmfGroupId(service.channel.tsmfGroupId);
             }
 
             this.add(

@@ -364,8 +364,13 @@ export class Tuner {
                                 setting.channel.addTsmfRelTsMapping(sid, relTs);
                             }
                         }
-                        log.info("TunerDevice#%d TSMF auto-detected %d streams on %s",
-                            device.index, mapping.size, setting.channel.channel);
+                        if (detector.groupId !== null) {
+                            setting.channel.setTsmfGroupId(detector.groupId);
+                        }
+                        log.info("TunerDevice#%d TSMF auto-detected %d streams groupId=%s on %s",
+                            device.index, mapping.size,
+                            detector.groupId !== null ? String(detector.groupId) : "none",
+                            setting.channel.channel);
                         _.service.save();
                     });
                     tsFilter.setSlotFilter(detector);

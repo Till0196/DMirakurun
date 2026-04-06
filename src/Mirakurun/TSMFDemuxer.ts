@@ -1142,6 +1142,7 @@ export class TSMFSlotFilter extends stream.Transform {
     private _partial = Buffer.alloc(PACKET_SIZE);
     private _partialLen = 0;
     private _detected = false;
+    private _detectedGroupId: number | null = null;
     private _activeStreams = new Set<number>();
     private _serviceMap = new Map<number, Set<number>>();
     private _detectedStreams = new Set<number>();
@@ -1158,6 +1159,10 @@ export class TSMFSlotFilter extends stream.Transform {
 
     get serviceMap(): Map<number, Set<number>> {
         return this._serviceMap;
+    }
+
+    get groupId(): number | null {
+        return this._detectedGroupId;
     }
 
     _transform(chunk: Buffer, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
@@ -1210,6 +1215,11 @@ export class TSMFSlotFilter extends stream.Transform {
                 }
                 this._slotCounter = 0;
                 this._detected = true;
+
+                // Extract group_id (payload byte 123 = TS packet byte 127)
+                if (this._detectMode && this._detectedGroupId === null) {
+                    this._detectedGroupId = packet[127];
+                }
 
                 // Collect active stream numbers
                 if (this._detectMode) {
