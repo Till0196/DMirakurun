@@ -12,7 +12,7 @@ import * as stream from "stream";
 import * as common from "./common";
 import * as log from "./log";
 import * as apid from "../../api";
-import TSMFFilter, { StreamGate } from "./TSMFFilter";
+import TSMFFilter from "./TSMFFilter";
 import ChannelItem from "./ChannelItem";
 
 export interface TLVFilterResult {
@@ -125,10 +125,8 @@ export default class TLVFilter {
         }, this._onFatal);
 
         const primaryInput = this._tsmfFilter.createInput();
-        const primaryGate = new StreamGate(8 * 1024 * 1024);
-        primaryGate.open();
 
-        this._tsmfFilter.setupCarriers(ch, primaryGate);
+        this._tsmfFilter.setupCarriers(ch);
 
         this._tsmfFilter.once("ready", () => {
             log.info("TunerDevice#%d TSMFFilter ready, starting mmtsDecoder", this._tunerIndex);
@@ -149,7 +147,7 @@ export default class TLVFilter {
             });
         });
 
-        stream.pipeline(inputStream, primaryGate, primaryInput, (err) => {
+        stream.pipeline(inputStream, primaryInput, (err) => {
             if (err && !this._disposed) {
                 log.error("TunerDevice#%d pipeline error: %s", this._tunerIndex, (err as Error).message);
             }

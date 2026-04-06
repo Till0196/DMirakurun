@@ -16,59 +16,15 @@ import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
 import type TunerDevice from "./TunerDevice";
 
+const CARRIER_MAX_ATTEMPTS = 6;
+const CARRIER_RETRY_DELAY_MS = 500;
+
 interface CarrierLink {
     device: TunerDevice;
     user: common.User & { _stream?: TSFilter };
-    stream: TSFilter;
-    output: stream.PassThrough;
-    input: stream.Writable;
-}
-
-export class StreamGate extends stream.Transform {
-    private _opened = false;
-    private _buffer: Buffer[] = [];
-    private _bufferedBytes = 0;
-
-    constructor(private _limitBytes: number) {
-        super();
-    }
-
-    open(discardBuffer = false): void {
-        if (this._opened) {
-            return;
-        }
-        this._opened = true;
-        if (discardBuffer) {
-            this._buffer = [];
-            this._bufferedBytes = 0;
-        } else {
-            for (const chunk of this._buffer) {
-                this.push(chunk);
-            }
-            this._buffer = [];
-            this._bufferedBytes = 0;
-        }
-    }
-
-    close(): void {
-        this._opened = false;
-    }
-
-    _transform(chunk: any, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
-        if (this._opened) {
-            this.push(chunk);
-            callback();
-            return;
-        }
-        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        if (this._bufferedBytes + data.length > this._limitBytes) {
-            this._buffer = [];
-            this._bufferedBytes = 0;
-        }
-        this._buffer.push(data);
-        this._bufferedBytes += data.length;
-        callback();
-    }
+    tsFilter: TSFilter;
+    sourceStream: stream.PassThrough;
+    demuxerInput: stream.Writable;
 }
 
 export default class TSMFFilter {
@@ -76,14 +32,9 @@ export default class TSMFFilter {
     private _tunerIndex: number;
     private _demuxer: TSMFDemuxer;
     private _carrierLinks: CarrierLink[] = [];
-    private _carrierInitInProgress = false;
+    private _carrierInitPending = false;
     private _disposed = false;
     private _onFatal: () => void;
-
-    // Gate management
-    private _gates: StreamGate[] = [];
-    private _gatesExpected: number | null = null;
-    private _gatesOpened = false;
 
     constructor(tunerIndex: number, options: { tsmfRelTs?: number; groupId?: number }, onFatal: () => void) {
         this._tunerIndex = tunerIndex;
@@ -91,13 +42,9 @@ export default class TSMFFilter {
         this._demuxer = new TSMFDemuxer(tunerIndex, null, options);
 
         this._demuxer.once("error", (err) => {
-            log.error("TunerDevice#%d TSMFFilter error: %s", this._tunerIndex, err.message);
+            log.error("TunerDevice#%d TSMFDemuxer error: %s", this._tunerIndex, err.message);
             this._onFatal();
         });
-    }
-
-    get demuxer(): TSMFDemuxer {
-        return this._demuxer;
     }
 
     get ready(): boolean {
@@ -120,54 +67,9 @@ export default class TSMFFilter {
         this._demuxer.close();
     }
 
-    // --- Gate management ---
-
-    initGates(expected: number): void {
-        this._gates = [];
-        this._gatesExpected = expected;
-        this._gatesOpened = false;
-    }
-
-    addGate(gate: StreamGate): void {
-        if (!this._gatesExpected) {
-            gate.open();
-            return;
-        }
-        this._gates.push(gate);
-        this._tryOpenGates();
-    }
-
-    resetGates(): void {
-        for (const gate of this._gates) {
-            gate.open();
-        }
-        this._gates = [];
-        this._gatesExpected = null;
-        this._gatesOpened = false;
-    }
-
     // --- Carrier management ---
 
-    syncPriorities(newPriority: number): void {
-        for (const link of this._carrierLinks) {
-            if (link.user.priority !== newPriority) {
-                (link.user as { priority: number }).priority = newPriority;
-            }
-        }
-    }
-
-    releaseCarriers(): void {
-        for (const link of this._carrierLinks) {
-            try { link.output.removeAllListeners(); } catch (e) { /* ignore */ }
-            try { link.input.end(); } catch (e) { /* ignore */ }
-            try { link.device.endStream(link.user, true); } catch (e) { /* ignore */ }
-        }
-        this._carrierLinks = [];
-        this._carrierInitInProgress = false;
-        this.resetGates();
-    }
-
-    setupCarriers(ch: ChannelItem, primaryGate: StreamGate): void {
+    setupCarriers(ch: ChannelItem): void {
         this._demuxer.once("needCarriers", (count: number) => {
             log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
             if (count > 1) {
@@ -185,14 +87,29 @@ export default class TSMFFilter {
                     log.warn("TunerDevice#%d carrier count mismatch, stream says %d but config has %d, using config",
                         this._tunerIndex, count, parsedCount);
                 }
-                primaryGate.close();
-                this.initGates(parsedCount);
-                this.addGate(primaryGate);
                 log.info("TunerDevice#%d starting %d additional carriers for groupId=%d",
                     this._tunerIndex, parsedCount - 1, ch.tsmfGroupId);
                 this._startCarriers(ch).catch(log.error);
             }
         });
+    }
+
+    syncPriorities(newPriority: number): void {
+        for (const link of this._carrierLinks) {
+            if (link.user.priority !== newPriority) {
+                (link.user as { priority: number }).priority = newPriority;
+            }
+        }
+    }
+
+    releaseCarriers(): void {
+        for (const link of this._carrierLinks) {
+            try { link.sourceStream.removeAllListeners(); } catch (e) { /* ignore */ }
+            try { link.demuxerInput.end(); } catch (e) { /* ignore */ }
+            try { link.device.endStream(link.user, true); } catch (e) { /* ignore */ }
+        }
+        this._carrierLinks = [];
+        this._carrierInitPending = false;
     }
 
     // --- Event proxy ---
@@ -209,17 +126,6 @@ export default class TSMFFilter {
 
     // --- Private ---
 
-    private _tryOpenGates(): void {
-        if (this._gatesOpened || !this._gatesExpected || this._gates.length < this._gatesExpected) {
-            return;
-        }
-        this._gatesOpened = true;
-        this._demuxer.resetForSynchronizedStart();
-        for (const gate of this._gates) {
-            gate.open(true);
-        }
-    }
-
     private _countGroupCarriers(ch: ChannelItem): number {
         if (!_.channel || ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
             return 0;
@@ -231,14 +137,14 @@ export default class TSMFFilter {
     }
 
     private async _startCarriers(ch: ChannelItem): Promise<void> {
-        if (this._carrierInitInProgress || this._carrierLinks.length > 0) {
+        if (this._carrierInitPending || this._carrierLinks.length > 0) {
             return;
         }
         if (!_.tuner || !_.channel || ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
             return;
         }
 
-        this._carrierInitInProgress = true;
+        this._carrierInitPending = true;
         try {
             const groupChannels = _.channel.items.filter(item =>
                 item.type === "BS4K" &&
@@ -252,41 +158,11 @@ export default class TSMFFilter {
                 return;
             }
 
-            let selected: TunerDevice[] = [];
-            for (let attempt = 0; attempt < 6; attempt++) {
-                if (this._disposed) {
-                    return;
-                }
-                if (attempt > 0) {
-                    await new Promise(r => setTimeout(r, 500));
-                    if (this._disposed) {
-                        return;
-                    }
-                }
-
-                selected = _.tuner.devices
-                    .map(d => _.tuner.get(d.index))
-                    .filter(d =>
-                        d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes("BS4K") &&
-                        (d.isFree || (d.isUsing && !d.isCarrierOnly && d.getPriority() <= 0))
-                    )
-                    .sort((a, b) => {
-                        if (a.isFree !== b.isFree) {
-                            return a.isFree ? -1 : 1;
-                        }
-                        return a.getPriority() - b.getPriority();
-                    })
-                    .slice(0, required) as TunerDevice[];
-
-                if (selected.length >= required) {
-                    break;
-                }
-            }
+            const selected = await this._selectDevices(required);
 
             if (selected.length < required) {
                 log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
                     this._tunerIndex, required, selected.length);
-                this.resetGates();
                 this._onFatal();
                 return;
             }
@@ -300,16 +176,14 @@ export default class TSMFFilter {
             for (let i = 0; i < selected.length; i++) {
                 if (this._disposed) {
                     this.releaseCarriers();
-                    this.resetGates();
                     return;
                 }
 
                 const device = selected[i];
                 const channel = groupChannels[i];
-                const input = this._demuxer.createInput();
-                const rawStream = new stream.PassThrough();
-                const gate = new StreamGate(8 * 1024 * 1024);
-                const tsFilter = rawStream as unknown as TSFilter;
+                const demuxerInput = this._demuxer.createInput();
+                const sourceStream = new stream.PassThrough();
+                const tsFilter = sourceStream as unknown as TSFilter;
                 const user: common.User & { _stream?: TSFilter } = {
                     id: `Mirakurun:addCarrier()`,
                     priority: 0,
@@ -325,35 +199,66 @@ export default class TSMFFilter {
                     continue;
                 }
 
-                this.addGate(gate);
                 started++;
-                stream.pipeline(rawStream, gate, input, (err) => {
+                stream.pipeline(sourceStream, demuxerInput, (err) => {
                     if (err && !this._disposed) {
                         log.error("TunerDevice#%d pipeline error: %s", this._tunerIndex, (err as Error).message);
                     }
                 });
 
-                rawStream.once("end", () => {
-                    try { input.end(); } catch (e) { /* ignore */ }
+                sourceStream.once("end", () => {
+                    try { demuxerInput.end(); } catch (e) { /* ignore */ }
                     if (!this._disposed) {
                         log.warn("TunerDevice#%d carrier stream ended on tuner #%d", this._tunerIndex, device.index);
                         this._onFatal();
                     }
                 });
 
-                this._carrierLinks.push({ device, user, stream: tsFilter, output: rawStream, input });
+                this._carrierLinks.push({ device, user, tsFilter, sourceStream, demuxerInput });
             }
 
             if (started < required) {
                 log.error("TunerDevice#%d only %d of %d additional carriers started", this._tunerIndex, started, required);
                 this.releaseCarriers();
-                this.resetGates();
                 return;
             }
 
-            log.info("TunerDevice#%d additional carriers started", this._tunerIndex);
+            log.info("TunerDevice#%d all additional carriers started", this._tunerIndex);
         } finally {
-            this._carrierInitInProgress = false;
+            this._carrierInitPending = false;
         }
+    }
+
+    private async _selectDevices(required: number): Promise<TunerDevice[]> {
+        for (let attempt = 0; attempt < CARRIER_MAX_ATTEMPTS; attempt++) {
+            if (this._disposed) {
+                return [];
+            }
+            if (attempt > 0) {
+                await new Promise(r => setTimeout(r, CARRIER_RETRY_DELAY_MS));
+                if (this._disposed) {
+                    return [];
+                }
+            }
+
+            const selected = _.tuner.devices
+                .map(d => _.tuner.get(d.index))
+                .filter(d =>
+                    d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes("BS4K") &&
+                    (d.isFree || (d.isUsing && !d.isCarrierOnly && d.getPriority() <= 0))
+                )
+                .sort((a, b) => {
+                    if (a.isFree !== b.isFree) {
+                        return a.isFree ? -1 : 1;
+                    }
+                    return a.getPriority() - b.getPriority();
+                })
+                .slice(0, required) as TunerDevice[];
+
+            if (selected.length >= required) {
+                return selected;
+            }
+        }
+        return [];
     }
 }
