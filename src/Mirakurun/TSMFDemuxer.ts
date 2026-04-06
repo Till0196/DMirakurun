@@ -1121,3 +1121,87 @@ export default class TSMFDemuxer extends EventEmitter {
     }
 
 }
+
+/**
+ * Lightweight TSMF slot filter as a Transform stream.
+ * Extracts packets belonging to a specific relative stream number from TSMF frames.
+ * Used for single-carrier TSMF splitting (non-TLV, e.g. BS/CS over CATV).
+ */
+export class TSMFSlotFilter extends stream.Transform {
+    private _targetStream: number;
+    private _slotCounter = -1;
+    private _slotMap: number[] = [];
+    private _partial = Buffer.alloc(PACKET_SIZE);
+    private _partialLen = 0;
+
+    constructor(tsmfRelTs: number) {
+        super();
+        this._targetStream = tsmfRelTs;
+    }
+
+    _transform(chunk: Buffer, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
+        let offset = 0;
+
+        // Handle partial packet from previous chunk
+        if (this._partialLen > 0) {
+            const need = PACKET_SIZE - this._partialLen;
+            if (chunk.length >= need) {
+                chunk.copy(this._partial, this._partialLen, 0, need);
+                offset = need;
+                if (this._partial[0] === TS_SYNC_BYTE) {
+                    this._filterPacket(this._partial);
+                }
+                this._partialLen = 0;
+            } else {
+                chunk.copy(this._partial, this._partialLen);
+                this._partialLen += chunk.length;
+                callback();
+                return;
+            }
+        }
+
+        while (offset + PACKET_SIZE <= chunk.length) {
+            if (chunk[offset] !== TS_SYNC_BYTE) {
+                offset++;
+                continue;
+            }
+            this._filterPacket(chunk.subarray(offset, offset + PACKET_SIZE));
+            offset += PACKET_SIZE;
+        }
+
+        // Save partial packet for next chunk
+        if (offset < chunk.length) {
+            chunk.copy(this._partial, 0, offset);
+            this._partialLen = chunk.length - offset;
+        }
+
+        callback();
+    }
+
+    private _filterPacket(packet: Buffer): void {
+        const pid = ((packet[1] & 0x1f) << 8) | packet[2];
+
+        if (pid === TSMF_PID) {
+            const sync = ((packet[4] << 8) | packet[5]) & 0x1fff;
+            if (sync === TSMF_SYNC_A || sync === TSMF_SYNC_B) {
+                this._slotMap = [];
+                for (let i = 0; i < 26; i++) {
+                    this._slotMap.push((packet[73 + i] & 0xf0) >> 4);
+                    this._slotMap.push(packet[73 + i] & 0x0f);
+                }
+                this._slotCounter = 0;
+            }
+            this.push(packet);
+            return;
+        }
+
+        if (this._slotCounter < 0 || this._slotCounter >= SLOT_COUNT) {
+            return;
+        }
+
+        const slot = this._slotCounter++;
+        if (this._slotMap[slot] === this._targetStream) {
+            this.push(packet);
+        }
+    }
+}

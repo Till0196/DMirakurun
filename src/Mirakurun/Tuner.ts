@@ -23,6 +23,7 @@ import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
 import TSDecoder from "./TSDecoder";
+import { TSMFSlotFilter } from "./TSMFDemuxer";
 
 export class Tuner {
     private _devices: TunerDevice[] = [];
@@ -341,6 +342,7 @@ export class Tuner {
                 }
 
                 const useMmtsDecoder = (setting.channel.type === "BS4K") && !!device.mmtsDecoder;
+                const tsmfRelTs = useMmtsDecoder ? undefined : (setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId));
                 const tsFilter = new TSFilter({
                     output,
                     networkId: setting.networkId,
@@ -348,9 +350,11 @@ export class Tuner {
                     eventId: setting.eventId,
                     parseNIT: setting.parseNIT,
                     parseSDT: setting.parseSDT,
-                    parseEIT: setting.parseEIT,
-                    tsmfRelTs: useMmtsDecoder ? undefined : (setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId))
+                    parseEIT: setting.parseEIT
                 });
+                if (tsmfRelTs) {
+                    tsFilter.setSlotFilter(new TSMFSlotFilter(tsmfRelTs));
+                }
 
                 Object.defineProperty(user, "streamInfo", {
                     get: () => tsFilter.streamInfo
