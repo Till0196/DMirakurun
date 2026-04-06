@@ -11,7 +11,6 @@ import * as stream from "stream";
 import * as log from "./log";
 import _ from "./_";
 import * as common from "./common";
-import * as apid from "../../api";
 import TSMFDemuxer from "./TSMFDemuxer";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
@@ -170,26 +169,27 @@ export default class TSMFFilter {
 
     setupCarriers(ch: ChannelItem, primaryGate: StreamGate): void {
         this._demuxer.once("needCarriers", (count: number) => {
-            log.debug("TunerDevice#%d needCarriers: %d", this._tunerIndex, count);
+            log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
             if (count > 1) {
                 if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-                    log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._tunerIndex);
+                    log.warn("TunerDevice#%d cannot attach extra carriers without tsmfGroupId", this._tunerIndex);
                     return;
                 }
                 const parsedCount = this._countGroupCarriers(ch);
                 if (parsedCount < 2) {
-                    log.warn("TunerDevice#%d not enough parsed group channels for groupId=%d (need>=2, available=%d)",
+                    log.warn("TunerDevice#%d not enough group channels for groupId=%d, need 2 or more but got %d",
                         this._tunerIndex, ch.tsmfGroupId, parsedCount);
                     return;
                 }
                 if (parsedCount !== count) {
-                    log.warn("TunerDevice#%d needCarriers mismatch (need=%d, parsed=%d), using parsed count",
+                    log.warn("TunerDevice#%d carrier count mismatch, stream says %d but config has %d, using config",
                         this._tunerIndex, count, parsedCount);
                 }
                 primaryGate.close();
                 this.initGates(parsedCount);
                 this.addGate(primaryGate);
-                log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._tunerIndex, ch.tsmfGroupId);
+                log.info("TunerDevice#%d starting %d additional carriers for groupId=%d",
+                    this._tunerIndex, parsedCount - 1, ch.tsmfGroupId);
                 this._startCarriers(ch).catch(log.error);
             }
         });
@@ -247,7 +247,7 @@ export default class TSMFFilter {
             );
             const required = groupChannels.length;
             if (required < 1) {
-                log.warn("TunerDevice#%d not enough channels for groupId=%d",
+                log.warn("TunerDevice#%d no additional channels found for groupId=%d",
                     this._tunerIndex, ch.tsmfGroupId);
                 return;
             }
@@ -284,17 +284,16 @@ export default class TSMFFilter {
             }
 
             if (selected.length < required) {
-                log.error("TunerDevice#%d not enough BS4K tuners for multi-carrier (need=%d, available=%d)",
+                log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
                     this._tunerIndex, required, selected.length);
                 this.resetGates();
                 this._onFatal();
                 return;
             }
 
-            log.info("TunerDevice#%d starting additional carriers: tuners=[%s] channels=[%s]",
-                this._tunerIndex,
-                selected.map(d => d.index).join(","),
-                groupChannels.slice(0, required).map(c => c.channel).join(",")
+            log.info("TunerDevice#%d starting %d additional carriers on tuners %s",
+                this._tunerIndex, selected.length,
+                selected.map(d => `#${d.index}`).join(", ")
             );
 
             let started = 0;
@@ -321,7 +320,7 @@ export default class TSMFFilter {
                 try {
                     await device.startStream(user, tsFilter, channel, { suppressGroupCombine: true });
                 } catch (e) {
-                    log.error("TunerDevice#%d failed to start carrier on tuner #%d: %s",
+                    log.error("TunerDevice#%d carrier start failed on tuner #%d `%s`",
                         this._tunerIndex, device.index, (e as Error).message);
                     continue;
                 }
@@ -337,7 +336,7 @@ export default class TSMFFilter {
                 rawStream.once("end", () => {
                     try { input.end(); } catch (e) { /* ignore */ }
                     if (!this._disposed) {
-                        log.warn("TunerDevice#%d carrier stream ended (device=%d)", this._tunerIndex, device.index);
+                        log.warn("TunerDevice#%d carrier stream ended on tuner #%d", this._tunerIndex, device.index);
                         this._onFatal();
                     }
                 });
@@ -346,7 +345,7 @@ export default class TSMFFilter {
             }
 
             if (started < required) {
-                log.error("TunerDevice#%d only %d/%d additional carriers started", this._tunerIndex, started, required);
+                log.error("TunerDevice#%d only %d of %d additional carriers started", this._tunerIndex, started, required);
                 this.releaseCarriers();
                 this.resetGates();
                 return;
