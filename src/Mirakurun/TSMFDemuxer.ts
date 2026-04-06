@@ -193,6 +193,10 @@ export default class TSMFDemuxer extends EventEmitter {
         return this._closed;
     }
 
+    get detectedRelTs(): number | null {
+        return this._targetRelStream;
+    }
+
     private get _isMultiCarrier(): boolean {
         return this._numberOfCarriers > 1;
     }

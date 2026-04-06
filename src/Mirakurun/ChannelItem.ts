@@ -24,8 +24,9 @@ export default class ChannelItem {
     readonly name: string;
     readonly type: apid.ChannelType;
     readonly channel: string;
-    readonly tsmfRelTs: number;
     readonly commandVars: apid.ConfigChannelsItem["commandVars"];
+    private _tsmfRelTs: number;
+    private _configTsmfRelTs: boolean;
     private _tsmfGroupId: number;
     private _configTsmfGroupId: boolean;
     private _relTsMap = new Map<number, number>(); // <serviceId, tsmfRelTs>
@@ -35,14 +36,26 @@ export default class ChannelItem {
         this.name = config.name;
         this.type = config.type;
         this.channel = config.channel;
-        this.tsmfRelTs = config.tsmfRelTs;
+        this._tsmfRelTs = config.tsmfRelTs;
+        this._configTsmfRelTs = config.tsmfRelTs !== null && config.tsmfRelTs !== undefined;
         this._tsmfGroupId = config.tsmfGroupId;
         this._configTsmfGroupId = config.tsmfGroupId !== null && config.tsmfGroupId !== undefined;
         this.commandVars = config.commandVars;
     }
 
+    get tsmfRelTs(): number {
+        return this._tsmfRelTs;
+    }
+
     get tsmfGroupId(): number {
         return this._tsmfGroupId;
+    }
+
+    setTsmfRelTs(relTs: number): void {
+        if (this._configTsmfRelTs) {
+            return;
+        }
+        this._tsmfRelTs = relTs;
     }
 
     setTsmfGroupId(groupId: number): void {

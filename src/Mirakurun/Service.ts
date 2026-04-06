@@ -249,6 +249,7 @@ export class Service {
 
             // Restore auto-detected TSMF mappings from DB
             if (service.channel?.tsmfRelTs !== undefined && service.channel?.tsmfRelTs !== null) {
+                channelItem.setTsmfRelTs(service.channel.tsmfRelTs);
                 channelItem.addTsmfRelTsMapping(service.serviceId, service.channel.tsmfRelTs);
             }
             if (service.channel?.tsmfGroupId !== undefined && service.channel?.tsmfGroupId !== null) {

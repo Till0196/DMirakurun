@@ -46,6 +46,10 @@ export default class TSMFFilter {
         return this._demuxer.closed;
     }
 
+    get detectedRelTs(): number | null {
+        return this._demuxer.detectedRelTs;
+    }
+
     createInput(): stream.Writable {
         return this._demuxer.createInput();
     }

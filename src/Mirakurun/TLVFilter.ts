@@ -116,6 +116,13 @@ export default class TLVFilter {
         this._tsmfFilter.setupCarriers(ch);
 
         this._tsmfFilter.once("ready", () => {
+            // Store auto-detected tsmfRelTs on channel
+            const detectedRelTs = this._tsmfFilter.detectedRelTs;
+            if (detectedRelTs !== null) {
+                ch.setTsmfRelTs(detectedRelTs);
+                log.info("TunerDevice#%d TSMF auto-detected tsmfRelTs=%d on %s", this._tunerIndex, detectedRelTs, ch.channel);
+            }
+
             log.info("TunerDevice#%d TSMFFilter ready, starting mmtsDecoder", this._tunerIndex);
             const proc = this._spawnDecoder();
             if (!proc) {
