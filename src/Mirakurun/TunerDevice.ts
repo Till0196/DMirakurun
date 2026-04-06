@@ -25,7 +25,7 @@ import status from "./status";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
-import TSMFFilter, { StreamGate } from "./TSMFFilter";
+import TLVFilter from "./TLVFilter";
 import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
@@ -34,15 +34,6 @@ interface User extends common.User {
 
 interface StartStreamOptions {
     suppressGroupCombine?: boolean;
-}
-
-interface CarrierLink {
-    device: TunerDevice;
-    user: User;
-    stream: TSFilter;
-    output: stream.PassThrough;
-    input: stream.Writable;
-    firstDataAt?: number;
 }
 
 export interface TunerDeviceStatus {
@@ -63,11 +54,8 @@ export default class TunerDevice extends EventEmitter {
     private _channel: ChannelItem = null;
     private _command: string = null;
     private _process: child_process.ChildProcess = null;
-    private _mmtsDecoderProcess: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
-    private _tlvConverter: any = null;
-    private _carrierLinks: CarrierLink[] = [];
-    private _carrierInitInProgress = false;
+    private _tlvFilter: TLVFilter | null = null;
 
     private _users = new Set<User>();
 
@@ -148,7 +136,7 @@ export default class TunerDevice extends EventEmitter {
     }
 
     get isCarrierOnly(): boolean {
-        return this._channel?.type === "BS4K" && this._tlvConverter === null && this._process !== null;
+        return this._tlvFilter?.isCarrierOnly ?? false;
     }
 
     getPriority(): number {
@@ -218,7 +206,7 @@ export default class TunerDevice extends EventEmitter {
 
         user._stream = stream;
         this._users.add(user);
-        this._updateCarrierPriorities();
+        if (this._tlvFilter) { this._tlvFilter.syncPriorities(this.getPriority()); }
         if (stream.closed === true) {
             this.endStream(user);
         } else {
@@ -233,7 +221,7 @@ export default class TunerDevice extends EventEmitter {
 
         user._stream.end();
         this._users.delete(user);
-        this._updateCarrierPriorities();
+        if (this._tlvFilter) { this._tlvFilter.syncPriorities(this.getPriority()); }
 
         if (this._users.size === 0) {
             if (immediate) {
@@ -305,12 +293,13 @@ export default class TunerDevice extends EventEmitter {
         this._command = cmd;
         this._channel = ch;
 
+        // Determine input stream source
+        let inputStream: stream.Readable;
         if (this._config.dvbDevicePath) {
             const cat = child_process.spawn("cat", [this._config.dvbDevicePath]);
 
             cat.once("error", (err) => {
                 log.error("TunerDevice#%d cat process error `%s` (pid=%d)", this._index, err.name, cat.pid);
-
                 this._kill(false);
             });
 
@@ -319,340 +308,24 @@ export default class TunerDevice extends EventEmitter {
                     "TunerDevice#%d cat process has closed with code=%d by signal `%s` (pid=%d)",
                     this._index, code, signal, cat.pid
                 );
-
                 if (this._exited === false) {
                     this._kill(false);
                 }
             });
 
             this._process.once("exit", () => cat.kill("SIGKILL"));
-
-            if (ch.type === "BS4K") {
-                const useGroupCombine = !options?.suppressGroupCombine;
-                if (!useGroupCombine) {
-                    log.info("TunerDevice#%d carrier mode (raw stream for multi-carrier)", this._index);
-                    this._stream = cat.stdout;
-                } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
-                    const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
-                    log.info(
-                        "TunerDevice#%d TSMFFilter %s (tsmfRelTs=%d%s)",
-                        this._index,
-                        hasGroup ? "multi-carrier mode" : "single-carrier mode",
-                        ch.tsmfRelTs,
-                        hasGroup ? `, groupId=${ch.tsmfGroupId}` : ""
-                    );
-
-                    const outputStream = new stream.PassThrough();
-                    this._tlvConverter = new TSMFFilter(this._index, null, {
-                        tsmfRelTs: ch.tsmfRelTs,
-                        groupId: ch.tsmfGroupId ?? undefined
-                    });
-                    const primaryInput = this._tlvConverter.createInput();
-                    const primaryGate = new StreamGate(8 * 1024 * 1024);
-                    primaryGate.open();
-
-                    this._tlvConverter.once("needCarriers", (count: number) => {
-                        log.debug("TunerDevice#%d needCarriers: %d", this._index, count);
-                        if (useGroupCombine && count > 1) {
-                            if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-                                log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
-                                return;
-                            }
-                            const parsedCarrierCount = this._getParsedGroupCarrierCount(ch);
-                            if (parsedCarrierCount < 2) {
-                                log.warn("TunerDevice#%d not enough parsed group channels for groupId=%d (need>=2, available=%d)",
-                                    this._index, ch.tsmfGroupId, parsedCarrierCount);
-                                return;
-                            }
-                            if (parsedCarrierCount !== count) {
-                                log.warn("TunerDevice#%d needCarriers mismatch (converterNeedCarriers=%d, parsedGroupCarrierCount=%d), using parsed group count",
-                                    this._index, count, parsedCarrierCount);
-                            }
-                            // Pause primary gate - TSMFFilter will be reset when all carriers are ready
-                            primaryGate.close();
-                            (this._tlvConverter as TSMFFilter).initGates(parsedCarrierCount);
-                            (this._tlvConverter as TSMFFilter).addGate(primaryGate);
-                            log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
-                            this._startAdditionalCarriers(ch, this._tlvConverter as TSMFFilter).catch(log.error);
-                        }
-                    });
-
-                    this._tlvConverter.once("ready", () => {
-                        log.info("TunerDevice#%d TSMFFilter ready, starting mmtsDecoder", this._index);
-
-                        const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
-                        this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
-
-                        this._mmtsDecoderProcess.once("error", (err) => {
-                            log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, this._mmtsDecoderProcess.pid);
-                            this._kill(false);
-                        });
-
-                        const mmtsPid = this._mmtsDecoderProcess.pid;
-
-                        this._mmtsDecoderProcess.once("exit", () => {
-                            this._mmtsDecoderProcess?.stdin?.destroy();
-                            // TSMFFilterをクリーンアップ
-                            if (this._tlvConverter) {
-                                try {
-                                    this._tlvConverter.close();
-                                } catch (e) {
-                                    // already closed
-                                }
-                                this._tlvConverter = null;
-                            }
-                            this._cleanupCarrierLinks();
-                            this._mmtsDecoderProcess = null;
-                        });
-
-                        this._mmtsDecoderProcess.once("close", (code, signal) => {
-                            log.debug(
-                                "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                                this._index, code, signal, mmtsPid
-                            );
-
-                            if (this._exited === false && !this._closing) {
-                                this._kill(false);
-                            }
-                        });
-
-                        this._mmtsDecoderProcess.stdout.pipe(outputStream);
-                        this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
-
-                        this._tlvConverter.once("close", () => {
-                            log.debug("TunerDevice#%d TSMFFilter closed", this._index);
-                            if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
-                                if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
-                                    this._mmtsDecoderProcess.stdin.end();
-                                }
-                            }
-                        });
-                    });
-
-                    this._tlvConverter.once("error", (err) => {
-                        log.error("TunerDevice#%d TSMFFilter error: %s", this._index, err.message);
-                        this._kill(false);
-                    });
-
-                    stream.pipeline(cat.stdout, primaryGate, primaryInput, (err) => {
-                        if (err && !this._closing) {
-                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
-                        }
-                    });
-
-                    cat.stdout.once("end", () => {
-                        log.debug("TunerDevice#%d cat stdout ended, closing TSMFFilter", this._index);
-                        if (this._tlvConverter) {
-                            this._tlvConverter.close();
-                        }
-                    });
-
-                    this._stream = outputStream;
-                } else {
-                    // 直接mmtsDecoderモード
-                    log.info("TunerDevice#%d Direct mmtsDecoder mode", this._index);
-
-                    const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
-                    this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
-
-                    const mmtsPid = this._mmtsDecoderProcess.pid;
-
-                    this._mmtsDecoderProcess.once("error", (err) => {
-                        log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsPid);
-                        this._kill(false);
-                    });
-
-                    this._mmtsDecoderProcess.once("exit", () => {
-                        this._mmtsDecoderProcess?.stdin?.destroy();
-                        this._mmtsDecoderProcess = null;
-                    });
-
-                    this._mmtsDecoderProcess.once("close", (code, signal) => {
-                        log.debug(
-                            "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                            this._index, code, signal, mmtsPid
-                        );
-
-                        if (this._exited === false && !this._closing) {
-                            this._kill(false);
-                        }
-                    });
-
-                    stream.pipeline(cat.stdout, this._mmtsDecoderProcess.stdin, (err) => {
-                        if (err && !this._closing) {
-                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
-                        }
-                    });
-
-                    this._stream = this._mmtsDecoderProcess.stdout;
-                }
-            } else {
-                this._stream = cat.stdout;
-            }
+            inputStream = cat.stdout;
         } else {
-            if (ch.type === "BS4K") {
-                const useGroupCombine = !options?.suppressGroupCombine;
-                if (!useGroupCombine) {
-                    log.info("TunerDevice#%d multi-carrier mode", this._index);
-                    this._stream = this._process.stdout;
-                } else if (ch.tsmfRelTs !== null && ch.tsmfRelTs !== undefined) {
-                    const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
-                    log.info(
-                        "TunerDevice#%d TSMFFilter %s (tsmfRelTs=%d%s)",
-                        this._index,
-                        hasGroup ? "multi-carrier mode" : "single-carrier mode",
-                        ch.tsmfRelTs,
-                        hasGroup ? `, groupId=${ch.tsmfGroupId}` : ""
-                    );
+            inputStream = this._process.stdout;
+        }
 
-                    const outputStream = new stream.PassThrough();
-                    this._tlvConverter = new TSMFFilter(this._index, null, {
-                        tsmfRelTs: ch.tsmfRelTs,
-                        groupId: ch.tsmfGroupId ?? undefined
-                        // offsets: auto-detected by TSMFFilter
-                    });
-                    const primaryInput = this._tlvConverter.createInput();
-                    const primaryGate = new StreamGate(8 * 1024 * 1024);
-                    primaryGate.open();
-
-                    this._tlvConverter.once("needCarriers", (count: number) => {
-                        log.debug("TunerDevice#%d needCarriers: %d", this._index, count);
-                        if (useGroupCombine && count > 1) {
-                            if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-                                log.warn("TunerDevice#%d tsmfGroupId is not set; cannot attach extra carriers", this._index);
-                                return;
-                            }
-                            const parsedCarrierCount = this._getParsedGroupCarrierCount(ch);
-                            if (parsedCarrierCount < 2) {
-                                log.warn("TunerDevice#%d not enough parsed group channels for groupId=%d (need>=2, available=%d)",
-                                    this._index, ch.tsmfGroupId, parsedCarrierCount);
-                                return;
-                            }
-                            if (parsedCarrierCount !== count) {
-                                log.warn("TunerDevice#%d needCarriers mismatch (converterNeedCarriers=%d, parsedGroupCarrierCount=%d), using parsed group count",
-                                    this._index, count, parsedCarrierCount);
-                            }
-                            // Pause primary gate - TSMFFilter will be reset when all carriers are ready
-                            primaryGate.close();
-                            (this._tlvConverter as TSMFFilter).initGates(parsedCarrierCount);
-                            (this._tlvConverter as TSMFFilter).addGate(primaryGate);
-                            log.info("TunerDevice#%d starting additional carriers for groupId=%d", this._index, ch.tsmfGroupId);
-                            this._startAdditionalCarriers(ch, this._tlvConverter as TSMFFilter).catch(log.error);
-                        }
-                    });
-
-                    this._tlvConverter.once("ready", () => {
-                        log.info("TunerDevice#%d TSMFFilter ready, starting mmtsDecoder", this._index);
-
-                        const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
-                        this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
-
-                        this._mmtsDecoderProcess.once("error", (err) => {
-                            log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, this._mmtsDecoderProcess.pid);
-                            this._kill(false);
-                        });
-
-                        const mmtsPid = this._mmtsDecoderProcess.pid;
-
-                        this._mmtsDecoderProcess.once("exit", () => {
-                            this._mmtsDecoderProcess?.stdin?.destroy();
-                            // TSMFFilterをクリーンアップ
-                            if (this._tlvConverter) {
-                                try {
-                                    this._tlvConverter.close();
-                                } catch (e) {
-                                    // already closed
-                                }
-                                this._tlvConverter = null;
-                            }
-                            this._cleanupCarrierLinks();
-                            this._mmtsDecoderProcess = null;
-                        });
-
-                        this._mmtsDecoderProcess.once("close", (code, signal) => {
-                            log.debug(
-                                "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                                this._index, code, signal, mmtsPid
-                            );
-
-                            if (this._exited === false && !this._closing) {
-                                this._kill(false);
-                            }
-                        });
-
-                        this._mmtsDecoderProcess.stdout.pipe(outputStream);
-                        this._tlvConverter.setOutput(this._mmtsDecoderProcess.stdin);
-
-                        this._tlvConverter.once("close", () => {
-                            log.debug("TunerDevice#%d TSMFFilter closed", this._index);
-                            if (this._mmtsDecoderProcess && !this._mmtsDecoderProcess.killed) {
-                                if (!this._mmtsDecoderProcess.stdin.destroyed && !this._mmtsDecoderProcess.stdin.writableEnded) {
-                                    this._mmtsDecoderProcess.stdin.end();
-                                }
-                            }
-                        });
-                    });
-
-                    this._tlvConverter.once("error", (err) => {
-                        log.error("TunerDevice#%d TSMFFilter error: %s", this._index, err.message);
-                        this._kill(false);
-                    });
-
-                    stream.pipeline(this._process.stdout, primaryGate, primaryInput, (err) => {
-                        if (err && !this._closing) {
-                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
-                        }
-                    });
-
-                    this._process.stdout.once("end", () => {
-                        log.debug("TunerDevice#%d process stdout ended, closing TSMFFilter", this._index);
-                        if (this._tlvConverter) {
-                            this._tlvConverter.close();
-                        }
-                    });
-
-                    this._stream = outputStream;
-                } else {
-                    // 直接mmtsDecoderモード
-                    log.info("TunerDevice#%d Direct mmtsDecoder mode", this._index);
-
-                    const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
-                    this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
-
-                    const mmtsPid = this._mmtsDecoderProcess.pid;
-
-                    this._mmtsDecoderProcess.once("error", (err) => {
-                        log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._index, err.name, mmtsPid);
-                        this._kill(false);
-                    });
-
-                    this._mmtsDecoderProcess.once("exit", () => {
-                        this._mmtsDecoderProcess?.stdin?.destroy();
-                        this._mmtsDecoderProcess = null;
-                    });
-
-                    this._mmtsDecoderProcess.once("close", (code, signal) => {
-                        log.debug(
-                            "TunerDevice#%d mmtsDecoder process has closed with code=%d by signal `%s` (pid=%d)",
-                            this._index, code, signal, mmtsPid
-                        );
-
-                        if (this._exited === false && !this._closing) {
-                            this._kill(false);
-                        }
-                    });
-
-                    stream.pipeline(this._process.stdout, this._mmtsDecoderProcess.stdin, (err) => {
-                        if (err && !this._closing) {
-                            log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
-                        }
-                    });
-
-                    this._stream = this._mmtsDecoderProcess.stdout;
-                }
-            } else {
-                this._stream = this._process.stdout;
-            }
+        // Set up stream pipeline
+        if (ch.type === "BS4K") {
+            this._tlvFilter = new TLVFilter(this._index, this._config, () => this._kill(false));
+            const result = this._tlvFilter.setupPipeline(inputStream, ch, options);
+            this._stream = result.outputStream;
+        } else {
+            this._stream = inputStream;
         }
 
         this._process.once("exit", () => {
@@ -700,175 +373,6 @@ export default class TunerDevice extends EventEmitter {
         }
     }
 
-    private _getParsedGroupCarrierCount(ch: ChannelItem): number {
-        if (!_.channel || ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-            return 0;
-        }
-        return _.channel.items.filter(item =>
-            item.type === "BS4K" &&
-            item.tsmfGroupId === ch.tsmfGroupId
-        ).length;
-    }
-
-    private async _startAdditionalCarriers(ch: ChannelItem, combiner: TSMFFilter): Promise<void> {
-        if (this._carrierInitInProgress || this._carrierLinks.length > 0) {
-            return;
-        }
-        if (!_.tuner || !_.channel) {
-            log.warn("TunerDevice#%d cannot start extra carriers (registry missing)", this._index);
-            return;
-        }
-        if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-            return;
-        }
-
-        this._carrierInitInProgress = true;
-        try {
-            const groupChannels = _.channel.items.filter(item =>
-                item.type === "BS4K" &&
-                item.tsmfGroupId === ch.tsmfGroupId &&
-                item.channel !== ch.channel
-            );
-            const requiredAdditional = groupChannels.length;
-            if (requiredAdditional < 1) {
-                const totalGroupCarriers = groupChannels.length + 1;
-                log.warn("TunerDevice#%d not enough channels for groupId=%d (need=%d, available=%d)",
-                    this._index, ch.tsmfGroupId, totalGroupCarriers, totalGroupCarriers);
-                return;
-            }
-
-            // Retry: carrier tuners from a previous session may still be releasing (~1s delay)
-            let selected: TunerDevice[] = [];
-            for (let attempt = 0; attempt < 6; attempt++) {
-                if (this._closing || this._tlvConverter !== combiner) {
-                    return;
-                }
-                if (attempt > 0) {
-                    await new Promise(r => setTimeout(r, 500));
-                    if (this._closing || this._tlvConverter !== combiner) {
-                        return;
-                    }
-                }
-
-                const myPriority = this.getPriority();
-                selected = _.tuner.devices
-                    .map(d => _.tuner.get(d.index))
-                    .filter(d =>
-                        d && d !== this && !d.isRemote && d.config.types.includes("BS4K") &&
-                        (d.isFree || (d.isUsing && !d.isCarrierOnly && myPriority >= 0 && d.getPriority() <= myPriority))
-                    )
-                    .sort((a, b) => {
-                        if (a.isFree !== b.isFree) {
-                            return a.isFree ? -1 : 1;
-                        }
-                        return a.getPriority() - b.getPriority();
-                    })
-                    .slice(0, requiredAdditional) as TunerDevice[];
-
-                if (selected.length >= requiredAdditional) {
-                    break;
-                }
-            }
-
-            if (selected.length < requiredAdditional) {
-                log.error("TunerDevice#%d not enough BS4K tuners for multi-carrier (need=%d, available=%d)",
-                    this._index, requiredAdditional, selected.length);
-                if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
-                setImmediate(() => {
-                    if (!this._closing && this._process) {
-                        this._kill(true).catch(log.error);
-                    }
-                });
-                return;
-            }
-
-            log.info("TunerDevice#%d starting additional carriers: tuners=[%s] channels=[%s]",
-                this._index,
-                selected.map(d => d.index).join(","),
-                groupChannels.slice(0, requiredAdditional).map(c => c.channel).join(",")
-            );
-
-            let startedCount = 0;
-            for (let i = 0; i < selected.length; i++) {
-                if (this._closing || this._tlvConverter !== combiner) {
-                    this._cleanupCarrierLinks();
-                    if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
-                    return;
-                }
-
-                const device = selected[i];
-                const channel = groupChannels[i];
-                const input = combiner.createInput();
-                const rawStream = new stream.PassThrough();
-                const gate = new StreamGate(8 * 1024 * 1024);
-                const tsFilter = rawStream as unknown as TSFilter;
-                const user: User = {
-                    id: `Mirakurun:addCarrier()`,
-                    priority: this.getPriority(),
-                    disableDecoder: true,
-                    streamSetting: { channel }
-                };
-
-                try {
-                    await device.startStream(user, tsFilter, channel, { suppressGroupCombine: true });
-                } catch (e) {
-                    log.error("TunerDevice#%d failed to start carrier on tuner #%d: %s",
-                        this._index, device.index, (e as Error).message);
-                    continue;
-                }
-
-                (combiner as TSMFFilter).addGate(gate);
-                startedCount++;
-                stream.pipeline(rawStream, gate, input, (err) => {
-                    if (err && !this._closing) {
-                        log.error("TunerDevice#%d pipeline error: %s", this._index, (err as Error).message);
-                    }
-                });
-
-                rawStream.once("end", () => {
-                    try { input.end(); } catch (e) { /* ignore */ }
-                    if (!this._closing) {
-                        log.warn("TunerDevice#%d carrier stream ended (device=%d)", this._index, device.index);
-                        this._kill(false);
-                    }
-                });
-
-                this._carrierLinks.push({ device, user, stream: tsFilter, output: rawStream, input });
-            }
-
-            if (startedCount < requiredAdditional) {
-                log.error("TunerDevice#%d only %d/%d additional carriers started", this._index, startedCount, requiredAdditional);
-                this._cleanupCarrierLinks();
-                if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
-                return;
-            }
-
-            log.info("TunerDevice#%d additional carriers started", this._index);
-        } finally {
-            this._carrierInitInProgress = false;
-        }
-    }
-
-    private _updateCarrierPriorities(): void {
-        const newPriority = this.getPriority();
-        for (const link of this._carrierLinks) {
-            if (link.user.priority !== newPriority) {
-                (link.user as { priority: number }).priority = newPriority;
-            }
-        }
-    }
-
-    private _cleanupCarrierLinks(): void {
-        for (const link of this._carrierLinks) {
-            try { link.output.removeAllListeners(); } catch (e) { /* ignore */ }
-            try { link.input.end(); } catch (e) { /* ignore */ }
-            try { link.device.endStream(link.user, true); } catch (e) { /* ignore */ }
-        }
-        this._carrierLinks = [];
-        this._carrierInitInProgress = false;
-        if (this._tlvConverter) { (this._tlvConverter as TSMFFilter).resetGates(); }
-    }
-
     private _end(): void {
         this._isAvailable = false;
 
@@ -899,14 +403,14 @@ export default class TunerDevice extends EventEmitter {
 
         // Clean up carrier links immediately so additional tuners are released
         // at the same time as the primary (not delayed by _release timeout)
-        this._cleanupCarrierLinks();
+        if (this._tlvFilter) { this._tlvFilter.cleanup(); }
 
         this._updated();
 
         await new Promise<void>(resolve => {
             this.once("release", resolve);
 
-            if (this._mmtsDecoderProcess?.pid) {
+            if (this._tlvFilter?.hasDecoderProcess) {
                 this._process?.kill("SIGKILL");
                 return;
             }
@@ -935,29 +439,14 @@ export default class TunerDevice extends EventEmitter {
             this._stream.removeAllListeners();
         }
 
-        if (this._mmtsDecoderProcess) {
-            this._mmtsDecoderProcess.stdin.removeAllListeners();
-            this._mmtsDecoderProcess.stdout.removeAllListeners();
-            this._mmtsDecoderProcess.stderr.removeAllListeners();
-            this._mmtsDecoderProcess.removeAllListeners();
-            if (this._mmtsDecoderProcess.pid) {
-                this._mmtsDecoderProcess.kill("SIGKILL");
-            }
+        if (this._tlvFilter) {
+            this._tlvFilter.forceKillDecoder();
+            this._tlvFilter = null;
         }
 
         this._command = null;
         this._process = null;
         this._stream = null;
-        this._mmtsDecoderProcess = null;
-        if (this._tlvConverter) {
-            try {
-                this._tlvConverter.close();
-            } catch (e) {
-                // already closed
-            }
-        }
-        this._tlvConverter = null;
-        this._cleanupCarrierLinks();
 
         if (this._closing === false && this._users.size !== 0) {
             log.warn("TunerDevice#%d respawning because request has not closed", this._index);
