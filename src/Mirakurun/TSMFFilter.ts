@@ -326,8 +326,10 @@ export default class TSMFFilter {
             }
 
             if (started < required) {
-                log.error("TunerDevice#%d only %d of %d additional carriers started", this._tunerIndex, started, required);
+                log.warn("TunerDevice#%d only %d of %d additional carriers started, retrying...",
+                    this._tunerIndex, started, required);
                 this.releaseCarriers();
+                this._onFatal();
                 return;
             }
 
@@ -349,11 +351,13 @@ export default class TSMFFilter {
                 }
             }
 
+            const parentDevice = _.tuner.get(this._tunerIndex);
+            const myPriority = parentDevice ? parentDevice.getPriority() : -1;
             const selected = _.tuner.devices
                 .map(d => _.tuner.get(d.index))
                 .filter(d =>
                     d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes("BS4K") &&
-                    (d.isFree || (d.isUsing && !d.isCarrierOnly && d.getPriority() <= 0))
+                    (d.isFree || (d.isUsing && !d.isCarrierOnly && d.getPriority() < myPriority))
                 )
                 .sort((a, b) => {
                     if (a.isFree !== b.isFree) {
