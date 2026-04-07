@@ -387,25 +387,7 @@ export class Service {
                 }
                 return this._scan(scanChannel, true);
             },
-            readyFn: async () => {
-                if (!(await _.tuner.readyForJob(scanChannel))) {
-                    return false;
-                }
-                // BS4K channels with unknown groupId might need 3 tuners for multi-carrier.
-                // Serialize these to prevent tuner starvation.
-                if (scanChannel.type === "BS4K" &&
-                    (scanChannel.tsmfGroupId === null || scanChannel.tsmfGroupId === undefined)) {
-                    const hasOtherBS4KScan = _.job.jobs.some(j =>
-                        j.status === "running" &&
-                        j.key.startsWith("Service.Add.Scan.BS4K.") &&
-                        j.key !== `Service.Add.Scan.BS4K.${scanChannel.channel}`
-                    );
-                    if (hasOtherBS4KScan) {
-                        return false;
-                    }
-                }
-                return true;
-            },
+            readyFn: () => _.tuner.readyForJob(scanChannel),
             retryOnFail: true,
             retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3), // (12時間 / retryDelay) = 12時間～
             retryDelay: 1000 * 60 * 3
