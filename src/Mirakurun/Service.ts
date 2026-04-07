@@ -387,7 +387,25 @@ export class Service {
                 }
                 return this._scan(scanChannel, true);
             },
-            readyFn: () => _.tuner.readyForJob(scanChannel),
+            readyFn: async () => {
+                if (!(await _.tuner.readyForJob(scanChannel))) {
+                    return false;
+                }
+                // BS4K channels with unknown groupId might need 3 tuners for multi-carrier.
+                // Serialize these to prevent tuner starvation.
+                if (scanChannel.type === "BS4K" &&
+                    (scanChannel.tsmfGroupId === null || scanChannel.tsmfGroupId === undefined)) {
+                    const hasOtherBS4KScan = _.job.jobs.some(j =>
+                        j.status === "running" &&
+                        j.key.startsWith("Service.Add.Scan.BS4K.") &&
+                        j.key !== `Service.Add.Scan.BS4K.${scanChannel.channel}`
+                    );
+                    if (hasOtherBS4KScan) {
+                        return false;
+                    }
+                }
+                return true;
+            },
             retryOnFail: true,
             retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3), // (12時間 / retryDelay) = 12時間～
             retryDelay: 1000 * 60 * 3
@@ -472,6 +490,20 @@ export class Service {
                 } catch (e) {
                     log.warn("ChannelItem#'%s' TSMF stream %d scan failed [%s]", channel.name, relTs, e);
                 }
+            }
+        }
+
+        // Abort scan jobs for other channels in the same TSMF group
+        // (e.g., multi-carrier channel scan succeeds)
+        if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
+            const groupChannels = _.channel.items.filter(item =>
+                item.type === channel.type &&
+                item.channel !== channel.channel &&
+                item.isSameTsmfGroup(channel)
+            );
+            for (const ch of groupChannels) {
+                const key = `Service.Add.Scan.${ch.type}.${ch.channel}`;
+                _.job.abortByKey(key, "group primary scan completed");
             }
         }
 
