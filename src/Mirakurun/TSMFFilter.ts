@@ -42,6 +42,10 @@ export default class TSMFFilter {
         return this._demuxer.ready;
     }
 
+    get hasCarriers(): boolean {
+        return this._carrierLinks.length > 0;
+    }
+
     get closed(): boolean {
         return this._demuxer.closed;
     }
@@ -271,9 +275,8 @@ export default class TSMFFilter {
             // Start all additional carriers in parallel to minimize tuning latency.
             // Each startStream may need to kill/release an existing process (~1s each),
             // so parallel startup saves N seconds vs serial.
-            // Carrier priority must be > parent so it can preempt equal-priority scans.
             const parentDevice = _.tuner.get(this._tunerIndex);
-            const carrierPriority = Math.max(parentDevice ? parentDevice.getPriority() : 0, 0);
+            const carrierPriority = parentDevice ? parentDevice.getPriority() : -1;
 
             const startPromises = selected.map((device, i) => {
                 const channel = groupChannels[i];
@@ -355,15 +358,8 @@ export default class TSMFFilter {
             const selected = _.tuner.devices
                 .map(d => _.tuner.get(d.index))
                 .filter(d =>
-                    d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes("BS4K") &&
-                    (d.isFree || (d.isUsing && !d.isCarrierOnly && d.getPriority() < 0))
+                    d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes("BS4K") && d.isFree
                 )
-                .sort((a, b) => {
-                    if (a.isFree !== b.isFree) {
-                        return a.isFree ? -1 : 1;
-                    }
-                    return a.getPriority() - b.getPriority();
-                })
                 .slice(0, required) as TunerDevice[];
 
             if (selected.length >= required) {

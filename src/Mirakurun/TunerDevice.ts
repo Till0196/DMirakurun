@@ -139,6 +139,11 @@ export default class TunerDevice extends EventEmitter {
         return this._tlvFilter?.isCarrierOnly ?? false;
     }
 
+    /** True if this device is the parent of a multi-carrier bonded stream. */
+    get isMultiCarrier(): boolean {
+        return this._tlvFilter?.tsmfFilter?.hasCarriers ?? false;
+    }
+
     getPriority(): number {
         let priority = -2;
 

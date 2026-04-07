@@ -476,13 +476,24 @@ export class Tuner {
             }
         }
 
-        // 4. takeover existing
+        // 4. takeover existing (prefer single-carrier first, then multi-carrier parent)
+        // Killing a multi-carrier parent automatically frees all its carrier tuners.
         if (priority >= 0) {
-            devices.sort((t1, t2) => t1.getPriority() - t2.getPriority());
-            for (const device of devices) {
-                if (device.isUsing === true && !device.isCarrierOnly && device.getPriority() < priority) {
-                    return device;
+            const candidates = devices
+                .filter(d => d.isUsing === true && !d.isCarrierOnly && d.getPriority() < priority);
+
+            // Sort: single-carrier first (less disruption), then by priority ascending
+            candidates.sort((a, b) => {
+                const aMulti = a.isMultiCarrier ? 1 : 0;
+                const bMulti = b.isMultiCarrier ? 1 : 0;
+                if (aMulti !== bMulti) {
+                    return aMulti - bMulti;
                 }
+                return a.getPriority() - b.getPriority();
+            });
+
+            if (candidates.length > 0) {
+                return candidates[0];
             }
         }
 
