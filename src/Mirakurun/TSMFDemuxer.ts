@@ -25,6 +25,65 @@ const TLV_TYPE_HEADER_COMPRESSED_IP = 0x03;
 const CID_HEADER_BASE = 3;
 const CID_HEADER_0x60_EXTRA = 42;
 
+/**
+ * TSMF continuity counter tracker.
+ * Skips stale DVR buffer data after retune by requiring two consecutive CC values.
+ */
+export class TsmfCCChecker {
+    private _lastCC = -1;
+    private _synced = false;
+
+    get synced(): boolean {
+        return this._synced;
+    }
+
+    /** Returns true if this packet should be processed, false if it should be skipped. */
+    check(cc: number): boolean {
+        if (!this._synced) {
+            if (this._lastCC >= 0 && cc === ((this._lastCC + 1) & 0x0f)) {
+                this._synced = true;
+            } else {
+                this._lastCC = cc;
+                return false;
+            }
+        }
+        this._lastCC = cc;
+        return true;
+    }
+}
+
+/**
+ * Check if a TS packet is a TSMF header packet.
+ * Returns the CC (continuity_counter) if it is, or -1 if not.
+ */
+export function getTsmfPacketCC(packet: Buffer, offset = 0): number {
+    if (packet[offset] !== TS_SYNC_BYTE) {
+        return -1;
+    }
+    const pid = ((packet[offset + 1] & 0x1f) << 8) | packet[offset + 2];
+    if (pid !== TSMF_PID) {
+        return -1;
+    }
+    const sync = ((packet[offset + 4] << 8) | packet[offset + 5]) & 0x1fff;
+    if (sync !== TSMF_SYNC_A && sync !== TSMF_SYNC_B) {
+        return -1;
+    }
+    return packet[offset + 3] & 0x0f;
+}
+
+/**
+ * Extract groupId from Extended TSMF header (frame_type=0x02) in a raw TS packet.
+ * Returns the groupId, or -1 if not an Extended TSMF frame or groupId is 255.
+ */
+export function extractGroupIdFromPacket(packet: Buffer, offset = 0): number {
+    const frameType = packet[offset + 6] & 0x0f;
+    if (frameType !== 0x02) {
+        return -1;
+    }
+    const groupId = packet[offset + 127];
+    return groupId !== 255 ? groupId : -1;
+}
+
 // Offset detection parameters
 const OFFSET_MIN_SFS = 30;
 const OFFSET_RETRY_SFS = 30;
@@ -66,8 +125,7 @@ interface SourceState {
     effectiveTargetStreamNumber: number;
     tsmfRelativeStreamNumber: number[];
     streamTypeBits: number;
-    lastTsmfCC: number;
-    ccSynced: boolean;
+    ccChecker: TsmfCCChecker;
 }
 
 interface MultiCarrierOptions {
@@ -219,8 +277,7 @@ export default class TSMFDemuxer extends EventEmitter {
             effectiveTargetStreamNumber: 0,
             tsmfRelativeStreamNumber: [],
             streamTypeBits: 0,
-            lastTsmfCC: -1,
-            ccSynced: false
+            ccChecker: new TsmfCCChecker()
         };
         this._sources.set(sourceId, state);
         return new CarrierInput(this, sourceId);
@@ -350,21 +407,15 @@ export default class TSMFDemuxer extends EventEmitter {
             return;
         }
 
-        // Check TSMF continuity_counter to detect stale DVR buffer data.
-        // After retune, the first frame(s) may be from the previous channel.
-        // CC will be discontinuous at the boundary, so we skip until CC is consecutive.
         const cc = packet[3] & 0x0f;
-        if (!source.ccSynced) {
-            if (source.lastTsmfCC >= 0 && cc === ((source.lastTsmfCC + 1) & 0x0f)) {
-                source.ccSynced = true;
-                log.debug("TunerDevice#%d source#%d TSMF CC synced (skipped %d frames)",
-                    this._tunerIndex, source.sourceId, source.lastTsmfCC === -1 ? 0 : 1);
-            } else {
-                source.lastTsmfCC = cc;
-                return;
-            }
+        const wasSynced = source.ccChecker.synced;
+        if (!source.ccChecker.check(cc)) {
+            return;
         }
-        source.lastTsmfCC = cc;
+        if (!wasSynced) {
+            log.debug("TunerDevice#%d source#%d TSMF CC synced (skipped stale frames)",
+                this._tunerIndex, source.sourceId);
+        }
 
         if (this._expectedGroupId !== null && frameInfo.groupId !== this._expectedGroupId) {
             return;
@@ -1185,8 +1236,7 @@ export class TSMFSlotFilter extends stream.Transform {
     private _activeStreams = new Set<number>();
     private _serviceMap = new Map<number, Set<number>>();
     private _detectedStreams = new Set<number>();
-    private _lastTsmfCC = -1;
-    private _ccSynced = false;
+    private _ccChecker = new TsmfCCChecker();
 
     constructor(tsmfRelTs: number, private _passHeader = false) {
         super();
@@ -1249,21 +1299,15 @@ export class TSMFSlotFilter extends stream.Transform {
         if (pid === TSMF_PID) {
             const sync = ((packet[4] << 8) | packet[5]) & 0x1fff;
             if (sync === TSMF_SYNC_A || sync === TSMF_SYNC_B) {
-                // Check TSMF continuity_counter to detect stale DVR buffer data.
-                // After retune, the first frame(s) may be from the previous channel.
-                // CC will be discontinuous at the boundary, so we skip until CC is consecutive.
                 const cc = packet[3] & 0x0f;
-                if (!this._ccSynced) {
-                    if (this._lastTsmfCC >= 0 && cc === ((this._lastTsmfCC + 1) & 0x0f)) {
-                        this._ccSynced = true;
-                        log.debug("TSMFSlotFilter CC synced after skipping stale frame(s)");
-                    } else {
-                        this._lastTsmfCC = cc;
-                        this._slotCounter = -1;
-                        return;
-                    }
+                const wasSynced = this._ccChecker.synced;
+                if (!this._ccChecker.check(cc)) {
+                    this._slotCounter = -1;
+                    return;
                 }
-                this._lastTsmfCC = cc;
+                if (!wasSynced) {
+                    log.debug("TSMFSlotFilter CC synced after skipping stale frame(s)");
+                }
 
                 this._slotMap = [];
                 for (let i = 0; i < 26; i++) {

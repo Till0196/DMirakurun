@@ -5,6 +5,7 @@ import * as log from "./log";
 import * as apid from "../../api";
 import _ from "./_";
 import TSMFFilter from "./TSMFFilter";
+import { TsmfCCChecker, getTsmfPacketCC, extractGroupIdFromPacket } from "./TSMFDemuxer";
 import ChannelItem from "./ChannelItem";
 
 export interface TLVFilterResult {
@@ -179,50 +180,29 @@ export default class TLVFilter {
      * Used in carrier mode to detect groupId for probe purposes.
      */
     private _detectGroupIdFromRawStream(inputStream: stream.Readable, ch: ChannelItem): void {
-        const TSMF_PID = 0x2f;
-        const TSMF_SYNC_A = 0x1a86;
-        const TSMF_SYNC_B = 0x0579;
         let detected = false;
-        let lastCC = -1;
-        let ccSynced = false;
+        const ccChecker = new TsmfCCChecker();
 
         const onData = (chunk: Buffer) => {
             if (detected) {
                 return;
             }
             for (let i = 0; i <= chunk.length - 188; i += 188) {
-                if (chunk[i] !== 0x47) {
+                const cc = getTsmfPacketCC(chunk, i);
+                if (cc < 0) {
                     continue;
                 }
-                const pid = ((chunk[i + 1] & 0x1f) << 8) | chunk[i + 2];
-                if (pid !== TSMF_PID) {
+                if (!ccChecker.check(cc)) {
                     continue;
                 }
-                const sync = ((chunk[i + 4] << 8) | chunk[i + 5]) & 0x1fff;
-                if (sync !== TSMF_SYNC_A && sync !== TSMF_SYNC_B) {
-                    continue;
-                }
-                // CC check: skip stale DVR buffer data
-                const cc = chunk[i + 3] & 0x0f;
-                if (!ccSynced) {
-                    if (lastCC >= 0 && cc === ((lastCC + 1) & 0x0f)) {
-                        ccSynced = true;
-                    } else {
-                        lastCC = cc;
-                        continue;
-                    }
-                }
-                const frameType = chunk[i + 6] & 0x0f;
-                if (frameType === 0x02) {
-                    const groupId = chunk[i + 127];
-                    if (groupId !== 255) {
-                        detected = true;
-                        inputStream.removeListener("data", onData);
-                        ch.setTsmfGroupId(groupId);
-                        log.debug("TunerDevice#%d carrier mode detected groupId=%d on %s", this._tunerIndex, groupId, ch.channel);
-                        if (_.service) {
-                            _.service.save();
-                        }
+                const groupId = extractGroupIdFromPacket(chunk, i);
+                if (groupId >= 0) {
+                    detected = true;
+                    inputStream.removeListener("data", onData);
+                    ch.setTsmfGroupId(groupId);
+                    log.debug("TunerDevice#%d carrier mode detected groupId=%d on %s", this._tunerIndex, groupId, ch.channel);
+                    if (_.service) {
+                        _.service.save();
                     }
                 }
                 return;
