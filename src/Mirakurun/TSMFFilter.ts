@@ -25,9 +25,9 @@ export default class TSMFFilter {
     private _carrierLinks: CarrierLink[] = [];
     private _carrierInitPending = false;
     private _closed = false;
-    private _onFatal: () => void;
+    private _onFatal: (closing?: boolean) => void;
 
-    constructor(tunerIndex: number, options: { tsmfRelTs?: number; groupId?: number }, onFatal: () => void) {
+    constructor(tunerIndex: number, options: { tsmfRelTs?: number; groupId?: number }, onFatal: (closing?: boolean) => void) {
         this._tunerIndex = tunerIndex;
         this._onFatal = onFatal;
         this._demuxer = new TSMFDemuxer(tunerIndex, null, options);
@@ -71,26 +71,21 @@ export default class TSMFFilter {
     // --- Carrier management ---
 
     setupCarriers(ch: ChannelItem): void {
+        // Persist groupId to services DB as soon as detected.
+        // This ensures groupId survives restarts even if bonding fails on first boot.
+        this._demuxer.once("groupId", (groupId: number, numberOfCarriers: number) => {
+            ch.setTsmfGroupId(groupId);
+            log.debug("TunerDevice#%d TSMF detected groupId=%d numberOfCarriers=%d on %s",
+                this._tunerIndex, groupId, numberOfCarriers, ch.channel);
+            if (_.service) {
+                _.service.save();
+            }
+        });
+
         this._demuxer.once("needCarriers", (count: number) => {
             log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
             if (count > 1) {
-                if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-                    log.warn("TunerDevice#%d cannot attach extra carriers without tsmfGroupId", this._tunerIndex);
-                    return;
-                }
-                const parsedCount = this._countGroupCarriers(ch);
-                if (parsedCount < 2) {
-                    log.warn("TunerDevice#%d not enough group channels for groupId=%d, need 2 or more but got %d",
-                        this._tunerIndex, ch.tsmfGroupId, parsedCount);
-                    return;
-                }
-                if (parsedCount !== count) {
-                    log.warn("TunerDevice#%d carrier count mismatch, stream says %d but config has %d, using config",
-                        this._tunerIndex, count, parsedCount);
-                }
-                log.info("TunerDevice#%d starting %d additional carriers for groupId=%d",
-                    this._tunerIndex, parsedCount - 1, ch.tsmfGroupId);
-                this._startCarriers(ch).catch(log.error);
+                this._waitAndStartCarriers(ch, count, 0);
             }
         });
     }
@@ -127,6 +122,105 @@ export default class TSMFFilter {
     }
 
     // --- Private ---
+
+    private _waitAndStartCarriers(ch: ChannelItem, count: number, attempt: number): void {
+        if (this._closed) {
+            return;
+        }
+        if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
+            log.warn("TunerDevice#%d cannot attach extra carriers without tsmfGroupId, aborting stream", this._tunerIndex);
+            this._onFatal();
+            return;
+        }
+        // Only the first channel in the group (by config order) should manage bonding.
+        // Others abort immediately to free their tuners.
+        const groupChannels = _.channel.items.filter(item =>
+            item.type === "BS4K" && item.tsmfGroupId === ch.tsmfGroupId
+        );
+        const isFirstInGroup = groupChannels.length === 0 || groupChannels[0].channel === ch.channel;
+
+        if (!isFirstInGroup) {
+            log.info("TunerDevice#%d not first in group (groupId=%d), deferring bonding to %s",
+                this._tunerIndex, ch.tsmfGroupId, groupChannels[0]?.channel);
+            this._onFatal(true);
+            return;
+        }
+
+        const parsedCount = this._countGroupCarriers(ch);
+        if (parsedCount < count) {
+            if (attempt < CARRIER_MAX_ATTEMPTS * 2) {
+                // Probe one undiscovered BS4K channel per retry to discover its groupId
+                if (attempt > 0) {
+                    this._probeNextUndiscoveredCarrier(ch);
+                }
+                log.debug("TunerDevice#%d waiting for group carriers: groupId=%d, need %d but got %d (attempt %d/%d)",
+                    this._tunerIndex, ch.tsmfGroupId, count, parsedCount, attempt + 1, CARRIER_MAX_ATTEMPTS * 2);
+                setTimeout(() => this._waitAndStartCarriers(ch, count, attempt + 1), CARRIER_RETRY_DELAY_MS);
+                return;
+            }
+            log.warn("TunerDevice#%d not enough group channels for groupId=%d, need %d but got %d — aborting stream",
+                this._tunerIndex, ch.tsmfGroupId, count, parsedCount);
+            this._onFatal();
+            return;
+        }
+        log.info("TunerDevice#%d starting %d additional carriers for groupId=%d",
+            this._tunerIndex, count - 1, ch.tsmfGroupId);
+        this._startCarriers(ch).catch(log.error);
+    }
+
+    /**
+     * Briefly tune a free tuner to an undiscovered BS4K channel to detect its groupId.
+     * This allows the main carrier to discover all group members without waiting for
+     * the scan scheduler to get around to scanning them.
+     */
+    private _probeNextUndiscoveredCarrier(ch: ChannelItem): void {
+        if (!_.tuner || !_.channel) {
+            return;
+        }
+        const undiscovered = _.channel.items.find(item =>
+            item.type === "BS4K" &&
+            item.channel !== ch.channel &&
+            (item.tsmfGroupId === null || item.tsmfGroupId === undefined)
+        );
+        if (!undiscovered) {
+            return;
+        }
+        // Find a free tuner (not the one we're on)
+        const devices: TunerDevice[] = [];
+        for (let i = 0; i < 16; i++) {
+            const d = _.tuner.get(i);
+            if (d && d.index !== this._tunerIndex && d.isFree && d.config.types.includes("BS4K")) {
+                devices.push(d);
+            }
+        }
+        if (devices.length === 0) {
+            return;
+        }
+        const device = devices[0];
+        log.debug("TunerDevice#%d probing %s for groupId using tuner #%d",
+            this._tunerIndex, undiscovered.channel, device.index);
+
+        const probeStream = new stream.PassThrough();
+        const probeFilter = probeStream as unknown as TSFilter;
+        const probeUser: common.User & { _stream?: TSFilter } = {
+            id: `Mirakurun:probeGroupId()`,
+            priority: -1,
+            disableDecoder: true,
+            streamSetting: { channel: undiscovered }
+        };
+
+        device.startStream(probeUser, probeFilter, undiscovered, { suppressGroupCombine: true })
+            .then(() => {
+                // groupId is detected via _detectGroupIdFromRawStream in carrier mode.
+                // Release the tuner after a short time.
+                setTimeout(() => {
+                    try { device.endStream(probeUser, true); } catch (e) { /* ignore */ }
+                }, CARRIER_RETRY_DELAY_MS);
+            })
+            .catch(() => {
+                // probe failed, ignore
+            });
+    }
 
     private _countGroupCarriers(ch: ChannelItem): number {
         if (!_.channel || ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
@@ -174,38 +268,43 @@ export default class TSMFFilter {
                 selected.map(d => `#${d.index}`).join(", ")
             );
 
-            let started = 0;
-            for (let i = 0; i < selected.length; i++) {
-                if (this._closed) {
-                    this.releaseCarriers();
-                    return;
-                }
+            // Start all additional carriers in parallel to minimize tuning latency.
+            // Each startStream may need to kill/release an existing process (~1s each),
+            // so parallel startup saves N seconds vs serial.
+            const parentDevice = _.tuner.get(this._tunerIndex);
+            const carrierPriority = parentDevice ? parentDevice.getPriority() : -1;
 
-                const device = selected[i];
+            const startPromises = selected.map((device, i) => {
                 const channel = groupChannels[i];
                 const demuxerInput = this._demuxer.createInput();
                 const sourceStream = new stream.PassThrough();
                 const tsFilter = sourceStream as unknown as TSFilter;
                 const user: common.User & { _stream?: TSFilter } = {
                     id: `Mirakurun:addCarrier()`,
-                    priority: 0,
+                    priority: carrierPriority,
                     disableDecoder: true,
                     streamSetting: { channel }
                 };
+                return { device, channel, demuxerInput, sourceStream, tsFilter, user };
+            });
 
-                try {
-                    await device.startStream(user, tsFilter, channel, { suppressGroupCombine: true });
-                } catch (e) {
-                    log.error("TunerDevice#%d carrier start failed on tuner #%d `%s`",
-                        this._tunerIndex, device.index, (e as Error).message);
-                    continue;
-                }
+            const results = await Promise.allSettled(
+                startPromises.map(p => p.device.startStream(p.user, p.tsFilter, p.channel, { suppressGroupCombine: true }))
+            );
 
-                // Re-check after await — cleanup may have been called during startStream
+            let started = 0;
+            for (let i = 0; i < results.length; i++) {
                 if (this._closed) {
-                    device.endStream(user, true);
                     this.releaseCarriers();
                     return;
+                }
+
+                const { device, demuxerInput, sourceStream, tsFilter, user } = startPromises[i];
+
+                if (results[i].status === "rejected") {
+                    log.error("TunerDevice#%d carrier start failed on tuner #%d `%s`",
+                        this._tunerIndex, device.index, (results[i] as PromiseRejectedResult).reason?.message);
+                    continue;
                 }
 
                 started++;

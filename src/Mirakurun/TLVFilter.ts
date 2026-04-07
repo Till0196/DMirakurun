@@ -3,6 +3,7 @@ import * as stream from "stream";
 import * as common from "./common";
 import * as log from "./log";
 import * as apid from "../../api";
+import _ from "./_";
 import TSMFFilter from "./TSMFFilter";
 import ChannelItem from "./ChannelItem";
 
@@ -19,9 +20,9 @@ export default class TLVFilter {
     private _tsmfFilter: TSMFFilter | null = null;
     private _closed = false;
     private _isCarrierOnly = false;
-    private _onFatal: () => void;
+    private _onFatal: (closing?: boolean) => void;
 
-    constructor(tunerIndex: number, config: apid.ConfigTunersItem, onFatal: () => void) {
+    constructor(tunerIndex: number, config: apid.ConfigTunersItem, onFatal: (closing?: boolean) => void) {
         this._tunerIndex = tunerIndex;
         this._config = config;
         this._onFatal = onFatal;
@@ -50,6 +51,12 @@ export default class TLVFilter {
         if (!useGroupCombine) {
             log.info("TunerDevice#%d carrier mode (raw stream for multi-carrier)", this._tunerIndex);
             this._isCarrierOnly = true;
+
+            // Detect groupId from TSMF header even in carrier mode (needed for probe)
+            if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
+                this._detectGroupIdFromRawStream(inputStream, ch);
+            }
+
             return { outputStream: inputStream, isCarrierOnly: true };
         }
 
@@ -115,12 +122,6 @@ export default class TLVFilter {
 
         this._tsmfFilter.setupCarriers(ch);
 
-        // Store groupId as soon as detected (before ready, needed for carrier discovery)
-        this._tsmfFilter.once("groupId", (groupId: number) => {
-            ch.setTsmfGroupId(groupId);
-            log.debug("TunerDevice#%d TSMF detected groupId=%d on %s", this._tunerIndex, groupId, ch.channel);
-        });
-
         this._tsmfFilter.once("ready", () => {
             // Store auto-detected TSMF info on channel
             const detectedRelTs = this._tsmfFilter.detectedRelTs;
@@ -171,6 +172,63 @@ export default class TLVFilter {
         });
 
         return { outputStream, isCarrierOnly: false };
+    }
+
+    /**
+     * Lightweight groupId detection from raw TSMF stream without full TSMFFilter pipeline.
+     * Used in carrier mode to detect groupId for probe purposes.
+     */
+    private _detectGroupIdFromRawStream(inputStream: stream.Readable, ch: ChannelItem): void {
+        const TSMF_PID = 0x2f;
+        const TSMF_SYNC_A = 0x1a86;
+        const TSMF_SYNC_B = 0x0579;
+        let detected = false;
+        let lastCC = -1;
+        let ccSynced = false;
+
+        const onData = (chunk: Buffer) => {
+            if (detected) {
+                return;
+            }
+            for (let i = 0; i <= chunk.length - 188; i += 188) {
+                if (chunk[i] !== 0x47) {
+                    continue;
+                }
+                const pid = ((chunk[i + 1] & 0x1f) << 8) | chunk[i + 2];
+                if (pid !== TSMF_PID) {
+                    continue;
+                }
+                const sync = ((chunk[i + 4] << 8) | chunk[i + 5]) & 0x1fff;
+                if (sync !== TSMF_SYNC_A && sync !== TSMF_SYNC_B) {
+                    continue;
+                }
+                // CC check: skip stale DVR buffer data
+                const cc = chunk[i + 3] & 0x0f;
+                if (!ccSynced) {
+                    if (lastCC >= 0 && cc === ((lastCC + 1) & 0x0f)) {
+                        ccSynced = true;
+                    } else {
+                        lastCC = cc;
+                        continue;
+                    }
+                }
+                const frameType = chunk[i + 6] & 0x0f;
+                if (frameType === 0x02) {
+                    const groupId = chunk[i + 127];
+                    if (groupId !== 255) {
+                        detected = true;
+                        inputStream.removeListener("data", onData);
+                        ch.setTsmfGroupId(groupId);
+                        log.debug("TunerDevice#%d carrier mode detected groupId=%d on %s", this._tunerIndex, groupId, ch.channel);
+                        if (_.service) {
+                            _.service.save();
+                        }
+                    }
+                }
+                return;
+            }
+        };
+        inputStream.on("data", onData);
     }
 
     private _spawnDecoder(): child_process.ChildProcess | null {

@@ -378,7 +378,15 @@ export class Service {
         _.job.add({
             key: `Service.Add.Scan.${scanChannel.type}.${scanChannel.channel}`,
             name: `Service Add Scan ${scanChannel.type}/${scanChannel.channel}`,
-            fn: async () => this._scan(scanChannel, true),
+            fn: async () => {
+                // Re-check at execution time: groupId may have been discovered since queuing.
+                // If this channel now belongs to a group, let the group's first channel handle it.
+                const target = this._getScanTargetChannel(scanChannel);
+                if (target !== scanChannel) {
+                    return;
+                }
+                return this._scan(scanChannel, true);
+            },
             readyFn: () => _.tuner.readyForJob(scanChannel),
             retryOnFail: true,
             retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3), // (12時間 / retryDelay) = 12時間～

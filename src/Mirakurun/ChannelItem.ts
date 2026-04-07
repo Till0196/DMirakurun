@@ -99,13 +99,7 @@ export default class ChannelItem {
         if (other.tsmfGroupId === null || other.tsmfGroupId === undefined) {
             return false;
         }
-        if (this.tsmfRelTs === null || this.tsmfRelTs === undefined) {
-            return false;
-        }
-        if (other.tsmfRelTs === null || other.tsmfRelTs === undefined) {
-            return false;
-        }
-        return this.tsmfGroupId === other.tsmfGroupId && this.tsmfRelTs === other.tsmfRelTs;
+        return this.tsmfGroupId === other.tsmfGroupId;
     }
 
     getStream(user: common.User, output: stream.Writable, tsmfRelTs?: number): Promise<TSFilter> {

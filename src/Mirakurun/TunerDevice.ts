@@ -321,7 +321,7 @@ export default class TunerDevice extends EventEmitter {
 
         // Set up stream pipeline
         if (ch.type === "BS4K") {
-            this._tlvFilter = new TLVFilter(this._index, this._config, () => this._kill(false));
+            this._tlvFilter = new TLVFilter(this._index, this._config, (closing?: boolean) => this._kill(closing ?? false));
             const result = this._tlvFilter.setupPipeline(inputStream, ch, options);
             this._stream = result.outputStream;
         } else {
@@ -401,7 +401,7 @@ export default class TunerDevice extends EventEmitter {
         this._isAvailable = false;
         this._closing = close;
 
-        // Clean up carrier links immediately so additional tuners are released
+        // Release carrier links immediately so additional tuners are freed
         // at the same time as the primary (not delayed by _release timeout)
         if (this._tlvFilter) { this._tlvFilter.cleanup(); }
 
@@ -409,11 +409,6 @@ export default class TunerDevice extends EventEmitter {
 
         await new Promise<void>(resolve => {
             this.once("release", resolve);
-
-            if (this._tlvFilter?.hasDecoderProcess) {
-                this._process?.kill("SIGKILL");
-                return;
-            }
 
             if (/^dvbv5-zap /.test(this._command) === true) {
                 this._process.kill("SIGKILL");
