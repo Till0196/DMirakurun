@@ -384,9 +384,12 @@ export class Tuner {
                             detector.selectStream(targetRelTs);
                             log.debug("TunerDevice#%d TSMF switched to stream %d for serviceId=%d",
                                 device.index, targetRelTs, setting.serviceId);
-                        } else if (mapping.size === 1) {
-                            const onlyRelTs = mapping.keys().next().value;
-                            detector.selectStream(onlyRelTs);
+                        } else if (mapping.size >= 1) {
+                            // Always select a stream after detection so NIT/SDT section
+                            // assembly isn't broken by interleaved data from multiple streams.
+                            // Additional streams are scanned individually by Service._scan.
+                            const firstRelTs = Math.min(...mapping.keys());
+                            detector.selectStream(firstRelTs);
                         }
 
                         _.service.save();
