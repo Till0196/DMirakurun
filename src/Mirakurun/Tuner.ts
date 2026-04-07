@@ -172,16 +172,18 @@ export class Tuner {
 
     async getServices(
         channel: ChannelItem,
-        userOrOptions: Partial<common.User> | { serviceId?: number } = {}
+        userOrOptions: Partial<common.User> | { serviceId?: number; tsmfRelTs?: number } = {}
     ): Promise<apid.Service[]> {
         const serviceId = "serviceId" in userOrOptions ? userOrOptions.serviceId : undefined;
         const user: Partial<common.User> = "id" in userOrOptions || "priority" in userOrOptions
             ? userOrOptions as Partial<common.User>
             : {};
 
-        const tsmfRelTs = serviceId !== undefined && serviceId !== null
-            ? channel.getTsmfRelTs(serviceId)
-            : undefined;
+        const tsmfRelTs = ("tsmfRelTs" in userOrOptions && userOrOptions.tsmfRelTs)
+            ? userOrOptions.tsmfRelTs
+            : (serviceId !== undefined && serviceId !== null
+                ? channel.getTsmfRelTs(serviceId)
+                : undefined);
 
         const tsFilter = await this._initTS({
             id: "Mirakurun:getServices()",
@@ -371,6 +373,22 @@ export class Tuner {
                             device.index, mapping.size,
                             detector.groupId !== null ? String(detector.groupId) : "none",
                             setting.channel.channel);
+
+                        // Switch to filtering the correct stream when a target service is known.
+                        // For scans (no serviceId), keep detect mode to pass all streams through
+                        // so TSFilter can discover services from every multiplexed stream.
+                        const targetRelTs = setting.serviceId
+                            ? setting.channel.getTsmfRelTs(setting.serviceId)
+                            : undefined;
+                        if (targetRelTs) {
+                            detector.selectStream(targetRelTs);
+                            log.debug("TunerDevice#%d TSMF switched to stream %d for serviceId=%d",
+                                device.index, targetRelTs, setting.serviceId);
+                        } else if (mapping.size === 1) {
+                            const onlyRelTs = mapping.keys().next().value;
+                            detector.selectStream(onlyRelTs);
+                        }
+
                         _.service.save();
                     });
                     tsFilter.setSlotFilter(detector);

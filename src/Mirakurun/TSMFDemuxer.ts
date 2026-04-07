@@ -1256,6 +1256,12 @@ export class TSMFSlotFilter extends stream.Transform {
         return this._detectedGroupId;
     }
 
+    /** Switch from detect mode to filtering a specific stream. */
+    selectStream(relTs: number): void {
+        this._detectMode = false;
+        this._targetStream = relTs;
+    }
+
     _transform(chunk: Buffer, _encoding: BufferEncoding, callback: stream.TransformCallback): void {
         let offset = 0;
 

@@ -439,6 +439,7 @@ export class Service {
     private async _scan(channel: ChannelItem, add: boolean): Promise<void> {
         log.info("ChannelItem#'%s' service scan has started", channel.name);
 
+        // First scan: auto-detect TSMF streams and get services from the default stream
         let services: Awaited<ReturnType<typeof _.tuner.getServices>>;
         try {
             services = await _.tuner.getServices(channel);
@@ -447,6 +448,41 @@ export class Service {
             throw new Error("Service scan failed");
         }
 
+        this._applyScannedServices(channel, services, add);
+
+        // For multi-stream TSMF channels, scan each additional stream individually
+        const relTsMap = channel.getRelTsMap();
+        if (relTsMap.size > 1) {
+            const scannedRelTs = new Set<number>();
+            // Mark streams that already have registered services
+            for (const service of services) {
+                const relTs = channel.getTsmfRelTs(service.serviceId);
+                if (relTs !== undefined) {
+                    scannedRelTs.add(relTs);
+                }
+            }
+            for (const relTs of relTsMap.keys()) {
+                if (scannedRelTs.has(relTs)) {
+                    continue;
+                }
+                log.info("ChannelItem#'%s' scanning additional TSMF stream %d", channel.name, relTs);
+                try {
+                    const extraServices = await _.tuner.getServices(channel, { tsmfRelTs: relTs });
+                    this._applyScannedServices(channel, extraServices, add);
+                } catch (e) {
+                    log.warn("ChannelItem#'%s' TSMF stream %d scan failed [%s]", channel.name, relTs, e);
+                }
+            }
+        }
+
+        log.info("ChannelItem#'%s' service scan has finished", channel.name);
+    }
+
+    private _applyScannedServices(
+        channel: ChannelItem,
+        services: Awaited<ReturnType<typeof _.tuner.getServices>>,
+        add: boolean
+    ): void {
         log.debug("ChannelItem#'%s' services: %s", channel.name, JSON.stringify(services, null, "  "));
 
         services.forEach(service => {
@@ -472,8 +508,6 @@ export class Service {
                 );
             }
         });
-
-        log.info("ChannelItem#'%s' service scan has finished", channel.name);
     }
 
     private _getScanTargetChannel(channel: ChannelItem): ChannelItem {

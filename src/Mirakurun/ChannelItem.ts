@@ -82,6 +82,18 @@ export default class ChannelItem {
         return this.tsmfRelTs;
     }
 
+    /** Returns the relTs→serviceIds mapping discovered by TSMF auto-detection. */
+    getRelTsMap(): Map<number, Set<number>> {
+        const map = new Map<number, Set<number>>();
+        for (const [serviceId, relTs] of this._relTsMap) {
+            if (!map.has(relTs)) {
+                map.set(relTs, new Set());
+            }
+            map.get(relTs).add(serviceId);
+        }
+        return map;
+    }
+
     getServices(): ServiceItem[] {
         return _.service.findByChannel(this);
     }
