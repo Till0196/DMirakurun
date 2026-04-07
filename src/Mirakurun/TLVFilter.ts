@@ -8,6 +8,12 @@ import TSMFFilter from "./TSMFFilter";
 import { TsmfCCChecker, getTsmfPacketCC, extractGroupIdFromPacket } from "./TSMFDemuxer";
 import ChannelItem from "./ChannelItem";
 
+// Stream format detection constants
+const TS_SYNC = 0x47;
+const TS_PKT = 188;
+const TLV_SYNC = 0x7f;
+const TLV_VALID_TYPES = new Set([0x01, 0x02, 0x03, 0xfe]);
+
 export interface TLVFilterResult {
     outputStream: stream.Readable;
     isCarrierOnly: boolean;
@@ -61,9 +67,28 @@ export default class TLVFilter {
             return { outputStream: inputStream, isCarrierOnly: true };
         }
 
-        // TSMFFilter + mmtsDecoder
-        // TSMFDemuxer auto-selects TLV stream from stream_type bits if tsmfRelTs is not configured
-        return this._setupTsmfPipeline(inputStream, ch);
+        // Auto-detect stream format (TSMF vs raw TLV) then route to appropriate pipeline
+        const outputStream = new stream.PassThrough();
+
+        inputStream.once("data", (firstChunk: Buffer) => {
+            const format = this._detectStreamFormat(firstChunk);
+            log.info("TunerDevice#%d detected stream format: %s", this._tunerIndex, format);
+
+            // Replay buffered data + forward subsequent data
+            const replayStream = new stream.PassThrough();
+            replayStream.write(firstChunk);
+            inputStream.pipe(replayStream);
+
+            let result: TLVFilterResult;
+            if (format === "raw-tlv") {
+                result = this._setupRawTlvPipeline(replayStream);
+            } else {
+                result = this._setupTsmfPipeline(replayStream, ch);
+            }
+            result.outputStream.pipe(outputStream);
+        });
+
+        return { outputStream, isCarrierOnly: false };
     }
 
     syncPriorities(newPriority: number): void {
@@ -102,6 +127,87 @@ export default class TLVFilter {
     }
 
     // --- Private ---
+
+    /**
+     * Detect whether the input stream is TSMF-wrapped (CATV) or raw TLV (satellite).
+     *
+     * Primary: pattern match (3 consecutive TS sync at 188-byte intervals, or 3 chained TLV packets)
+     * Fallback: first sync byte found (0x47 = TSMF, 0x7F = TLV)
+     * Default: TSMF (existing behavior)
+     */
+    private _detectStreamFormat(buffer: Buffer): "tsmf" | "raw-tlv" {
+        // Primary: TSMF — find 0x47 with 188-byte interval pattern
+        for (let i = 0; i <= buffer.length - TS_PKT * 3; i++) {
+            if (buffer[i] === TS_SYNC &&
+                buffer[i + TS_PKT] === TS_SYNC &&
+                buffer[i + TS_PKT * 2] === TS_SYNC) {
+                return "tsmf";
+            }
+        }
+
+        // Primary: raw TLV — find 3 consecutive valid TLV packets
+        for (let i = 0; i <= buffer.length - 4; i++) {
+            if (buffer[i] !== TLV_SYNC) {
+                continue;
+            }
+            let offset = i;
+            let valid = 0;
+            while (valid < 3 && offset + 4 <= buffer.length) {
+                if (buffer[offset] !== TLV_SYNC) {
+                    break;
+                }
+                const tlvType = buffer[offset + 1];
+                if (!TLV_VALID_TYPES.has(tlvType)) {
+                    break;
+                }
+                const len = (buffer[offset + 2] << 8) | buffer[offset + 3];
+                if (len > 65535 || offset + 4 + len > buffer.length) {
+                    break;
+                }
+                offset += 4 + len;
+                valid++;
+            }
+            if (valid >= 3) {
+                return "raw-tlv";
+            }
+        }
+
+        // Fallback: first recognizable byte
+        for (let i = 0; i < buffer.length; i++) {
+            if (buffer[i] === TS_SYNC) {
+                return "tsmf";
+            }
+            if (buffer[i] === TLV_SYNC) {
+                return "raw-tlv";
+            }
+        }
+
+        // Default to TSMF
+        return "tsmf";
+    }
+
+    /**
+     * Raw TLV pipeline: inputStream → mmtsDecoder → outputStream
+     * Used for direct BS satellite reception where TLV is not wrapped in TSMF.
+     */
+    private _setupRawTlvPipeline(inputStream: stream.Readable): TLVFilterResult {
+        log.info("TunerDevice#%d raw TLV mode (direct satellite reception)", this._tunerIndex);
+
+        const outputStream = new stream.PassThrough();
+        const proc = this._spawnDecoder();
+        if (!proc) {
+            return { outputStream, isCarrierOnly: false };
+        }
+
+        proc.stdout.pipe(outputStream);
+        stream.pipeline(inputStream, proc.stdin, (err) => {
+            if (err && !this._closed) {
+                log.error("TunerDevice#%d raw TLV pipeline error: %s", this._tunerIndex, (err as Error).message);
+            }
+        });
+
+        return { outputStream, isCarrierOnly: false };
+    }
 
     private _setupTsmfPipeline(inputStream: stream.Readable, ch: ChannelItem): TLVFilterResult {
         const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
