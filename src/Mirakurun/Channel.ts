@@ -255,8 +255,8 @@ export class Channel {
             })();
 
             _.job.add({
-                key: `EPG.Gather.MMT.${channel.channel}`,
-                name: `EPG Gather MMT/${channel.channel}`,
+                key: `EPG.Gather.${channel.type}.${channel.channel}`,
+                name: `EPG Gather ${channel.type}/${channel.channel}`,
                 isRerunnable: true,
                 fn: async () => {
                     log.info("Channel#%s EPG gathering has started", channel.name);
