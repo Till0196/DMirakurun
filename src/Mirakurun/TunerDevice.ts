@@ -26,6 +26,7 @@ import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
 import StreamFilter from "./StreamFilter";
+import TSMFFilter from "./TSMFFilter";
 import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
@@ -55,7 +56,7 @@ export default class TunerDevice extends EventEmitter {
     private _command: string = null;
     private _process: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
-    // Note: _tlvFilter removed — TLV handling moved to StreamFilter
+    private _tsmfFilter: TSMFFilter = null;
 
     private _users = new Set<User>();
 
@@ -153,12 +154,7 @@ export default class TunerDevice extends EventEmitter {
     }
 
     get isMultiCarrier(): boolean {
-        for (const user of this._users) {
-            if (user._stream && "isMultiCarrier" in user._stream) {
-                return (user._stream as StreamFilter).isMultiCarrier;
-            }
-        }
-        return false;
+        return this._tsmfFilter !== null && this._tsmfFilter.hasCarriers;
     }
 
     getPriority(): number {
@@ -346,9 +342,44 @@ export default class TunerDevice extends EventEmitter {
             inputStream = this._process.stdout;
         }
 
-        // Raw stream — format detection and filtering is done by StreamFilter
-        // (created in Tuner._initTS and set as user._stream)
-        this._stream = inputStream;
+        // Shared TSMF-TLV bonding pipeline for channels with known groupId
+        if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && !options?.suppressGroupCombine) {
+            this._tsmfFilter = new TSMFFilter(this._index, {
+                tsmfRelTs: ch.tsmfRelTs,
+                groupId: ch.tsmfGroupId
+            }, (closing) => this.killStream(closing));
+
+            const primaryInput = this._tsmfFilter.createInput();
+            this._tsmfFilter.setupCarriers(ch);
+
+            // Writable sink that broadcasts TLV output to all users
+            const broadcastSink = new stream.Writable({
+                highWaterMark: 8 * 1024 * 1024,
+                write: (chunk: Buffer, _encoding: string, callback: () => void) => {
+                    for (const user of this._users) {
+                        user._stream.write(chunk);
+                    }
+                    callback();
+                }
+            });
+
+            this._tsmfFilter.once("ready", () => {
+                this._tsmfFilter.setOutput(broadcastSink);
+            });
+
+            stream.pipeline(inputStream, primaryInput, (err) => {
+                if (err && !this._closing) {
+                    log.error("TunerDevice#%d TSMF pipeline error: %s", this._index, (err as Error).message);
+                }
+            });
+
+            log.info("TunerDevice#%d shared TSMF bonding for groupId=%d on %s", this._index, ch.tsmfGroupId, ch.channel);
+            // Set _stream to a dummy so _streamOnData doesn't receive raw data
+            this._stream = new stream.PassThrough();
+        } else {
+            // Raw stream — format detection and filtering is done by StreamFilter
+            this._stream = inputStream;
+        }
 
         this._process.once("exit", () => {
             this._exited = true;
@@ -397,6 +428,9 @@ export default class TunerDevice extends EventEmitter {
 
     private _syncStreamFilterPriorities(): void {
         const priority = this.getPriority();
+        if (this._tsmfFilter) {
+            this._tsmfFilter.syncPriorities(priority);
+        }
         for (const user of this._users) {
             if (user._stream && "syncPriorities" in user._stream) {
                 (user._stream as StreamFilter).syncPriorities(priority);
@@ -408,6 +442,11 @@ export default class TunerDevice extends EventEmitter {
         this._isAvailable = false;
 
         this._stream.removeAllListeners("data");
+
+        if (this._tsmfFilter) {
+            this._tsmfFilter.close();
+            this._tsmfFilter = null;
+        }
 
         if (this._closing === true) {
             for (const user of this._users) {
@@ -434,6 +473,9 @@ export default class TunerDevice extends EventEmitter {
 
         // Release carrier links immediately so additional tuners are freed
         // at the same time as the primary (not delayed by _release timeout)
+        if (this._tsmfFilter) {
+            this._tsmfFilter.releaseCarriers();
+        }
         for (const user of this._users) {
             if (user._stream && "cleanup" in user._stream) {
                 (user._stream as StreamFilter).cleanup();
@@ -489,6 +531,7 @@ export default class TunerDevice extends EventEmitter {
 
         this._fatalCount = 0;
         this._channel = null;
+        this._tsmfFilter = null;
         this._users.clear();
 
         if (this._isFault === false) {
