@@ -617,6 +617,32 @@ export default class StreamFilter extends EventEmitter {
      * 5. Default: ts
      */
     private _detectStreamFormat(buffer: Buffer): StreamFormat {
+        // TLV check first: TLV payloads can contain 0x47 at 188-byte intervals
+        // that would falsely match TS detection, so TLV must be checked before TS.
+        for (let i = 0; i <= buffer.length - 4; i++) {
+            if (buffer[i] !== TLV_SYNC) {
+                continue;
+            }
+            const tlvType = buffer[i + 1];
+            if (!TLV_VALID_TYPES.has(tlvType)) {
+                continue;
+            }
+            const len = (buffer[i + 2] << 8) | buffer[i + 3];
+            if (len > 65535) {
+                continue;
+            }
+            const next = i + 4 + len;
+            if (next + 4 > buffer.length) {
+                if (len > 0) {
+                    return "tlv";
+                }
+                continue;
+            }
+            if (buffer[next] === TLV_SYNC && TLV_VALID_TYPES.has(buffer[next + 1])) {
+                return "tlv";
+            }
+        }
+
         // Find 3 consecutive TS sync bytes at 188-byte intervals
         let tsStart = -1;
         for (let i = 0; i <= buffer.length - TS_PKT * 3; i++) {
@@ -680,49 +706,9 @@ export default class StreamFilter extends EventEmitter {
 
         }
 
-        // TLV check: find 2 consecutive valid TLV packets that chain correctly.
-        // TLV packets can be large (HEVC frames: hundreds of KB), so 3-packet
-        // chains may not fit in the detection buffer. 2 chained packets with
-        // valid sync+type+length is sufficient to distinguish from random data.
-        for (let i = 0; i <= buffer.length - 4; i++) {
-            if (buffer[i] !== TLV_SYNC) {
-                continue;
-            }
-            const tlvType = buffer[i + 1];
-            if (!TLV_VALID_TYPES.has(tlvType)) {
-                continue;
-            }
-            const len = (buffer[i + 2] << 8) | buffer[i + 3];
-            if (len > 65535) {
-                continue;
-            }
-            const next = i + 4 + len;
-            if (next + 4 > buffer.length) {
-                // First packet valid but can't verify chain — accept if length is plausible
-                if (len > 0) {
-                    return "tlv";
-                }
-                continue;
-            }
-            // Verify next packet starts with TLV sync + valid type
-            if (buffer[next] === TLV_SYNC && TLV_VALID_TYPES.has(buffer[next + 1])) {
-                return "tlv";
-            }
-        }
-
-        // TS was found earlier but no TSMF and no TLV — plain TS
+        // TS was found but no TSMF — plain TS
         if (tsStart >= 0) {
             return "ts";
-        }
-
-        // Fallback: first recognizable byte
-        for (let i = 0; i < buffer.length; i++) {
-            if (buffer[i] === TS_SYNC) {
-                return "ts";
-            }
-            if (buffer[i] === TLV_SYNC) {
-                return "tlv";
-            }
         }
 
         return "ts";
