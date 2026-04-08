@@ -273,6 +273,21 @@ export default class TLVFilter extends EventEmitter {
         }));
         this.emit("networkStreams", channels);
 
+        // Extract carrier bonding info (groupId per frequency/channel)
+        for (const tlvStream of nit.tlvStreams) {
+            for (const desc of tlvStream.descriptors) {
+                if (desc.tag === "channelBondingCableDeliverySystem") {
+                    this.emit("carrierBonding", {
+                        tlvStreamId: tlvStream.tlvStreamId,
+                        carriers: desc.carriers.map(c => ({
+                            frequency: c.frequency,
+                            groupId: c.groupId
+                        }))
+                    });
+                }
+            }
+        }
+
         if (this._remoteControlKeyIdMap != null) {
             return;
         }

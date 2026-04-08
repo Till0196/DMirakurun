@@ -56,6 +56,7 @@ export interface StreamFilterOptions {
     readonly parseEIT?: boolean;
     readonly tsmfRelTs?: number;
     readonly channel: ChannelItem;
+    readonly tunerIndex?: number;      // needed for TSMF multi-carrier bonding
     readonly onFatal?: (closing?: boolean) => void;
 }
 
@@ -375,7 +376,7 @@ export default class StreamFilter extends EventEmitter {
         }
 
         // TSMFFilter wraps TSMFDemuxer for carrier management
-        this._tsmfFilter = new TSMFFilter(0, {
+        this._tsmfFilter = new TSMFFilter(opts.tunerIndex ?? 0, {
             tsmfRelTs: ch.tsmfRelTs,
             groupId: ch.tsmfGroupId ?? undefined
         }, onFatal);
@@ -440,7 +441,7 @@ export default class StreamFilter extends EventEmitter {
     }
 
     private _proxyEvents(filter: EventEmitter): void {
-        const events = ["network", "services", "networkStreams", "epgReady"];
+        const events = ["network", "services", "networkStreams", "epgReady", "carrierBonding"];
         for (const event of events) {
             filter.on(event, (...args: any[]) => this.emit(event, ...args));
         }

@@ -347,7 +347,9 @@ export class Tuner {
                     parseSDT: setting.parseSDT,
                     parseEIT: setting.parseEIT,
                     tsmfRelTs: setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId),
-                    channel: setting.channel
+                    channel: setting.channel,
+                    tunerIndex: device.index,
+                    onFatal: (closing) => device.killStream(closing)
                 });
 
                 Object.defineProperty(user, "streamInfo", {

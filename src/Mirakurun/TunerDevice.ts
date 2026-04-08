@@ -414,6 +414,11 @@ export default class TunerDevice extends EventEmitter {
         this._updated();
     }
 
+    /** Public wrapper for _kill, used by StreamFilter onFatal callback. */
+    killStream(closing = false): void {
+        this._kill(closing).catch(log.error);
+    }
+
     private async _kill(close: boolean): Promise<void> {
         log.debug("TunerDevice#%d kill...", this._index);
 
