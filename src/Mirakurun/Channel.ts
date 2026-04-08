@@ -250,7 +250,7 @@ export class Channel {
         const addMMTEPGJob = (channel, service) => {
             const isMultiCarrier = (() => {
                 const gid = channel.tsmfGroupId;
-                if (gid === null || gid === undefined) return false;
+                if (gid === null || gid === undefined) { return false; }
                 return _.channel.items.filter(ch => ch.tsmfGroupId === gid).length > 1;
             })();
 
@@ -296,7 +296,7 @@ export class Channel {
                         if (isMultiCarrier) {
                             const typeDevices = _.tuner.devices.filter(d => d.types.includes(channel.type));
                             while (true) {
-                                if (typeDevices.every(d => d.isFree)) break;
+                                if (typeDevices.every(d => d.isFree)) { break; }
                                 await common.sleep(3000);
                             }
                         }
@@ -320,6 +320,8 @@ export class Channel {
         }
 
         // MMT: per-channel EPG gathering (MH-EIT is self-stream only)
+        // For multi-carrier groups, only the first channel gathers EPG
+        const seenGroups = new Set<number>();
         for (const channel of _.channel.items) {
             const services = channel.getServices();
             if (services.length === 0) {
@@ -327,6 +329,14 @@ export class Channel {
             }
             if (!MMT_NETWORK_IDS.has(services[0].networkId)) {
                 continue;
+            }
+            // Skip non-primary carriers in bonded groups
+            const gid = channel.tsmfGroupId;
+            if (gid !== null && gid !== undefined) {
+                if (seenGroups.has(gid)) {
+                    continue;
+                }
+                seenGroups.add(gid);
             }
             addMMTEPGJob(channel, services[0]);
         }

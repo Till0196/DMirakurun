@@ -567,10 +567,11 @@ export class Service {
     private _queueBondedScan(groupId: number, groupChannels: ChannelItem[]): void {
         const primaryChannel = groupChannels[0];
         const key = `Service.Add.BondedScan.group${groupId}`;
+        const carrierCount = groupChannels.length;
 
         _.job.add({
             key,
-            name: `Service Add Bonded Scan group${groupId} (${groupChannels.length} carriers)`,
+            name: `Service Add Bonded Scan group${groupId} (${carrierCount} carriers)`,
             fn: async () => this._scan(primaryChannel, true, false),
             readyFn: async () => {
                 // Wait for all initial scan jobs to finish first,
@@ -582,7 +583,7 @@ export class Service {
                 )) {
                     await sleep(3000);
                 }
-                return _.tuner.readyForJob(primaryChannel);
+                return _.tuner.readyForJob(primaryChannel, carrierCount);
             },
             retryOnFail: true,
             retryMax: 3,

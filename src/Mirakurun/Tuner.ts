@@ -49,23 +49,37 @@ export class Tuner {
     }
 
     /**
-     * readyFn
+     * readyFn — wait until `requiredCount` tuners are available for the given channel type.
      */
-    async readyForJob(channel: ChannelItem): Promise<boolean> {
+    async readyForJob(channel: ChannelItem, requiredCount: number = 1): Promise<boolean> {
         const devices = this._getDevicesByType(channel.type);
         if (devices.length === 0) {
             return false;
         }
 
         while (true) {
-            const device = this._pickTunerDevice(devices, channel, -1);
-            if (device && !this._readyForJobPickedDeviceSet.has(device)) {
-                // pick したチューナーを少し保持する
-                this._readyForJobPickedDeviceSet.add(device);
-                setTimeout(() => {
-                    this._readyForJobPickedDeviceSet.delete(device);
-                }, 1000 * 5);
-                return true;
+            // Count free devices (excluding already-picked ones)
+            const freeDevices = devices.filter(d =>
+                d.isFree && !this._readyForJobPickedDeviceSet.has(d)
+            );
+            // Also count devices already tuned to same channel/group (can be joined)
+            const joinableDevices = devices.filter(d =>
+                d.isAvailable && d.channel && !d.isAdditionalCarrier &&
+                (d.channel === channel || d.channel.isSameTsmfGroup(channel)) &&
+                !this._readyForJobPickedDeviceSet.has(d)
+            );
+            const available = freeDevices.length + joinableDevices.length;
+
+            if (available >= requiredCount) {
+                // Pick one device to reserve
+                const device = this._pickTunerDevice(devices, channel, -1);
+                if (device && !this._readyForJobPickedDeviceSet.has(device)) {
+                    this._readyForJobPickedDeviceSet.add(device);
+                    setTimeout(() => {
+                        this._readyForJobPickedDeviceSet.delete(device);
+                    }, 1000 * 5);
+                    return true;
+                }
             }
             await common.sleep(1000 * 10);
         }

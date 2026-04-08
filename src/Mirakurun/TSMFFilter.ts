@@ -8,7 +8,6 @@ import * as apid from "../../api";
 import TSFilter from "./TSFilter";
 import type TunerDevice from "./TunerDevice";
 
-
 interface CarrierLink {
     device: TunerDevice;
     user: common.User & { _stream?: TSFilter };

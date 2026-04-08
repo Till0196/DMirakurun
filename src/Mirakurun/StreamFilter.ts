@@ -364,7 +364,7 @@ export default class StreamFilter extends EventEmitter {
     private _setupTSMF_TLV_full(buffered: Buffer): void {
         const opts = this._options;
         const ch = opts.channel;
-        const onFatal = opts.onFatal || (() => {});
+        const onFatal = opts.onFatal || (() => { /* noop */ });
 
         log.info(
             "StreamFilter TSMF-TLV bonded scan (tsmfRelTs=%d, groupId=%s)",
@@ -458,7 +458,7 @@ export default class StreamFilter extends EventEmitter {
     private _setupTSMF_TLV_deferred(buffered: Buffer): void {
         const opts = this._options;
         const ch = opts.channel;
-        const onFatal = opts.onFatal || (() => {});
+        const onFatal = opts.onFatal || (() => { /* noop */ });
 
         log.info("StreamFilter TSMF-TLV deferred discovery on %s", ch.channel);
 
@@ -485,7 +485,8 @@ export default class StreamFilter extends EventEmitter {
                 this._completeDeferredPipeline();
             } else {
                 // Multi-carrier: emit discovery and let caller handle bonded scan
-                this.emit("discovery", { groupId, numberOfCarriers } as DiscoveryResult);
+                const discovery: DiscoveryResult = { groupId, numberOfCarriers };
+                this.emit("discovery", discovery);
             }
         });
 
