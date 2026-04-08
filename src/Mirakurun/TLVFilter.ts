@@ -96,6 +96,10 @@ export default class TLVFilter extends EventEmitter {
     private _epgReady = false;
     private _epgState: { [networkId: number]: { [serviceId: number]: BasicExtState } } = {};
 
+    // stream info
+    private _trackStreamInfo = false;
+    private _tlvParseBuf: Buffer = null;
+
     // state
     private _closed = false;
     private _ready = true;
@@ -180,22 +184,9 @@ export default class TLVFilter extends EventEmitter {
         this._reader.addEventListener("tot", (e) => this._onTOT(e.table));
         this._reader.addEventListener("cdt", (e) => this._onCDT(e.table));
 
-        // Stream quality tracking: per MMTP packetId (only when output exists)
+        // Stream quality tracking (only when output exists, matching TSFilter)
         if (options.output) {
-            this._reader.addEventListener("mpu", (e) => {
-                const pid = String(e.mmtHeader.packetId);
-                if (this.streamInfo[pid] === undefined) {
-                    this.streamInfo[pid] = { packet: 0, drop: 0 };
-                }
-                ++this.streamInfo[pid].packet;
-            });
-            this._reader.addEventListener("mmtDiscontinuity", (e) => {
-                const pid = String(e.packetId);
-                if (this.streamInfo[pid] === undefined) {
-                    this.streamInfo[pid] = { packet: 0, drop: 0 };
-                }
-                ++this.streamInfo[pid].drop;
-            });
+            this._trackStreamInfo = true;
         }
 
         this.once("end", this._close.bind(this));
@@ -218,6 +209,9 @@ export default class TLVFilter extends EventEmitter {
         if (this._closed) {
             return;
         }
+        if (this._trackStreamInfo) {
+            this._countTLVPackets(chunk);
+        }
         this._reader.push(chunk);
         if (this._ready && this._output) {
             this._output.write(chunk);
@@ -230,6 +224,36 @@ export default class TLVFilter extends EventEmitter {
 
     close(): void {
         this._close();
+    }
+
+    /** Count TLV packets per type for streamInfo. */
+    private _countTLVPackets(chunk: Buffer): void {
+        const buf = this._tlvParseBuf ? Buffer.concat([this._tlvParseBuf, chunk]) : chunk;
+        this._tlvParseBuf = null;
+        let pos = 0;
+
+        while (pos + 4 <= buf.length) {
+            if (buf[pos] !== 0x7f) {
+                ++pos;
+                continue;
+            }
+            const type = buf[pos + 1];
+            const len = (buf[pos + 2] << 8) | buf[pos + 3];
+            const pktEnd = pos + 4 + len;
+            if (pktEnd > buf.length) {
+                this._tlvParseBuf = buf.subarray(pos);
+                return;
+            }
+            const key = String(type);
+            if (this.streamInfo[key] === undefined) {
+                this.streamInfo[key] = { packet: 0, drop: 0 };
+            }
+            ++this.streamInfo[key].packet;
+            pos = pktEnd;
+        }
+        if (pos < buf.length) {
+            this._tlvParseBuf = buf.subarray(pos);
+        }
     }
 
     // --- SI event handlers ---
