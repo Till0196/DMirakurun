@@ -314,17 +314,32 @@ export default class TunerDevice extends EventEmitter {
             cmd = this._config.command;
         }
 
+        // For multi-carrier groups, always tune to the primary channel
+        // (first channel in group by config order). Other carriers are added
+        // by TSMFFilter.setupCarriers().
+        let tuneCh = ch;
+        if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && !options?.suppressGroupCombine) {
+            const groupChannels = _.channel.items.filter(item =>
+                item.tsmfGroupId === ch.tsmfGroupId
+            );
+            if (groupChannels.length > 0 && groupChannels[0].channel !== ch.channel) {
+                tuneCh = groupChannels[0];
+                log.info("TunerDevice#%d tuning to primary %s instead of %s for groupId=%d",
+                    this._index, tuneCh.channel, ch.channel, ch.tsmfGroupId);
+            }
+        }
+
         cmd = common.replaceCommandTemplate(cmd, {
-            channel: ch.channel,
-            satelite: ch.commandVars?.satellite || "", // deprecated, for backward compatibility
+            channel: tuneCh.channel,
+            satelite: tuneCh.commandVars?.satellite || "", // deprecated, for backward compatibility
             space: 0, // default value for backward compatibility
-            ...ch.commandVars
+            ...tuneCh.commandVars
         });
 
         const parsed = common.parseCommandForSpawn(cmd);
         this._process = child_process.spawn(parsed.command, parsed.args);
         this._command = cmd;
-        this._channel = ch;
+        this._channel = tuneCh;
 
         // Determine input stream source
         let inputStream: stream.Readable;
@@ -353,14 +368,14 @@ export default class TunerDevice extends EventEmitter {
         }
 
         // Shared TSMF-TLV bonding pipeline for channels with known groupId
-        if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && !options?.suppressGroupCombine) {
+        if (tuneCh.tsmfGroupId !== null && tuneCh.tsmfGroupId !== undefined && !options?.suppressGroupCombine) {
             this._tsmfFilter = new TSMFFilter(this._index, {
-                tsmfRelTs: ch.tsmfRelTs,
-                groupId: ch.tsmfGroupId
+                tsmfRelTs: tuneCh.tsmfRelTs,
+                groupId: tuneCh.tsmfGroupId
             }, (closing) => this.killStream(closing));
 
             const primaryInput = this._tsmfFilter.createInput();
-            this._tsmfFilter.setupCarriers(ch);
+            this._tsmfFilter.setupCarriers(tuneCh);
 
             // Writable sink that broadcasts TLV output to all users
             const broadcastSink = new stream.Writable({
