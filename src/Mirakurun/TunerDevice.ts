@@ -523,11 +523,22 @@ export default class TunerDevice extends EventEmitter {
         this._stream = null;
 
         if (this._closing === false && this._users.size !== 0) {
-            log.warn("TunerDevice#%d respawning because request has not closed", this._index);
-            ++status.errorCount.tunerDeviceRespawn;
+            // Remove users whose streams are already closed (e.g. HTTP client disconnected)
+            for (const user of this._users) {
+                if (user._stream && "closed" in user._stream && (user._stream as StreamFilter).closed) {
+                    this._users.delete(user);
+                }
+            }
+            if (this._users.size === 0) {
+                // All users gone after cleanup — release normally
+            } else {
+                log.warn("TunerDevice#%d respawning because request has not closed", this._index);
+                ++status.errorCount.tunerDeviceRespawn;
 
-            this._spawn(this._channel);
-            return;
+                this._isAvailable = true;
+                this._spawn(this._channel);
+                return;
+            }
         }
 
         this._fatalCount = 0;
