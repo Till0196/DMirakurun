@@ -219,12 +219,11 @@ export default class StreamFilter extends EventEmitter {
             }
         });
         // Proxy streamInfo
-        if ("streamInfo" in filter) {
-            Object.defineProperty(this, "streamInfo", {
-                get: () => (filter as any).streamInfo,
-                configurable: true
-            });
-        }
+        const inner = filter as TSFilter | TLVFilter;
+        Object.defineProperty(this, "streamInfo", {
+            get: () => inner.streamInfo,
+            configurable: true
+        });
     }
 
     /**

@@ -355,7 +355,7 @@ export class Tuner {
                 });
 
                 try {
-                    await device.startStream(user, streamFilter as any, setting.channel);
+                    await device.startStream(user, streamFilter, setting.channel);
                     return streamFilter;
                 } catch (err) {
                     streamFilter.end();

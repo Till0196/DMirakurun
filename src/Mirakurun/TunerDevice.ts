@@ -185,7 +185,7 @@ export default class TunerDevice extends EventEmitter {
         await this._kill(true);
     }
 
-    async startStream(user: User, stream: TSFilter, channel?: ChannelItem, options?: StartStreamOptions): Promise<void> {
+    async startStream(user: User, stream: TSFilter | StreamFilter, channel?: ChannelItem, options?: StartStreamOptions): Promise<void> {
         log.debug("TunerDevice#%d start stream for user `%s` (priority=%d)...", this._index, user.id, user.priority);
 
         if (this._isAvailable === false) {

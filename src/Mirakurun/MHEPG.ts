@@ -311,27 +311,43 @@ export default class MHEPG {
 
                         break;
 
-                    case "mhEventGroup":
+                    case "mhEventGroup": {
                         if (!isOutOfDateLv2(eit, state.group.version, d.groupType)) {
                             break;
                         }
                         state.group.version[eit.tableIdNumber][d.groupType] = eit.versionNumber;
 
-                        state.group._groups[d.groupType] = d.events.map(event => ({
-                            type: (
-                                d.groupType === 1 ? "shared" :
-                                    (d.groupType === 2 || d.groupType === 4) ? "relay" : "movement"
-                            ) as apid.ProgramRelatedItem["type"],
-                            networkId: "originalNetworkId" in event ? (event as any).originalNetworkId as number : eit.originalNetworkId,
+                        const relType: apid.ProgramRelatedItem["type"] =
+                            d.groupType === 1 ? "shared" :
+                                (d.groupType === 2 || d.groupType === 4) ? "relay" : "movement";
+
+                        const relItems: apid.ProgramRelatedItem[] = d.events.map(event => ({
+                            type: relType,
+                            networkId: eit.originalNetworkId,
                             serviceId: event.serviceId,
                             eventId: event.eventId
                         }));
+
+                        // groupType 4/5 have otherNetworkEvents with originalNetworkId
+                        if ("otherNetworkEvents" in d) {
+                            for (const other of d.otherNetworkEvents) {
+                                relItems.push({
+                                    type: relType,
+                                    networkId: other.originalNetworkId,
+                                    serviceId: other.serviceId,
+                                    eventId: other.eventId
+                                });
+                            }
+                        }
+
+                        state.group._groups[d.groupType] = relItems;
 
                         _.program.set(state.programId, {
                             relatedItems: state.group._groups.flat()
                         });
 
                         break;
+                    }
                 }
             }
         }
