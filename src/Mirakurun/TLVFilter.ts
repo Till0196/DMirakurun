@@ -277,6 +277,9 @@ export default class TLVFilter extends EventEmitter {
         for (const tlvStream of nit.tlvStreams) {
             for (const desc of tlvStream.descriptors) {
                 if (desc.tag === "channelBondingCableDeliverySystem") {
+                    log.debug("TLVFilter#_onNIT: carrierBonding tsid=%d carriers=%s",
+                        tlvStream.tlvStreamId,
+                        JSON.stringify(desc.carriers.map(c => ({ freq: c.frequency, gid: c.groupId }))));
                     this.emit("carrierBonding", {
                         tlvStreamId: tlvStream.tlvStreamId,
                         carriers: desc.carriers.map(c => ({
