@@ -991,6 +991,7 @@ export default class TSMFDemuxer extends EventEmitter {
         }
 
         if (!this._output || this._output.destroyed || (this._output as any).writableEnded) {
+            this._buffer.length = 0;
             if (this._output) {
                 this._sinkClosed = true;
             }

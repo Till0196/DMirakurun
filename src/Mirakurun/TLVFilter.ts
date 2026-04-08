@@ -213,7 +213,9 @@ export default class TLVFilter extends EventEmitter {
         if (this._closed) {
             return;
         }
-        this._countTLVPackets(chunk);
+        if (this._output) {
+            this._countTLVPackets(chunk);
+        }
         this._reader.push(chunk);
         if (this._ready && this._output) {
             this._output.write(chunk);

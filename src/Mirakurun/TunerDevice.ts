@@ -373,10 +373,11 @@ export default class TunerDevice extends EventEmitter {
                 }
             });
 
-            // setOutput immediately so TLV buffer is not discarded during offset detection.
-            // TSMFDemuxer gates output internally until ready; pre-ready data helps
-            // dantto4k accumulate enough ECM packets before TSDecoder's 1.5s timeout.
-            this._tsmfFilter.setOutput(broadcastSink);
+            // Set output after ready to avoid flushing accumulated TLV buffer
+            // in one synchronous burst (would block event loop → DVR overflow).
+            this._tsmfFilter.once("ready", () => {
+                this._tsmfFilter.setOutput(broadcastSink);
+            });
 
             stream.pipeline(inputStream, primaryInput, (err) => {
                 if (err && !this._closing) {
