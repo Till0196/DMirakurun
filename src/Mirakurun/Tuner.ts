@@ -23,7 +23,7 @@ import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
 import StreamFilter from "./StreamFilter";
-import { TSMFSlotFilter } from "./TSMFDemuxer";
+// TSMFSlotFilter is now used internally by StreamFilter
 
 export class Tuner {
     private _devices: TunerDevice[] = [];

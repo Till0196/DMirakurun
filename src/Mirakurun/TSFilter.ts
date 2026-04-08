@@ -725,8 +725,9 @@ export default class TSFilter extends EventEmitter {
         const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
         const logoType: number = dataModule.logo_type;
 
-        // Accept logo_type 0x05 (64x36) and 0x07 (256x144)
-        if (logoType !== 0x05 && logoType !== 0x07) {
+        // Accept logo_type 0x05 (64x36) only — 0x07 (256x144) is TLV/MMT-specific
+        // and handled by TLVFilter._onCDT
+        if (logoType !== 0x05) {
             return;
         }
 
@@ -821,8 +822,7 @@ export default class TSFilter extends EventEmitter {
         logoData.savedLogoType = logoType;
 
         // logo_type 0x05 uses fixed CLUT, needs TsLogo.decode to add PLTE/tRNS chunks
-        // logo_type 0x06/0x07 already contains PLTE chunk, use as-is
-        const pngData = logoType === 0x05 ? TsLogo.decode(combinedData) : combinedData;
+        const pngData = TsLogo.decode(combinedData);
         Service.saveLogoData(networkId, logoId, pngData);
     }
 

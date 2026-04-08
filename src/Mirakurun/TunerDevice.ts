@@ -144,12 +144,20 @@ export default class TunerDevice extends EventEmitter {
     }
 
     get isCarrierOnly(): boolean {
-        // TODO: will be managed by StreamFilter in TSMF integration
+        for (const user of this._users) {
+            if (user._stream && "isCarrierOnly" in user._stream) {
+                return (user._stream as StreamFilter).isCarrierOnly;
+            }
+        }
         return false;
     }
 
     get isMultiCarrier(): boolean {
-        // TODO: will be managed by StreamFilter in TSMF integration
+        for (const user of this._users) {
+            if (user._stream && "isMultiCarrier" in user._stream) {
+                return (user._stream as StreamFilter).isMultiCarrier;
+            }
+        }
         return false;
     }
 
@@ -220,7 +228,7 @@ export default class TunerDevice extends EventEmitter {
 
         user._stream = stream;
         this._users.add(user);
-        // TODO: syncPriorities for TSMF carriers via StreamFilter
+        this._syncStreamFilterPriorities();
         if (stream.closed === true) {
             this.endStream(user);
         } else {
@@ -235,7 +243,7 @@ export default class TunerDevice extends EventEmitter {
 
         user._stream.end();
         this._users.delete(user);
-        // TODO: syncPriorities for TSMF carriers via StreamFilter
+        this._syncStreamFilterPriorities();
 
         if (this._users.size === 0) {
             if (immediate) {
@@ -382,6 +390,15 @@ export default class TunerDevice extends EventEmitter {
         }
     }
 
+    private _syncStreamFilterPriorities(): void {
+        const priority = this.getPriority();
+        for (const user of this._users) {
+            if (user._stream && "syncPriorities" in user._stream) {
+                (user._stream as StreamFilter).syncPriorities(priority);
+            }
+        }
+    }
+
     private _end(): void {
         this._isAvailable = false;
 
@@ -412,7 +429,11 @@ export default class TunerDevice extends EventEmitter {
 
         // Release carrier links immediately so additional tuners are freed
         // at the same time as the primary (not delayed by _release timeout)
-        // TODO: cleanup TSMF carriers via StreamFilter
+        for (const user of this._users) {
+            if (user._stream && "cleanup" in user._stream) {
+                (user._stream as StreamFilter).cleanup();
+            }
+        }
 
         this._updated();
 
@@ -443,7 +464,11 @@ export default class TunerDevice extends EventEmitter {
             this._stream.removeAllListeners();
         }
 
-        // TODO: forceKillDecoder via StreamFilter
+        for (const user of this._users) {
+            if (user._stream && "forceKillDecoder" in user._stream) {
+                (user._stream as StreamFilter).forceKillDecoder();
+            }
+        }
 
         this._command = null;
         this._process = null;
