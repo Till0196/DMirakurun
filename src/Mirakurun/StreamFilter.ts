@@ -62,7 +62,7 @@ export interface StreamFilterOptions {
     readonly tsmfRelTs?: number;
     readonly channel: ChannelItem;
     readonly tunerIndex?: number;      // needed for TSMF multi-carrier bonding
-    readonly onFatal?: (closing?: boolean) => void;
+    readonly onFatal: (closing?: boolean) => void;
     readonly tsmfDiscovery?: boolean;   // deferred pipeline: detect groupId then branch
 }
 
@@ -364,7 +364,7 @@ export default class StreamFilter extends EventEmitter {
     private _setupTSMF_TLV_full(buffered: Buffer): void {
         const opts = this._options;
         const ch = opts.channel;
-        const onFatal = opts.onFatal || (() => { });
+        const onFatal = opts.onFatal;
 
         log.info(
             "StreamFilter TSMF-TLV bonded scan (tsmfRelTs=%d, groupId=%s)",
@@ -458,7 +458,7 @@ export default class StreamFilter extends EventEmitter {
     private _setupTSMF_TLV_deferred(buffered: Buffer): void {
         const opts = this._options;
         const ch = opts.channel;
-        const onFatal = opts.onFatal || (() => { });
+        const onFatal = opts.onFatal;
 
         log.info("StreamFilter TSMF-TLV deferred discovery on %s", ch.channel);
 
