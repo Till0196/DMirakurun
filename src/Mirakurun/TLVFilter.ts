@@ -67,16 +67,31 @@ export default class TLVFilter {
             return { outputStream: inputStream, isCarrierOnly: true };
         }
 
-        // Auto-detect stream format (TSMF vs raw TLV) then route to appropriate pipeline
+        // Auto-detect stream format (TSMF vs raw TLV) then route to appropriate pipeline.
+        // Buffer enough data for reliable detection — initial bytes may be stale/scrambled.
         const outputStream = new stream.PassThrough();
+        const DETECT_MIN_BYTES = 8192;
+        const detectChunks: Buffer[] = [];
+        let detectLen = 0;
+        let detected = false;
 
-        inputStream.once("data", (firstChunk: Buffer) => {
-            const format = this._detectStreamFormat(firstChunk);
-            log.info("TunerDevice#%d detected stream format: %s", this._tunerIndex, format);
+        const onDetectData = (chunk: Buffer) => {
+            detectChunks.push(chunk);
+            detectLen += chunk.length;
 
-            // Replay buffered data + forward subsequent data
+            if (detectLen < DETECT_MIN_BYTES) {
+                return;
+            }
+            detected = true;
+            inputStream.removeListener("data", onDetectData);
+
+            const detectBuf = Buffer.concat(detectChunks);
+            const format = this._detectStreamFormat(detectBuf);
+            log.info("TunerDevice#%d detected stream format: %s (%d bytes inspected)",
+                this._tunerIndex, format, detectBuf.length);
+
             const replayStream = new stream.PassThrough();
-            replayStream.write(firstChunk);
+            replayStream.write(detectBuf);
             inputStream.pipe(replayStream);
 
             let result: TLVFilterResult;
@@ -86,6 +101,29 @@ export default class TLVFilter {
                 result = this._setupTsmfPipeline(replayStream, ch);
             }
             result.outputStream.pipe(outputStream);
+        };
+
+        inputStream.on("data", onDetectData);
+
+        inputStream.once("end", () => {
+            if (!detected && detectLen > 0) {
+                inputStream.removeListener("data", onDetectData);
+                const detectBuf = Buffer.concat(detectChunks);
+                const format = this._detectStreamFormat(detectBuf);
+                log.info("TunerDevice#%d detected stream format: %s (early end, %d bytes)",
+                    this._tunerIndex, format, detectBuf.length);
+
+                const replayStream = new stream.PassThrough();
+                replayStream.end(detectBuf);
+
+                let result: TLVFilterResult;
+                if (format === "raw-tlv") {
+                    result = this._setupRawTlvPipeline(replayStream);
+                } else {
+                    result = this._setupTsmfPipeline(replayStream, ch);
+                }
+                result.outputStream.pipe(outputStream);
+            }
         });
 
         return { outputStream, isCarrierOnly: false };
