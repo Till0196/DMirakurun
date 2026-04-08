@@ -674,29 +674,32 @@ export default class StreamFilter extends EventEmitter {
 
         }
 
-        // TLV check: 3 consecutive valid TLV packets (before falling back to TS)
+        // TLV check: find 2 consecutive valid TLV packets that chain correctly.
+        // TLV packets can be large (HEVC frames: hundreds of KB), so 3-packet
+        // chains may not fit in the detection buffer. 2 chained packets with
+        // valid sync+type+length is sufficient to distinguish from random data.
         for (let i = 0; i <= buffer.length - 4; i++) {
             if (buffer[i] !== TLV_SYNC) {
                 continue;
             }
-            let offset = i;
-            let valid = 0;
-            while (valid < 3 && offset + 4 <= buffer.length) {
-                if (buffer[offset] !== TLV_SYNC) {
-                    break;
-                }
-                const tlvType = buffer[offset + 1];
-                if (!TLV_VALID_TYPES.has(tlvType)) {
-                    break;
-                }
-                const len = (buffer[offset + 2] << 8) | buffer[offset + 3];
-                if (len > 65535 || offset + 4 + len > buffer.length) {
-                    break;
-                }
-                offset += 4 + len;
-                valid++;
+            const tlvType = buffer[i + 1];
+            if (!TLV_VALID_TYPES.has(tlvType)) {
+                continue;
             }
-            if (valid >= 3) {
+            const len = (buffer[i + 2] << 8) | buffer[i + 3];
+            if (len > 65535) {
+                continue;
+            }
+            const next = i + 4 + len;
+            if (next + 4 > buffer.length) {
+                // First packet valid but can't verify chain — accept if length is plausible
+                if (len > 0) {
+                    return "tlv";
+                }
+                continue;
+            }
+            // Verify next packet starts with TLV sync + valid type
+            if (buffer[next] === TLV_SYNC && TLV_VALID_TYPES.has(buffer[next + 1])) {
                 return "tlv";
             }
         }
