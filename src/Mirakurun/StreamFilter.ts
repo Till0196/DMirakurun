@@ -23,7 +23,7 @@ import TSFilter from "./TSFilter";
 import TLVFilter from "./TLVFilter";
 import TSDecoder from "./TSDecoder";
 import TSMFFilter from "./TSMFFilter";
-import { TSMFSlotFilter } from "./TSMFDemuxer";
+import { TSMFSlotFilter, TsmfCCChecker } from "./TSMFDemuxer";
 import ChannelItem from "./ChannelItem";
 
 // Stream format detection constants
@@ -480,7 +480,11 @@ export default class StreamFilter extends EventEmitter {
         }
 
         if (tsStart >= 0) {
-            // Check if any packet is TSMF header (PID=0x2F with TSMF sync pattern)
+            // Check for TSMF headers with CC continuity check to skip stale DVR buffer data.
+            // After retune, the first TSMF frames may be from the previous channel.
+            const ccChecker = new TsmfCCChecker();
+            let tsmfDetected = false;
+
             for (let offset = tsStart; offset + TS_PKT <= buffer.length; offset += TS_PKT) {
                 if (buffer[offset] !== TS_SYNC) {
                     break;
@@ -489,22 +493,46 @@ export default class StreamFilter extends EventEmitter {
                 if (pid !== TSMF_PID) {
                     continue;
                 }
-                // Check TSMF sync pattern in payload
                 const sync = ((buffer[offset + 4] << 8) | buffer[offset + 5]) & 0x1fff;
                 if (sync !== TSMF_SYNC_A && sync !== TSMF_SYNC_B) {
                     continue;
                 }
-                // TSMF detected — determine TS or TLV multiplexing.
-                // Note: stream_type bits are unreliable on some CATV systems (all set to 1/TS
-                // even for TLV streams). Use channel type as the primary indicator.
-                if (this._options.channel.type === "BS4K") {
+                // CC check: skip stale frames from previous channel
+                const cc = buffer[offset + 3] & 0x0f;
+                if (!ccChecker.check(cc)) {
+                    continue;
+                }
+                // CC-synced TSMF frame — this is from the current channel.
+                // Check slot map to determine if content is TLV or TS.
+                // Parse the first few slot assignments and check PID of data packets.
+                tsmfDetected = true;
+
+                // Look at actual data following this TSMF header to determine content type.
+                // TLV data packets use PID=0x2D, TS data uses other PIDs.
+                const slotStart = offset + TS_PKT; // first data slot after TSMF header
+                let hasTlvPid = false;
+                for (let s = 0; s < 10 && slotStart + s * TS_PKT + TS_PKT <= buffer.length; s++) {
+                    const slotOffset = slotStart + s * TS_PKT;
+                    if (buffer[slotOffset] !== TS_SYNC) {
+                        break;
+                    }
+                    const slotPid = ((buffer[slotOffset + 1] & 0x1f) << 8) | buffer[slotOffset + 2];
+                    if (slotPid === 0x2d) { // TLV_PID
+                        hasTlvPid = true;
+                        break;
+                    }
+                }
+
+                if (hasTlvPid) {
                     return "tsmf-tlv";
                 }
                 return "tsmf-ts";
             }
 
-            // No TSMF header found — plain TS
-            return "ts";
+            if (!tsmfDetected) {
+                // TS packets found but no valid TSMF header — plain TS
+                return "ts";
+            }
         }
 
         // TLV check: 3 consecutive valid TLV packets
