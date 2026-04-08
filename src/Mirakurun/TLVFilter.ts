@@ -180,31 +180,21 @@ export default class TLVFilter extends EventEmitter {
         this._reader.addEventListener("tot", (e) => this._onTOT(e.table));
         this._reader.addEventListener("cdt", (e) => this._onCDT(e.table));
 
-        // Stream quality tracking: per MMTP packetId (only when output exists = not EPG-only)
+        // Stream quality tracking: per MMTP packetId (only when output exists)
         if (options.output) {
-            this._reader.addEventListener("mpt", (e) => {
-                for (const asset of e.table.assets) {
-                    for (const loc of asset.locations) {
-                        if (loc.locationType === "sameDataFlow") {
-                            const pid = String(loc.packetId);
-                            if (this.streamInfo[pid] === undefined) {
-                                this.streamInfo[pid] = { packet: 0, drop: 0 };
-                            }
-                        }
-                    }
-                }
-            });
             this._reader.addEventListener("mpu", (e) => {
                 const pid = String(e.mmtHeader.packetId);
-                if (this.streamInfo[pid] !== undefined) {
-                    ++this.streamInfo[pid].packet;
+                if (this.streamInfo[pid] === undefined) {
+                    this.streamInfo[pid] = { packet: 0, drop: 0 };
                 }
+                ++this.streamInfo[pid].packet;
             });
             this._reader.addEventListener("mmtDiscontinuity", (e) => {
                 const pid = String(e.packetId);
-                if (this.streamInfo[pid] !== undefined) {
-                    ++this.streamInfo[pid].drop;
+                if (this.streamInfo[pid] === undefined) {
+                    this.streamInfo[pid] = { packet: 0, drop: 0 };
                 }
+                ++this.streamInfo[pid].drop;
             });
         }
 
