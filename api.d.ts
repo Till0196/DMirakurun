@@ -80,6 +80,8 @@ export interface Program {
         resolution: ProgramVideoResolution;
         streamContent: number;
         componentType: number;
+        frameRate?: ProgramVideoFrameRate;
+        transferCharacteristics?: ProgramVideoTransferCharacteristics;
     }
     audios?: ProgramAudio[];
 
@@ -110,6 +112,29 @@ export type ProgramVideoResolution = (
     "1080p" |
     "2160p" |
     "4320p"
+);
+
+/** ARIB STD-B60 Table 7-50 video_frame_rate */
+export type ProgramVideoFrameRate = (
+    "23.976" |
+    "24" |
+    "25" |
+    "29.97" |
+    "30" |
+    "50" |
+    "59.94" |
+    "60" |
+    "119.88" |
+    "120"
+);
+
+/** ARIB STD-B60 Table 7-51 video_transfer_characteristics */
+export type ProgramVideoTransferCharacteristics = (
+    "bt709" |
+    "iec61966" |
+    "bt2020" |
+    "bt2100-pq" |
+    "bt2100-hlg"
 );
 
 export interface ProgramAudio {

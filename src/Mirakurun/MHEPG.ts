@@ -26,13 +26,59 @@ function decodeUTF8(buffer: Uint8Array): string {
     return textDecoder.decode(buffer, { stream: false });
 }
 
-const VIDEO_RESOLUTION: Record<number, apid.ProgramVideoResolution> = {
+// ARIB STD-B60 Table 7-48 video_resolution (progressive variants; interlaced resolved via videoScanFlag)
+const VIDEO_RESOLUTION_P: Record<number, apid.ProgramVideoResolution> = {
+    0: "240p",
+    1: "480p",
+    2: "480p",
+    3: "720p",
+    4: "720p",
     5: "1080p",
     6: "2160p",
     7: "4320p"
 };
+const VIDEO_RESOLUTION_I: Record<number, apid.ProgramVideoResolution> = {
+    0: "240p",
+    1: "480i",
+    2: "480i",
+    3: "720p",
+    4: "720p",
+    5: "1080i",
+    6: "2160p",
+    7: "4320p"
+};
+
+// ARIB STD-B60 Table 7-50 video_frame_rate
+const VIDEO_FRAME_RATE: Record<number, apid.ProgramVideoFrameRate> = {
+    1: "23.976",
+    2: "24",
+    3: "25",
+    4: "29.97",
+    5: "29.97",
+    6: "30",
+    7: "50",
+    8: "59.94",
+    9: "60",
+    10: "119.88",
+    11: "119.88",
+    12: "120"
+};
+
+// ARIB STD-B60 Table 7-51 video_transfer_characteristics
+const VIDEO_TRANSFER_CHARACTERISTICS: Record<number, apid.ProgramVideoTransferCharacteristics> = {
+    1: "bt709",
+    2: "iec61966",
+    3: "bt2020",
+    4: "bt2100-pq",
+    5: "bt2100-hlg"
+};
 
 const SAMPLING_RATE: Record<number, apid.ProgramAudioSamplingRate> = {
+    1: 16000,
+    2: 22050,
+    3: 24000,
+    5: 32000,
+    6: 44100,
     7: 48000
 };
 
@@ -231,12 +277,15 @@ export default class MHEPG {
                         }
                         state.component.version[eit.tableIdNumber] = eit.versionNumber;
 
+                        const resolutionMap = d.videoScanFlag ? VIDEO_RESOLUTION_P : VIDEO_RESOLUTION_I;
                         _.program.set(state.programId, {
                             video: {
-                                type: null,
-                                resolution: VIDEO_RESOLUTION[d.videoResolution] || null,
-                                streamContent: null,
-                                componentType: null
+                                type: "h.265",
+                                resolution: resolutionMap[d.videoResolution] || null,
+                                streamContent: 0x09,
+                                componentType: d.componentTag,
+                                frameRate: VIDEO_FRAME_RATE[d.videoFrameRate] || undefined,
+                                transferCharacteristics: VIDEO_TRANSFER_CHARACTERISTICS[d.videoTransferCharacteristics] || undefined
                             }
                         });
 
