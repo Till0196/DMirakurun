@@ -672,13 +672,9 @@ export default class StreamFilter extends EventEmitter {
                 return "tsmf-ts";
             }
 
-            if (!tsmfDetected) {
-                // TS packets found but no valid TSMF header — plain TS
-                return "ts";
-            }
         }
 
-        // TLV check: 3 consecutive valid TLV packets
+        // TLV check: 3 consecutive valid TLV packets (before falling back to TS)
         for (let i = 0; i <= buffer.length - 4; i++) {
             if (buffer[i] !== TLV_SYNC) {
                 continue;
@@ -703,6 +699,11 @@ export default class StreamFilter extends EventEmitter {
             if (valid >= 3) {
                 return "tlv";
             }
+        }
+
+        // TS was found earlier but no TSMF and no TLV — plain TS
+        if (tsStart >= 0) {
+            return "ts";
         }
 
         // Fallback: first recognizable byte
