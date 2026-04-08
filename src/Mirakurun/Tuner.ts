@@ -22,7 +22,7 @@ import TunerDevice, { TunerDeviceStatus } from "./TunerDevice";
 import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
-import TSDecoder from "./TSDecoder";
+import StreamFilter from "./StreamFilter";
 import { TSMFSlotFilter } from "./TSMFDemuxer";
 
 export class Tuner {
@@ -82,7 +82,7 @@ export class Tuner {
         return false;
     }
 
-    initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable, tsmfRelTs?: number): Promise<TSFilter> {
+    initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable, tsmfRelTs?: number): Promise<StreamFilter | TSFilter> {
         let networkId: number;
 
         const services = channel.getServices();
@@ -101,7 +101,7 @@ export class Tuner {
         }, output);
     }
 
-    initServiceStream(service: ServiceItem, userReq: common.UserRequest, output: Writable): Promise<TSFilter> {
+    initServiceStream(service: ServiceItem, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
         return this._initTS({
             ...userReq,
             streamSetting: {
@@ -113,7 +113,7 @@ export class Tuner {
         }, output);
     }
 
-    initProgramStream(program: apid.Program, userReq: common.UserRequest, output: Writable): Promise<TSFilter> {
+    initProgramStream(program: apid.Program, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
         return this._initTS({
             ...userReq,
             streamSetting: {
@@ -304,7 +304,7 @@ export class Tuner {
         return this;
     }
 
-    private async _initTS(user: common.User, dest?: Writable): Promise<TSFilter | null> {
+    private async _initTS(user: common.User, dest?: Writable): Promise<StreamFilter | TSFilter | null> {
         const setting = user.streamSetting;
 
         if (_.config.server.disableEITParsing === true) {
@@ -332,80 +332,33 @@ export class Tuner {
                 }
                 await new Promise(resolve => setTimeout(resolve, 250));
             } else {
-                // found
-                let output: Writable;
-                if (user.disableDecoder === true || device.decoder === null || setting.channel.type === "BS4K") {
-                    output = dest;
-                } else {
-                    output = new TSDecoder({
-                        output: dest,
-                        command: device.decoder
-                    });
-                }
-
-                const useMmtsDecoder = (setting.channel.type === "BS4K") && !!device.mmtsDecoder;
-                const tsmfRelTs = useMmtsDecoder ? undefined : (setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId));
-                const tsFilter = new TSFilter({
-                    output,
+                // Create StreamFilter — handles format detection (TS/TLV) and
+                // routes to TSFilter or TLVFilter automatically
+                const streamFilter = new StreamFilter({
+                    output: dest,
+                    decoder: device.decoder,
+                    tlvToTsDecoder: device.tlvToTsDecoder,
+                    tlvDecoder: device.tlvDecoder,
+                    disableDecoder: user.disableDecoder,
                     networkId: setting.networkId,
                     serviceId: setting.serviceId,
                     eventId: setting.eventId,
                     parseNIT: setting.parseNIT,
                     parseSDT: setting.parseSDT,
-                    parseEIT: setting.parseEIT
+                    parseEIT: setting.parseEIT,
+                    tsmfRelTs: setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId),
+                    channel: setting.channel
                 });
-                if (tsmfRelTs) {
-                    const passHeader = !setting.serviceId;
-                    tsFilter.setSlotFilter(new TSMFSlotFilter(tsmfRelTs, passHeader));
-                } else if (!useMmtsDecoder) {
-                    // Auto-detect TSMF mapping for channels without tsmfRelTs config
-                    const detector = TSMFSlotFilter.createDetector();
-                    detector.once("detected", (mapping: Map<number, Set<number>>) => {
-                        for (const [relTs, serviceIds] of mapping) {
-                            for (const sid of serviceIds) {
-                                setting.channel.addTsmfRelTsMapping(sid, relTs);
-                            }
-                        }
-                        if (detector.groupId !== null) {
-                            setting.channel.setTsmfGroupId(detector.groupId);
-                        }
-                        log.info("TunerDevice#%d TSMF auto-detected %d streams groupId=%s on %s",
-                            device.index, mapping.size,
-                            detector.groupId !== null ? String(detector.groupId) : "none",
-                            setting.channel.channel);
-
-                        // Switch to filtering the correct stream when a target service is known.
-                        // For scans (no serviceId), keep detect mode to pass all streams through
-                        // so TSFilter can discover services from every multiplexed stream.
-                        const targetRelTs = setting.serviceId
-                            ? setting.channel.getTsmfRelTs(setting.serviceId)
-                            : undefined;
-                        if (targetRelTs) {
-                            detector.selectStream(targetRelTs);
-                            log.debug("TunerDevice#%d TSMF switched to stream %d for serviceId=%d",
-                                device.index, targetRelTs, setting.serviceId);
-                        } else if (mapping.size >= 1) {
-                            // Always select a stream after detection so NIT/SDT section
-                            // assembly isn't broken by interleaved data from multiple streams.
-                            // Additional streams are scanned individually by Service._scan.
-                            const firstRelTs = Math.min(...mapping.keys());
-                            detector.selectStream(firstRelTs);
-                        }
-
-                        _.service.save();
-                    });
-                    tsFilter.setSlotFilter(detector);
-                }
 
                 Object.defineProperty(user, "streamInfo", {
-                    get: () => tsFilter.streamInfo
+                    get: () => streamFilter.streamInfo
                 });
 
                 try {
-                    await device.startStream(user, tsFilter, setting.channel);
-                    return tsFilter;
+                    await device.startStream(user, streamFilter as any, setting.channel);
+                    return streamFilter;
                 } catch (err) {
-                    tsFilter.end();
+                    streamFilter.end();
                     throw err;
                 }
             }

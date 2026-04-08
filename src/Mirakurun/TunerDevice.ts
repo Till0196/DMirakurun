@@ -25,11 +25,11 @@ import status from "./status";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
-import TLVFilter from "./TLVFilter";
+import StreamFilter from "./StreamFilter";
 import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
-    _stream?: TSFilter;
+    _stream?: TSFilter | StreamFilter;
 }
 
 interface StartStreamOptions {
@@ -55,7 +55,7 @@ export default class TunerDevice extends EventEmitter {
     private _command: string = null;
     private _process: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
-    private _tlvFilter: TLVFilter | null = null;
+    // Note: _tlvFilter removed — TLV handling moved to StreamFilter
 
     private _users = new Set<User>();
 
@@ -115,6 +115,14 @@ export default class TunerDevice extends EventEmitter {
         return this._config.mmtsDecoder || null;
     }
 
+    get tlvToTsDecoder(): string {
+        return this._config.tlvToTsDecoder || this._config.mmtsDecoder || null;
+    }
+
+    get tlvDecoder(): string {
+        return this._config.tlvDecoder || null;
+    }
+
     get isAvailable(): boolean {
         return this._isAvailable;
     }
@@ -136,12 +144,13 @@ export default class TunerDevice extends EventEmitter {
     }
 
     get isCarrierOnly(): boolean {
-        return this._tlvFilter?.isCarrierOnly ?? false;
+        // TODO: will be managed by StreamFilter in TSMF integration
+        return false;
     }
 
-    /** True if this device is the parent of a multi-carrier bonded stream. */
     get isMultiCarrier(): boolean {
-        return this._tlvFilter?.tsmfFilter?.hasCarriers ?? false;
+        // TODO: will be managed by StreamFilter in TSMF integration
+        return false;
     }
 
     getPriority(): number {
@@ -211,7 +220,7 @@ export default class TunerDevice extends EventEmitter {
 
         user._stream = stream;
         this._users.add(user);
-        if (this._tlvFilter) { this._tlvFilter.syncPriorities(this.getPriority()); }
+        // TODO: syncPriorities for TSMF carriers via StreamFilter
         if (stream.closed === true) {
             this.endStream(user);
         } else {
@@ -226,7 +235,7 @@ export default class TunerDevice extends EventEmitter {
 
         user._stream.end();
         this._users.delete(user);
-        if (this._tlvFilter) { this._tlvFilter.syncPriorities(this.getPriority()); }
+        // TODO: syncPriorities for TSMF carriers via StreamFilter
 
         if (this._users.size === 0) {
             if (immediate) {
@@ -324,14 +333,9 @@ export default class TunerDevice extends EventEmitter {
             inputStream = this._process.stdout;
         }
 
-        // Set up stream pipeline
-        if (ch.type === "BS4K") {
-            this._tlvFilter = new TLVFilter(this._index, this._config, (closing?: boolean) => this._kill(closing ?? false));
-            const result = this._tlvFilter.setupPipeline(inputStream, ch, options);
-            this._stream = result.outputStream;
-        } else {
-            this._stream = inputStream;
-        }
+        // Raw stream — format detection and filtering is done by StreamFilter
+        // (created in Tuner._initTS and set as user._stream)
+        this._stream = inputStream;
 
         this._process.once("exit", () => {
             this._exited = true;
@@ -408,7 +412,7 @@ export default class TunerDevice extends EventEmitter {
 
         // Release carrier links immediately so additional tuners are freed
         // at the same time as the primary (not delayed by _release timeout)
-        if (this._tlvFilter) { this._tlvFilter.cleanup(); }
+        // TODO: cleanup TSMF carriers via StreamFilter
 
         this._updated();
 
@@ -439,10 +443,7 @@ export default class TunerDevice extends EventEmitter {
             this._stream.removeAllListeners();
         }
 
-        if (this._tlvFilter) {
-            this._tlvFilter.forceKillDecoder();
-            this._tlvFilter = null;
-        }
+        // TODO: forceKillDecoder via StreamFilter
 
         this._command = null;
         this._process = null;

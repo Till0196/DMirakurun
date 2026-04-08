@@ -114,7 +114,7 @@ export default class ChannelItem {
         return this.tsmfGroupId === other.tsmfGroupId;
     }
 
-    getStream(user: common.User, output: stream.Writable, tsmfRelTs?: number): Promise<TSFilter> {
+    getStream(user: common.User, output: stream.Writable, tsmfRelTs?: number): Promise<any> {
         return _.tuner.initChannelStream(this, user, output, tsmfRelTs);
     }
 }

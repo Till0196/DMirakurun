@@ -315,6 +315,10 @@ export interface ConfigTunersItem {
     /** CAS processor command if needed. */
     decoder?: string;
     mmtsDecoder?: string;
+    /** TLV→TS converter command (e.g., dantto4k). */
+    tlvToTsDecoder?: string;
+    /** TLV→TLV descrambler command. */
+    tlvDecoder?: string;
     /** `true` to **disable** this tuner. */
     isDisabled?: boolean;
 }

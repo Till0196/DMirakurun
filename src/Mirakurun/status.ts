@@ -16,8 +16,10 @@
 interface Status {
     epg: { [networkId: number]: boolean };
     rpcCount: number;
+    epgByChannel: { [channel: string]: boolean };
     streamCount: {
         tsFilter: number;
+        tlvFilter: number;
         decoder: number;
     };
     errorCount: {
@@ -37,9 +39,11 @@ interface Status {
 
 const status: Status = {
     epg: {},
+    epgByChannel: {},
     rpcCount: 0,
     streamCount: {
         tsFilter: 0,
+        tlvFilter: 0,
         decoder: 0
     },
     errorCount: {

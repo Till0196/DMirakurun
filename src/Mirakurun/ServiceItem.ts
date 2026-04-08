@@ -161,7 +161,7 @@ export default class ServiceItem {
         return ret;
     }
 
-    getStream(userRequest: common.UserRequest, output: stream.Writable): Promise<TSFilter> {
+    getStream(userRequest: common.UserRequest, output: stream.Writable): Promise<any> {
         return _.tuner.initServiceStream(this, userRequest, output);
     }
 
