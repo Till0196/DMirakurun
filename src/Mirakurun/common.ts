@@ -38,6 +38,7 @@ interface StreamSetting {
     parseSDT?: boolean;
     parseEIT?: boolean;
     tsmfRelTs?: number;
+    tsmfDiscovery?: boolean;
 }
 
 export interface StreamInfo {

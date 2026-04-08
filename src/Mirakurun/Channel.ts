@@ -194,6 +194,10 @@ export class Channel {
             this._startup = false;
         }
 
+        // MMT/TLV network IDs: MH-EIT only contains self TLV stream data (ARIB STD-B60 7.3.3.9),
+        // so EPG must be gathered per-channel, not per-network.
+        const MMT_NETWORK_IDS = new Set([0x0B, 0x0C]);
+
         const addEPGJob = (networkId, service) => {
             _.job.add({
                 key: `EPG.Gather.NID.${networkId}`,
@@ -243,18 +247,24 @@ export class Channel {
             });
         };
 
-        const addBS4KEPGJob = (networkId, service) => {
+        const addMMTEPGJob = (channel, service) => {
+            const isMultiCarrier = (() => {
+                const gid = channel.tsmfGroupId;
+                if (gid === null || gid === undefined) return false;
+                return _.channel.items.filter(ch => ch.tsmfGroupId === gid).length > 1;
+            })();
+
             _.job.add({
-                key: `EPG.Gather.NID.${networkId}.SID.${service.id}`,
-                name: `EPG Gather Network#${networkId} Service#${service.id}`,
+                key: `EPG.Gather.MMT.${channel.channel}`,
+                name: `EPG Gather MMT/${channel.channel}`,
                 isRerunnable: true,
                 fn: async () => {
-                    log.info("Network#%d Service#%d EPG gathering has started", networkId, service.id);
+                    log.info("Channel#%s EPG gathering has started", channel.name);
                     try {
-                        await _.tuner.getEPG(service.channel);
-                        log.info("Network#%d Service#%d EPG gathering has finished", networkId, service.id);
+                        await _.tuner.getEPG(channel);
+                        log.info("Channel#%s EPG gathering has finished", channel.name);
                     } catch (e) {
-                        log.warn("Network#%d Service#%d EPG gathering has failed [%s]", networkId, service.id, e);
+                        log.warn("Channel#%s EPG gathering has failed [%s]", channel.name, e);
                         throw new Error("EPG gathering failed");
                     }
                 },
@@ -264,25 +274,33 @@ export class Channel {
                     if (service.epgReady === true) {
                         const now = Date.now();
                         if (startup && now - service.epgUpdatedAt < 1000 * 60 * 10) { // 10 mins
-                            log.info("Network#%d Service#%d EPG gathering has skipped because EPG is already up to date (in 10 mins)", networkId, service.id);
+                            log.info("Channel#%s EPG gathering has skipped because EPG is already up to date (in 10 mins)", channel.name);
                             return false;
                         }
                         if (now - service.epgUpdatedAt > 1000 * 60 * 60 * 12) { // 12 hours
-                            log.info("Network#%d Service#%d EPG gathering is resuming forcibly because reached maximum pause time (12 hours)", networkId, service.id);
+                            log.info("Channel#%s EPG gathering is resuming forcibly because reached maximum pause time (12 hours)", channel.name);
                             service.epgReady = false;
                         } else {
-                            const currentPrograms = _.program.findByNetworkIdAndServiceIdAndTime(networkId, service.id, now)
+                            const currentPrograms = _.program.findByNetworkIdAndServiceIdAndTime(service.networkId, service.id, now)
                                 .filter(program => !!program.name && program.name !== "放送休止");
                             if (currentPrograms.length === 0) {
-                                const networkServicePrograms = _.program.findByNetworkIdServiceId(networkId, service.id);
-                                if (networkServicePrograms.length > 0) {
-                                    log.info("Network#%d Service#%d EPG gathering has skipped because broadcast is off", networkId, service.id);
+                                const servicePrograms = _.program.findByNetworkIdServiceId(service.networkId, service.id);
+                                if (servicePrograms.length > 0) {
+                                    log.info("Channel#%s EPG gathering has skipped because broadcast is off", channel.name);
                                     return false;
                                 }
                                 service.epgReady = false;
                             }
                         }
-                        return _.tuner.readyForJob(service.channel);
+                        // Multi-carrier: wait for all BS4K-capable tuners to be free
+                        if (isMultiCarrier) {
+                            const typeDevices = _.tuner.devices.filter(d => d.types.includes(channel.type));
+                            while (true) {
+                                if (typeDevices.every(d => d.isFree)) break;
+                                await common.sleep(3000);
+                            }
+                        }
+                        return _.tuner.readyForJob(channel);
                     }
                 }
             });
@@ -290,20 +308,27 @@ export class Channel {
 
         const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
         for (const networkId of networkIds) {
+            // MMT: MH-EIT is self-stream only, skip per-network gathering
+            if (MMT_NETWORK_IDS.has(networkId)) {
+                continue;
+            }
             const services = _.service.findByNetworkId(networkId);
             if (services.length === 0) {
                 continue;
             }
+            addEPGJob(networkId, services[0]);
+        }
 
-            const service = services[0];
-            if (service.channel.type === "BS4K") {
-                for (const serviceItem of services) {
-                    addBS4KEPGJob(networkId, serviceItem);
-                }
-            } else {
-                addEPGJob(networkId, service);
+        // MMT: per-channel EPG gathering (MH-EIT is self-stream only)
+        for (const channel of _.channel.items) {
+            const services = channel.getServices();
+            if (services.length === 0) {
+                continue;
             }
-
+            if (!MMT_NETWORK_IDS.has(services[0].networkId)) {
+                continue;
+            }
+            addMMTEPGJob(channel, services[0]);
         }
     }
 }

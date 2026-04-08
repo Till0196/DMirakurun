@@ -143,10 +143,10 @@ export default class TunerDevice extends EventEmitter {
         return this._isFault;
     }
 
-    get isCarrierOnly(): boolean {
+    get isAdditionalCarrier(): boolean {
         for (const user of this._users) {
-            if (user._stream && "isCarrierOnly" in user._stream) {
-                return (user._stream as StreamFilter).isCarrierOnly;
+            if (user.id === "Mirakurun:addCarrier()") {
+                return true;
             }
         }
         return false;

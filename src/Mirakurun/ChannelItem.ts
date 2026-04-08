@@ -102,9 +102,6 @@ export default class ChannelItem {
         if (!other) {
             return false;
         }
-        if (this.type !== "BS4K" || other.type !== "BS4K") {
-            return false;
-        }
         if (this.tsmfGroupId === null || this.tsmfGroupId === undefined) {
             return false;
         }

@@ -42,6 +42,11 @@ const TSMF_SYNC_B = 0x0579;
 
 export type StreamFormat = "ts" | "tlv" | "tsmf-ts" | "tsmf-tlv";
 
+export interface DiscoveryResult {
+    groupId: number;
+    numberOfCarriers: number;
+}
+
 export interface StreamFilterOptions {
     readonly output?: Writable;
     readonly decoder?: string;         // TS→TS decoder (arib-b25-stream-test)
@@ -58,6 +63,7 @@ export interface StreamFilterOptions {
     readonly channel: ChannelItem;
     readonly tunerIndex?: number;      // needed for TSMF multi-carrier bonding
     readonly onFatal?: (closing?: boolean) => void;
+    readonly tsmfDiscovery?: boolean;   // deferred pipeline: detect groupId then branch
 }
 
 export default class StreamFilter extends EventEmitter {
@@ -89,10 +95,6 @@ export default class StreamFilter extends EventEmitter {
 
     get tsmfFilter(): TSMFFilter | null {
         return this._tsmfFilter;
-    }
-
-    get isCarrierOnly(): boolean {
-        return false; // carrier mode is handled separately in TunerDevice
     }
 
     get isMultiCarrier(): boolean {
@@ -341,18 +343,33 @@ export default class StreamFilter extends EventEmitter {
     /**
      * TSMF with TLV multiplexing (BS4K over CATV).
      * Uses TSMFFilter/TSMFDemuxer to extract TLV, then feeds to TLVFilter.
+     *
+     * Two modes:
+     * - default: full synchronous pipeline (existing behavior)
+     *   Used by stream delivery, EPG, update scans, and bonded scans.
+     * - tsmfDiscovery=true: deferred pipeline — waits for groupId from TSMF header, then branches:
+     *   - numberOfCarriers==1: completes full pipeline in same session
+     *   - numberOfCarriers>1: emits "discovery" event and bails
+     *   Used only by initial channel scan (getServices).
      */
     private _setupTSMF_TLV(buffered: Buffer): void {
+        if (this._options.tsmfDiscovery) {
+            this._setupTSMF_TLV_deferred(buffered);
+        } else {
+            this._setupTSMF_TLV_full(buffered);
+        }
+    }
+
+    /** Full synchronous TSMF-TLV pipeline (default). */
+    private _setupTSMF_TLV_full(buffered: Buffer): void {
         const opts = this._options;
         const ch = opts.channel;
         const onFatal = opts.onFatal || (() => {});
 
-        const hasGroup = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
         log.info(
-            "StreamFilter TSMF-TLV %s (tsmfRelTs=%d%s)",
-            hasGroup ? "multi-carrier mode" : "single-carrier mode",
+            "StreamFilter TSMF-TLV bonded scan (tsmfRelTs=%d, groupId=%s)",
             ch.tsmfRelTs,
-            hasGroup ? `, groupId=${ch.tsmfGroupId}` : ""
+            ch.tsmfGroupId ?? "none"
         );
 
         // Create TLV output pipeline
@@ -384,11 +401,10 @@ export default class StreamFilter extends EventEmitter {
         const primaryInput = this._tsmfFilter.createInput();
         this._tsmfFilter.setupCarriers(ch);
 
-        // When TSMF is ready, create TLVFilter for the extracted TLV stream
+        // When TSMF is ready, connect output
         const outputPassThrough = new stream.PassThrough();
 
         this._tsmfFilter.once("ready", () => {
-            // Store auto-detected TSMF info on channel
             const detectedRelTs = this._tsmfFilter.detectedRelTs;
             const detectedGroupId = this._tsmfFilter.detectedGroupId;
             if (detectedRelTs !== null) {
@@ -416,28 +432,137 @@ export default class StreamFilter extends EventEmitter {
         this._innerFilter = tlvFilter;
         this._proxyEvents(tlvFilter);
 
-        // Connect: outputPassThrough → TLVFilter
         outputPassThrough.on("data", (chunk: Buffer) => {
             if (!this._closed) {
                 tlvFilter.write(chunk);
             }
         });
 
-        // Pipe buffered data into TSMF primary input, then continue piping
-        // Note: caller (TunerDevice._streamOnData) will call write() for subsequent data
-        // which goes to this._innerFilter. But for TSMF-TLV, we need raw TSMF data
-        // to go to the TSMFFilter, not to TLVFilter directly.
-        // Override write() behavior for TSMF-TLV mode:
-        this._detected = true; // prevent further detection
+        this._detected = true;
         primaryInput.write(buffered);
 
-        // Override write to pipe to TSMF primary input instead of inner filter
         this.write = (chunk: Buffer) => {
             if (this._closed) {
                 return;
             }
             primaryInput.write(chunk);
         };
+    }
+
+    /**
+     * Deferred TSMF-TLV pipeline for initial scan.
+     * Waits for groupId event from TSMF header, then:
+     * - numberOfCarriers==1: builds full TLV pipeline (single-carrier, same session)
+     * - numberOfCarriers>1: emits "discovery" event (multi-carrier, caller queues bonded scan)
+     */
+    private _setupTSMF_TLV_deferred(buffered: Buffer): void {
+        const opts = this._options;
+        const ch = opts.channel;
+        const onFatal = opts.onFatal || (() => {});
+
+        log.info("StreamFilter TSMF-TLV deferred discovery on %s", ch.channel);
+
+        // Create TSMFFilter (always needed for TSMF header parsing)
+        this._tsmfFilter = new TSMFFilter(opts.tunerIndex ?? 0, {
+            tsmfRelTs: ch.tsmfRelTs,
+            groupId: ch.tsmfGroupId ?? undefined
+        }, onFatal);
+
+        const primaryInput = this._tsmfFilter.createInput();
+
+        // Wait for groupId before deciding pipeline
+        this._tsmfFilter.once("groupId", (groupId: number, numberOfCarriers: number) => {
+            if (this._closed) {
+                return;
+            }
+            ch.setTsmfGroupId(groupId);
+            log.info("StreamFilter TSMF-TLV discovery: groupId=%d numberOfCarriers=%d on %s",
+                groupId, numberOfCarriers, ch.channel);
+            if (_.service) { _.service.save(); }
+
+            if (numberOfCarriers === 1) {
+                // Single-carrier: complete the full pipeline in this session
+                this._completeDeferredPipeline();
+            } else {
+                // Multi-carrier: emit discovery and let caller handle bonded scan
+                this.emit("discovery", { groupId, numberOfCarriers } as DiscoveryResult);
+            }
+        });
+
+        // Start data flow
+        this._detected = true;
+        primaryInput.write(buffered);
+
+        this.write = (chunk: Buffer) => {
+            if (this._closed) {
+                return;
+            }
+            primaryInput.write(chunk);
+        };
+    }
+
+    /**
+     * Complete the TLV pipeline after single-carrier detection in deferred mode.
+     * Called from groupId handler when numberOfCarriers==1.
+     * Safe because groupId fires (~1ms) before first demuxer output (~8ms).
+     */
+    private _completeDeferredPipeline(): void {
+        const opts = this._options;
+        const ch = opts.channel;
+
+        // Create TLV output pipeline
+        let output: Writable;
+        if (opts.disableDecoder) {
+            output = opts.output;
+        } else if (opts.tlvToTsDecoder) {
+            this._decoder = new TSDecoder({
+                output: opts.output,
+                command: opts.tlvToTsDecoder
+            });
+            output = this._decoder;
+        } else if (opts.tlvDecoder) {
+            this._decoder = new TSDecoder({
+                output: opts.output,
+                command: opts.tlvDecoder
+            });
+            output = this._decoder;
+        } else {
+            output = opts.output;
+        }
+
+        const outputPassThrough = new stream.PassThrough();
+
+        this._tsmfFilter.once("ready", () => {
+            const detectedRelTs = this._tsmfFilter.detectedRelTs;
+            const detectedGroupId = this._tsmfFilter.detectedGroupId;
+            if (detectedRelTs !== null) {
+                ch.setTsmfRelTs(detectedRelTs);
+            }
+            if (detectedGroupId !== null) {
+                ch.setTsmfGroupId(detectedGroupId);
+            }
+            log.debug("StreamFilter TSMF ready (deferred single-carrier)");
+            this._tsmfFilter.setOutput(outputPassThrough);
+        });
+
+        const tlvFilter = new TLVFilter({
+            output,
+            networkId: opts.networkId,
+            serviceId: opts.serviceId,
+            eventId: opts.eventId,
+            parseNIT: opts.parseNIT,
+            parseSDT: opts.parseSDT,
+            parseEIT: opts.parseEIT,
+            channel: ch.channel
+        });
+        this._innerFilter = tlvFilter;
+        this._proxyEvents(tlvFilter);
+
+        outputPassThrough.on("data", (chunk: Buffer) => {
+            if (!this._closed) {
+                tlvFilter.write(chunk);
+            }
+        });
     }
 
     private _proxyEvents(filter: EventEmitter): void {

@@ -22,7 +22,7 @@ import TunerDevice, { TunerDeviceStatus } from "./TunerDevice";
 import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
-import StreamFilter from "./StreamFilter";
+import StreamFilter, { DiscoveryResult } from "./StreamFilter";
 // TSMFSlotFilter is now used internally by StreamFilter
 
 export class Tuner {
@@ -172,9 +172,12 @@ export class Tuner {
 
     async getServices(
         channel: ChannelItem,
-        userOrOptions: Partial<common.User> | { serviceId?: number; tsmfRelTs?: number } = {}
-    ): Promise<apid.Service[]> {
+        userOrOptions: Partial<common.User> | { serviceId?: number; tsmfRelTs?: number; tsmfDiscovery?: boolean } = {}
+    ): Promise<apid.Service[] | DiscoveryResult> {
         const serviceId = "serviceId" in userOrOptions ? userOrOptions.serviceId : undefined;
+        // Default: tsmfDiscovery=true for initial scans (deferred pipeline).
+        // Callers that need full pipeline (bonded scan, update scan) pass tsmfDiscovery: false.
+        const tsmfDiscovery = "tsmfDiscovery" in userOrOptions ? userOrOptions.tsmfDiscovery : true;
         const user: Partial<common.User> = "id" in userOrOptions || "priority" in userOrOptions
             ? userOrOptions as Partial<common.User>
             : {};
@@ -193,20 +196,29 @@ export class Tuner {
                 channel,
                 parseNIT: true,
                 parseSDT: true,
-                tsmfRelTs
+                tsmfRelTs,
+                tsmfDiscovery
             },
             ...user
         });
-        return new Promise<apid.Service[]>((resolve, reject) => {
+        return new Promise<apid.Service[] | DiscoveryResult>((resolve, reject) => {
             let network = {
                 networkId: -1,
                 areaCode: -1,
                 remoteControlKeyId: -1
             };
             let services: apid.Service[] = null;
+            let discoveryResult: DiscoveryResult = null;
 
             setTimeout(() => tsFilter.close(), 20000);
 
+            // Discovery path: multi-carrier TSMF bails early with groupId info
+            tsFilter.once("discovery", (result: DiscoveryResult) => {
+                discoveryResult = result;
+                tsFilter.close();
+            });
+
+            // Normal path: wait for NIT + SDT
             Promise.all<void>([
                 new Promise((resolve, reject) => {
                     tsFilter.once("network", _network => {
@@ -225,8 +237,11 @@ export class Tuner {
             tsFilter.once("close", () => {
                 tsFilter.removeAllListeners("network");
                 tsFilter.removeAllListeners("services");
+                tsFilter.removeAllListeners("discovery");
 
-                if (network.networkId === -1) {
+                if (discoveryResult) {
+                    resolve(discoveryResult);
+                } else if (network.networkId === -1) {
                     reject(new Error("stream has closed before get network"));
                 } else if (services === null) {
                     reject(new Error("stream has closed before get services"));
@@ -349,7 +364,8 @@ export class Tuner {
                     tsmfRelTs: setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId),
                     channel: setting.channel,
                     tunerIndex: device.index,
-                    onFatal: (closing) => device.killStream(closing)
+                    onFatal: (closing) => device.killStream(closing),
+                    tsmfDiscovery: setting.tsmfDiscovery
                 });
 
                 Object.defineProperty(user, "streamInfo", {
@@ -408,8 +424,8 @@ export class Tuner {
             if (device.isAvailable !== true || !device.channel) {
                 continue;
             }
-            // Skip devices in carrier mode — they have no TSMFFilter/decoder
-            if (device.isCarrierOnly) {
+            // Skip devices used as additional carriers — they have no TSMFFilter/decoder
+            if (device.isAdditionalCarrier) {
                 continue;
             }
             if (device.channel === channel || device.channel.isSameTsmfGroup(channel)) {
@@ -435,7 +451,7 @@ export class Tuner {
         // Killing a multi-carrier parent automatically frees all its carrier tuners.
         if (priority >= 0) {
             const candidates = devices
-                .filter(d => d.isUsing === true && !d.isCarrierOnly && d.getPriority() < priority);
+                .filter(d => d.isUsing === true && !d.isAdditionalCarrier && d.getPriority() < priority);
 
             // Sort: single-carrier first (less disruption), then by priority ascending
             candidates.sort((a, b) => {

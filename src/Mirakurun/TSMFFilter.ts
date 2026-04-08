@@ -4,11 +4,10 @@ import _ from "./_";
 import * as common from "./common";
 import TSMFDemuxer from "./TSMFDemuxer";
 import ChannelItem from "./ChannelItem";
+import * as apid from "../../api";
 import TSFilter from "./TSFilter";
 import type TunerDevice from "./TunerDevice";
 
-const CARRIER_MAX_ATTEMPTS = 6;
-const CARRIER_RETRY_DELAY_MS = 500;
 
 interface CarrierLink {
     device: TunerDevice;
@@ -89,7 +88,7 @@ export default class TSMFFilter {
         this._demuxer.once("needCarriers", (count: number) => {
             log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
             if (count > 1) {
-                this._waitAndStartCarriers(ch, count, 0);
+                this._waitAndStartCarriers(ch, count);
             }
         });
     }
@@ -127,7 +126,12 @@ export default class TSMFFilter {
 
     // --- Private ---
 
-    private _waitAndStartCarriers(ch: ChannelItem, count: number, attempt: number): void {
+    /**
+     * Start additional carriers for multi-carrier bonding.
+     * Tuner availability is guaranteed by the job system's readyFn;
+     * groupId discovery is handled by the reactive scan flow.
+     */
+    private _waitAndStartCarriers(ch: ChannelItem, count: number): void {
         if (this._closed) {
             return;
         }
@@ -139,7 +143,7 @@ export default class TSMFFilter {
         // Only the first channel in the group (by config order) should manage bonding.
         // Others abort immediately to free their tuners.
         const groupChannels = _.channel.items.filter(item =>
-            item.type === "BS4K" && item.tsmfGroupId === ch.tsmfGroupId
+            item.tsmfGroupId === ch.tsmfGroupId
         );
         const isFirstInGroup = groupChannels.length === 0 || groupChannels[0].channel === ch.channel;
 
@@ -152,16 +156,6 @@ export default class TSMFFilter {
 
         const parsedCount = this._countGroupCarriers(ch);
         if (parsedCount < count) {
-            if (attempt < CARRIER_MAX_ATTEMPTS * 2) {
-                // Probe one undiscovered BS4K channel per retry to discover its groupId
-                if (attempt > 0) {
-                    this._probeNextUndiscoveredCarrier(ch);
-                }
-                log.debug("TunerDevice#%d waiting for group carriers: groupId=%d, need %d but got %d (attempt %d/%d)",
-                    this._tunerIndex, ch.tsmfGroupId, count, parsedCount, attempt + 1, CARRIER_MAX_ATTEMPTS * 2);
-                setTimeout(() => this._waitAndStartCarriers(ch, count, attempt + 1), CARRIER_RETRY_DELAY_MS);
-                return;
-            }
             log.warn("TunerDevice#%d not enough group channels for groupId=%d, need %d but got %d — aborting stream",
                 this._tunerIndex, ch.tsmfGroupId, count, parsedCount);
             this._onFatal();
@@ -172,66 +166,11 @@ export default class TSMFFilter {
         this._startCarriers(ch).catch(log.error);
     }
 
-    /**
-     * Briefly tune a free tuner to an undiscovered BS4K channel to detect its groupId.
-     * This allows the main carrier to discover all group members without waiting for
-     * the scan scheduler to get around to scanning them.
-     */
-    private _probeNextUndiscoveredCarrier(ch: ChannelItem): void {
-        if (!_.tuner || !_.channel) {
-            return;
-        }
-        const undiscovered = _.channel.items.find(item =>
-            item.type === "BS4K" &&
-            item.channel !== ch.channel &&
-            (item.tsmfGroupId === null || item.tsmfGroupId === undefined)
-        );
-        if (!undiscovered) {
-            return;
-        }
-        // Find a free tuner (not the one we're on)
-        const devices: TunerDevice[] = [];
-        for (let i = 0; i < 16; i++) {
-            const d = _.tuner.get(i);
-            if (d && d.index !== this._tunerIndex && d.isFree && d.config.types.includes("BS4K")) {
-                devices.push(d);
-            }
-        }
-        if (devices.length === 0) {
-            return;
-        }
-        const device = devices[0];
-        log.debug("TunerDevice#%d probing %s for groupId using tuner #%d",
-            this._tunerIndex, undiscovered.channel, device.index);
-
-        const probeStream = new stream.PassThrough();
-        const probeFilter = probeStream as unknown as TSFilter;
-        const probeUser: common.User & { _stream?: TSFilter } = {
-            id: `Mirakurun:probeGroupId()`,
-            priority: -1,
-            disableDecoder: true,
-            streamSetting: { channel: undiscovered }
-        };
-
-        device.startStream(probeUser, probeFilter, undiscovered, { suppressGroupCombine: true })
-            .then(() => {
-                // groupId is detected via _detectGroupIdFromRawStream in carrier mode.
-                // Release the tuner after a short time.
-                setTimeout(() => {
-                    try { device.endStream(probeUser, true); } catch (e) { /* ignore */ }
-                }, CARRIER_RETRY_DELAY_MS);
-            })
-            .catch(() => {
-                // probe failed, ignore
-            });
-    }
-
     private _countGroupCarriers(ch: ChannelItem): number {
         if (!_.channel || ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
             return 0;
         }
         return _.channel.items.filter(item =>
-            item.type === "BS4K" &&
             item.tsmfGroupId === ch.tsmfGroupId
         ).length;
     }
@@ -247,7 +186,6 @@ export default class TSMFFilter {
         this._carrierInitPending = true;
         try {
             const groupChannels = _.channel.items.filter(item =>
-                item.type === "BS4K" &&
                 item.tsmfGroupId === ch.tsmfGroupId &&
                 item.channel !== ch.channel
             );
@@ -258,7 +196,7 @@ export default class TSMFFilter {
                 return;
             }
 
-            const selected = await this._selectDevices(required);
+            const selected = this._selectDevices(required, ch.type);
 
             if (selected.length < required) {
                 log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
@@ -343,29 +281,15 @@ export default class TSMFFilter {
         }
     }
 
-    private async _selectDevices(required: number): Promise<TunerDevice[]> {
-        for (let attempt = 0; attempt < CARRIER_MAX_ATTEMPTS; attempt++) {
-            if (this._closed) {
-                return [];
-            }
-            if (attempt > 0) {
-                await new Promise(r => setTimeout(r, CARRIER_RETRY_DELAY_MS));
-                if (this._closed) {
-                    return [];
-                }
-            }
-
-            const selected = _.tuner.devices
-                .map(d => _.tuner.get(d.index))
-                .filter(d =>
-                    d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes("BS4K") && d.isFree
-                )
-                .slice(0, required) as TunerDevice[];
-
-            if (selected.length >= required) {
-                return selected;
-            }
+    private _selectDevices(required: number, channelType: apid.ChannelType): TunerDevice[] {
+        if (this._closed) {
+            return [];
         }
-        return [];
+        return _.tuner.devices
+            .map(d => _.tuner.get(d.index))
+            .filter(d =>
+                d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes(channelType) && d.isFree
+            )
+            .slice(0, required) as TunerDevice[];
     }
 }

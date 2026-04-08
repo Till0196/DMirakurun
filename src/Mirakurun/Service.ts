@@ -19,10 +19,16 @@ import { stat, mkdir, readFile, writeFile } from "fs/promises";
 import { sleep } from "./common";
 import * as log from "./log";
 import * as db from "./db";
+import * as apid from "../../api";
 import _ from "./_";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
+import { DiscoveryResult } from "./StreamFilter";
+
+function isDiscoveryResult(result: apid.Service[] | DiscoveryResult): result is DiscoveryResult {
+    return result && !Array.isArray(result) && "groupId" in result && "numberOfCarriers" in result;
+}
 
 const { LOGO_DATA_DIR_PATH } = process.env;
 
@@ -310,6 +316,51 @@ export class Service {
 
                     this._queueScanToAdd(channel);
                 }
+
+                // Fallback: after all initial scans finish, queue bonded scans for
+                // groups that were discovered but never got enough carriers.
+                _.job.add({
+                    key: "Service.Add.BondedScan.Fallback",
+                    name: "Service Add Bonded Scan [Fallback]",
+                    fn: async () => {
+                        const groupMap = new Map<number, ChannelItem[]>();
+                        for (const ch of _.channel.items) {
+                            if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined) {
+                                if (!groupMap.has(ch.tsmfGroupId)) {
+                                    groupMap.set(ch.tsmfGroupId, []);
+                                }
+                                groupMap.get(ch.tsmfGroupId).push(ch);
+                            }
+                        }
+                        for (const [groupId, channels] of groupMap) {
+                            if (channels.some(ch => this.findByChannel(ch).length > 0)) {
+                                continue;
+                            }
+                            const bondedKey = `Service.Add.BondedScan.group${groupId}`;
+                            if (_.job.jobs.some(j => j.key === bondedKey)) {
+                                continue;
+                            }
+                            if (channels.length > 1) {
+                                log.info("Fallback: queueing bonded scan for group %d with %d carriers",
+                                    groupId, channels.length);
+                                this._queueBondedScan(groupId, channels);
+                            }
+                        }
+                    },
+                    readyFn: async () => {
+                        while (true) {
+                            const pending = _.job.jobs.some(job =>
+                                job.status !== "finished" &&
+                                job.key.startsWith("Service.Add.Scan.") &&
+                                job.key !== "Service.Add.Scan.Find-Channels"
+                            );
+                            if (!pending) {
+                                return true;
+                            }
+                            await sleep(3000);
+                        }
+                    }
+                });
             },
             readyFn: async () => {
                 // wait for all Service.Check-Add.* jobs to finish
@@ -371,54 +422,56 @@ export class Service {
     }
 
     private _queueScanToAdd(channel: ChannelItem): void {
-        const scanChannel = this._getScanTargetChannel(channel);
-        if (scanChannel !== channel) {
-            return;
-        }
+        // Each channel scans independently for discovery (no groupId dedup).
+        // Multi-carrier channels detect groupId quickly and bail;
+        // single-carrier channels complete full NIT/SDT in the same session.
         _.job.add({
-            key: `Service.Add.Scan.${scanChannel.type}.${scanChannel.channel}`,
-            name: `Service Add Scan ${scanChannel.type}/${scanChannel.channel}`,
-            fn: async () => {
-                // Re-check at execution time: groupId may have been discovered since queuing.
-                // If this channel now belongs to a group, let the group's first channel handle it.
-                const target = this._getScanTargetChannel(scanChannel);
-                if (target !== scanChannel) {
-                    return;
-                }
-                return this._scan(scanChannel, true);
-            },
-            readyFn: () => _.tuner.readyForJob(scanChannel),
+            key: `Service.Add.Scan.${channel.type}.${channel.channel}`,
+            name: `Service Add Scan ${channel.type}/${channel.channel}`,
+            fn: async () => this._scan(channel, true),
+            readyFn: () => _.tuner.readyForJob(channel),
             retryOnFail: true,
-            retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3), // (12時間 / retryDelay) = 12時間～
+            retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3),
             retryDelay: 1000 * 60 * 3
         });
     }
 
     private _queueScanToUpdate(channel: ChannelItem): void {
-        const scanChannel = this._getScanTargetChannel(channel);
-        if (scanChannel !== channel) {
-            return;
+        // For TSMF groups, only the first channel in the group scans
+        if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
+            const first = _.channel.items.find(item => item.isSameTsmfGroup(channel));
+            if (first && first.channel !== channel.channel) {
+                return;
+            }
         }
         _.job.add({
-            key: `Service.Update.Scan.${scanChannel.type}.${scanChannel.channel}`,
-            name: `Service Update Scan ${scanChannel.type}/${scanChannel.channel}`,
-            fn: async () => this._scan(scanChannel, false),
-            readyFn: () => _.tuner.readyForJob(scanChannel)
+            key: `Service.Update.Scan.${channel.type}.${channel.channel}`,
+            name: `Service Update Scan ${channel.type}/${channel.channel}`,
+            fn: async () => this._scan(channel, false, false),
+            readyFn: () => _.tuner.readyForJob(channel)
         });
     }
 
     private async _checkToAdd(channel: ChannelItem, serviceId: number): Promise<void> {
         log.info("ChannelItem#'%s' serviceId=%d check has started", channel.name, serviceId);
 
-        let services: Awaited<ReturnType<typeof _.tuner.getServices>>;
+        let result: Awaited<ReturnType<typeof _.tuner.getServices>>;
         try {
-            services = await _.tuner.getServices(channel, { serviceId });
+            result = await _.tuner.getServices(channel, { serviceId });
         } catch (e) {
             log.warn("ChannelItem#'%s' serviceId=%d check has failed [%s]", channel.name, serviceId, e);
             throw new Error("Service check failed");
         }
 
-        const service = services.find(service => service.serviceId === serviceId);
+        if (isDiscoveryResult(result)) {
+            // Multi-carrier channel: service check can't complete without bonding.
+            // groupId has been saved; scan jobs will handle bonded scan later.
+            log.warn("ChannelItem#'%s' serviceId=%d check: multi-carrier (groupId=%d), deferring to bonded scan",
+                channel.name, serviceId, result.groupId);
+            throw new Error("Service check failed: multi-carrier channel requires bonded scan");
+        }
+
+        const service = result.find(service => service.serviceId === serviceId);
         if (!service) {
             log.warn("ChannelItem#'%s' serviceId=%d check has failed [no service]", channel.name, serviceId);
 
@@ -436,26 +489,44 @@ export class Service {
         log.info("ChannelItem#'%s' serviceId=%d check has finished", channel.name, serviceId);
     }
 
-    private async _scan(channel: ChannelItem, add: boolean): Promise<void> {
-        log.info("ChannelItem#'%s' service scan has started", channel.name);
+    /**
+     * Scan a channel for services.
+     * @param tsmfDiscovery - true: deferred TSMF pipeline (initial scan, may return DiscoveryResult).
+     *                        false: full pipeline with carrier bonding (bonded/update scans).
+     */
+    private async _scan(channel: ChannelItem, add: boolean, tsmfDiscovery = true): Promise<void> {
+        log.info("ChannelItem#'%s' service scan has started (tsmfDiscovery=%s)", channel.name, tsmfDiscovery);
 
-        // First scan: auto-detect TSMF streams and get services from the default stream
-        let services: Awaited<ReturnType<typeof _.tuner.getServices>>;
+        let result: Awaited<ReturnType<typeof _.tuner.getServices>>;
         try {
-            services = await _.tuner.getServices(channel);
+            result = await _.tuner.getServices(channel, { tsmfDiscovery });
         } catch (e) {
             log.warn("ChannelItem#'%s' service scan has failed [%s]", channel.name, e);
             throw new Error("Service scan failed");
         }
 
-        this._applyScannedServices(channel, services, add);
+        if (isDiscoveryResult(result)) {
+            // Multi-carrier: groupId saved by StreamFilter, check group completeness
+            const { groupId, numberOfCarriers } = result;
+            log.info("ChannelItem#'%s' discovered groupId=%d numberOfCarriers=%d",
+                channel.name, groupId, numberOfCarriers);
+            const groupChannels = _.channel.items.filter(item =>
+                item.tsmfGroupId === groupId
+            );
+            log.info("Group %d: %d/%d carriers discovered", groupId, groupChannels.length, numberOfCarriers);
+            if (groupChannels.length >= numberOfCarriers) {
+                this._queueBondedScan(groupId, groupChannels);
+            }
+            return;
+        }
+
+        this._applyScannedServices(channel, result, add);
 
         // For multi-stream TSMF channels, scan each additional stream individually
         const relTsMap = channel.getRelTsMap();
         if (relTsMap.size > 1) {
             const scannedRelTs = new Set<number>();
-            // Mark streams that already have registered services
-            for (const service of services) {
+            for (const service of result) {
                 const relTs = channel.getTsmfRelTs(service.serviceId);
                 if (relTs !== undefined) {
                     scannedRelTs.add(relTs);
@@ -467,17 +538,18 @@ export class Service {
                 }
                 log.info("ChannelItem#'%s' scanning additional TSMF stream %d", channel.name, relTs);
                 try {
-                    const extraServices = await _.tuner.getServices(channel, { tsmfRelTs: relTs });
-                    this._applyScannedServices(channel, extraServices, add);
+                    const extraResult = await _.tuner.getServices(channel, { tsmfRelTs: relTs, tsmfDiscovery });
+                    if (!isDiscoveryResult(extraResult)) {
+                        this._applyScannedServices(channel, extraResult, add);
+                    }
                 } catch (e) {
                     log.warn("ChannelItem#'%s' TSMF stream %d scan failed [%s]", channel.name, relTs, e);
                 }
             }
         }
 
-        // Abort scan jobs for other channels in the same TSMF group
-        // (e.g., multi-carrier channel scan succeeds)
-        if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
+        // Abort sibling group scans after bonded scan completes
+        if (!tsmfDiscovery && channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
             const groupChannels = _.channel.items.filter(item =>
                 item.type === channel.type &&
                 item.channel !== channel.channel &&
@@ -492,9 +564,35 @@ export class Service {
         log.info("ChannelItem#'%s' service scan has finished", channel.name);
     }
 
+    private _queueBondedScan(groupId: number, groupChannels: ChannelItem[]): void {
+        const primaryChannel = groupChannels[0];
+        const key = `Service.Add.BondedScan.group${groupId}`;
+
+        _.job.add({
+            key,
+            name: `Service Add Bonded Scan group${groupId} (${groupChannels.length} carriers)`,
+            fn: async () => this._scan(primaryChannel, true, false),
+            readyFn: async () => {
+                // Wait for all initial scan jobs to finish first,
+                // so all tuners are free for multi-carrier bonding.
+                while (_.job.jobs.some(j =>
+                    j.status !== "finished" &&
+                    j.key.startsWith("Service.Add.Scan.") &&
+                    j.key !== "Service.Add.Scan.Find-Channels"
+                )) {
+                    await sleep(3000);
+                }
+                return _.tuner.readyForJob(primaryChannel);
+            },
+            retryOnFail: true,
+            retryMax: 3,
+            retryDelay: 1000 * 60
+        });
+    }
+
     private _applyScannedServices(
         channel: ChannelItem,
-        services: Awaited<ReturnType<typeof _.tuner.getServices>>,
+        services: apid.Service[],
         add: boolean
     ): void {
         log.debug("ChannelItem#'%s' services: %s", channel.name, JSON.stringify(services, null, "  "));
@@ -524,16 +622,6 @@ export class Service {
         });
     }
 
-    private _getScanTargetChannel(channel: ChannelItem): ChannelItem {
-        if (!channel || channel.type !== "BS4K" || channel.tsmfGroupId === null || channel.tsmfGroupId === undefined) {
-            return channel;
-        }
-        const groupChannels = _.channel.items.filter(item => item.isSameTsmfGroup(channel));
-        if (groupChannels.length === 0) {
-            return channel;
-        }
-        return groupChannels[0];
-    }
 }
 
 export default Service;
