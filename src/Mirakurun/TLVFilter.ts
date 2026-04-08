@@ -87,7 +87,7 @@ export default class TLVFilter {
 
             const detectBuf = Buffer.concat(detectChunks);
             const format = this._detectStreamFormat(detectBuf);
-            log.info("TunerDevice#%d detected stream format: %s (%d bytes inspected)",
+            log.debug("TunerDevice#%d detected stream format: %s (%d bytes inspected)",
                 this._tunerIndex, format, detectBuf.length);
 
             const replayStream = new stream.PassThrough();
@@ -110,7 +110,7 @@ export default class TLVFilter {
                 inputStream.removeListener("data", onDetectData);
                 const detectBuf = Buffer.concat(detectChunks);
                 const format = this._detectStreamFormat(detectBuf);
-                log.info("TunerDevice#%d detected stream format: %s (early end, %d bytes)",
+                log.debug("TunerDevice#%d detected stream format: %s (early end, %d bytes)",
                     this._tunerIndex, format, detectBuf.length);
 
                 const replayStream = new stream.PassThrough();
@@ -356,9 +356,14 @@ export default class TLVFilter {
     }
 
     private _spawnDecoder(): child_process.ChildProcess | null {
+        if (!this._config.mmtsDecoder) {
+            log.warn("TunerDevice#%d no mmtsDecoder configured, skipping", this._tunerIndex);
+            return null;
+        }
         const parsed = common.parseCommandForSpawn(this._config.mmtsDecoder);
         this._mmtsDecoderProcess = child_process.spawn(parsed.command, parsed.args);
         const pid = this._mmtsDecoderProcess.pid;
+        log.debug("TunerDevice#%d mmtsDecoder spawned `%s` (pid=%d)", this._tunerIndex, this._config.mmtsDecoder, pid);
 
         this._mmtsDecoderProcess.once("error", (err) => {
             log.error("TunerDevice#%d mmtsDecoder process error `%s` (pid=%d)", this._tunerIndex, err.name, pid);
