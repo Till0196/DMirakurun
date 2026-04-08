@@ -111,7 +111,7 @@ export default class TLVFilter extends EventEmitter {
 
     private _channel: string;
 
-    private _remoteControlKeyIdMap?: Map<number, number>;
+    private _remoteControlKeyIdMap: Map<number, number> = null;
     private _logoTransmissions: Map<number, {
         startSectionNumber: number;
         numberOfSections: number;
@@ -291,7 +291,7 @@ export default class TLVFilter extends EventEmitter {
             }
         }
 
-        if (this._remoteControlKeyIdMap !== null && this._remoteControlKeyIdMap !== undefined) {
+        if (this._remoteControlKeyIdMap !== null) {
             return;
         }
 
@@ -316,7 +316,7 @@ export default class TLVFilter extends EventEmitter {
     }
 
     private _onSDT(sdt: MHServiceDescriptionTable): void {
-        if (this._remoteControlKeyIdMap === null || this._remoteControlKeyIdMap === undefined) {
+        if (this._remoteControlKeyIdMap === null) {
             return;
         }
 
@@ -345,9 +345,9 @@ export default class TLVFilter extends EventEmitter {
                     logoId = desc.logoId;
                     if (desc.logoTransmissionType === MH_LOGO_TRANSMISSION_TYPE_DIRECT) {
                         const largeLogo = desc.logoList.find(x => x.logoType === MH_CDT_LOGO_TYPE_LARGE);
-                        if (largeLogo !== null && largeLogo !== undefined) {
+                        if (largeLogo !== undefined) {
                             const p = this._logoTransmissions.get(logoId);
-                            if (p === null || p === undefined || p.logoVersion !== desc.logoVersion) {
+                            if (p === undefined || p.logoVersion !== desc.logoVersion) {
                                 this._logoTransmissions.set(logoId, {
                                     startSectionNumber: largeLogo.startSectionNumber,
                                     numberOfSections: largeLogo.numOfSections,
@@ -444,7 +444,7 @@ export default class TLVFilter extends EventEmitter {
         }
 
         const trans = this._logoTransmissions.get(cdt.dataModule.logoId);
-        if (trans === null || trans === undefined || cdt.dataModule.logoVersion !== trans.logoVersion || trans.receivedSections === trans.numberOfSections) {
+        if (trans === undefined || cdt.dataModule.logoVersion !== trans.logoVersion || trans.receivedSections === trans.numberOfSections) {
             return;
         }
 
@@ -452,7 +452,7 @@ export default class TLVFilter extends EventEmitter {
             return;
         }
 
-        if (trans.data[cdt.sectionNumber - trans.startSectionNumber] !== null && trans.data[cdt.sectionNumber - trans.startSectionNumber] !== undefined) {
+        if (trans.data[cdt.sectionNumber - trans.startSectionNumber] !== undefined) {
             return;
         }
 

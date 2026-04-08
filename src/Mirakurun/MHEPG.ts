@@ -168,7 +168,7 @@ export default class MHEPG {
             if (!service[e.eventId]) {
                 const id = getProgramItemId(networkId, eit.serviceId, e.eventId);
                 if (!_.program.exists(id)) {
-                    if (e.startTime === null || e.startTime === undefined) {
+                    if (e.startTime === undefined) {
                         continue;
                     }
                     const programItem = {
@@ -177,7 +177,7 @@ export default class MHEPG {
                         serviceId: eit.serviceId,
                         networkId: networkId,
                         startAt: mjdBCDToUnixEpoch(e.startTime) * 1000,
-                        duration: e.duration === null || e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
+                        duration: e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
                         isFree: !e.freeCAMode,
                         _pf: isPF || undefined
                     };
@@ -210,10 +210,10 @@ export default class MHEPG {
                 if ((!state.present || (state.present && isP)) && isOutOfDate(eit, state.version)) {
                     state.version[eit.tableIdNumber] = eit.versionNumber;
 
-                    if (e.startTime !== null && e.startTime !== undefined) {
+                    if (e.startTime !== undefined) {
                         _.program.set(state.programId, {
                             startAt: mjdBCDToUnixEpoch(e.startTime) * 1000,
-                            duration: e.duration === null || e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
+                            duration: e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
                             isFree: !e.freeCAMode,
                             _pf: isPF || undefined
                         });
@@ -316,7 +316,7 @@ export default class MHEPG {
                                 d.iso639LanguageCode
                             ]))
                         ];
-                        if (d.esMultiLingualISO639LanguageCode !== null && d.esMultiLingualISO639LanguageCode !== undefined) {
+                        if (d.esMultiLingualISO639LanguageCode !== undefined) {
                             langs.push(getLangCode(Buffer.from([
                                 d.esMultiLingualISO639LanguageCode >> 16,
                                 d.esMultiLingualISO639LanguageCode >> 8,
@@ -349,7 +349,7 @@ export default class MHEPG {
                                 id: d.seriesId,
                                 repeat: d.repeatLabel,
                                 pattern: d.programPattern,
-                                expiresAt: d.expireDate !== null && d.expireDate !== undefined ?
+                                expiresAt: d.expireDateValidFlag ?
                                     mjdBCDToUnixEpoch(d.expireDate) * 1000 :
                                     -1,
                                 episode: d.episodeNumber,
