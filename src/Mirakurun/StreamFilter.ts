@@ -22,6 +22,7 @@ import _ from "./_";
 import TSFilter from "./TSFilter";
 import TLVFilter from "./TLVFilter";
 import TSDecoder from "./TSDecoder";
+import TLVDecoder from "./TLVDecoder";
 import TSMFFilter from "./TSMFFilter";
 import { TSMFSlotFilter, TsmfCCChecker } from "./TSMFDemuxer";
 import ChannelItem from "./ChannelItem";
@@ -75,7 +76,7 @@ export default class StreamFilter extends EventEmitter {
     private _format: StreamFormat | null = null;
     private _options: StreamFilterOptions;
     private _innerFilter: TSFilter | TLVFilter = null;
-    private _decoder: TSDecoder = null;
+    private _decoder: TSDecoder | TLVDecoder = null;
     private _tsmfFilter: TSMFFilter = null;
     private _detectChunks: Buffer[] = [];
     private _detectLen = 0;
@@ -233,13 +234,13 @@ export default class StreamFilter extends EventEmitter {
         if (opts.disableDecoder) {
             output = opts.output;
         } else if (opts.tlvToTsDecoder) {
-            this._decoder = new TSDecoder({
+            this._decoder = new TLVDecoder({
                 output: opts.output,
                 command: opts.tlvToTsDecoder
             });
             output = this._decoder;
         } else if (opts.tlvDecoder) {
-            this._decoder = new TSDecoder({
+            this._decoder = new TLVDecoder({
                 output: opts.output,
                 command: opts.tlvDecoder
             });
@@ -374,13 +375,13 @@ export default class StreamFilter extends EventEmitter {
         if (opts.disableDecoder) {
             output = opts.output;
         } else if (opts.tlvToTsDecoder) {
-            this._decoder = new TSDecoder({
+            this._decoder = new TLVDecoder({
                 output: opts.output,
                 command: opts.tlvToTsDecoder
             });
             output = this._decoder;
         } else if (opts.tlvDecoder) {
-            this._decoder = new TSDecoder({
+            this._decoder = new TLVDecoder({
                 output: opts.output,
                 command: opts.tlvDecoder
             });
@@ -513,13 +514,13 @@ export default class StreamFilter extends EventEmitter {
         if (opts.disableDecoder) {
             output = opts.output;
         } else if (opts.tlvToTsDecoder) {
-            this._decoder = new TSDecoder({
+            this._decoder = new TLVDecoder({
                 output: opts.output,
                 command: opts.tlvToTsDecoder
             });
             output = this._decoder;
         } else if (opts.tlvDecoder) {
-            this._decoder = new TSDecoder({
+            this._decoder = new TLVDecoder({
                 output: opts.output,
                 command: opts.tlvDecoder
             });
