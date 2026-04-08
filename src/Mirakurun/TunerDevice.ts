@@ -157,6 +157,10 @@ export default class TunerDevice extends EventEmitter {
         return this._tsmfFilter !== null && this._tsmfFilter.hasCarriers;
     }
 
+    get hasSharedTSMF(): boolean {
+        return this._tsmfFilter !== null;
+    }
+
     getPriority(): number {
         let priority = -2;
 
