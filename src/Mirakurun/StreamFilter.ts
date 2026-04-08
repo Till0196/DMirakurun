@@ -31,7 +31,9 @@ const TS_SYNC = 0x47;
 const TS_PKT = 188;
 const TLV_SYNC = 0x7f;
 const TLV_VALID_TYPES = new Set([0x01, 0x02, 0x03, 0xfe]);
-const DETECT_MIN_BYTES = 8192;
+// TSMF frames are 52 TS packets (9776 bytes). Need at least 1 full frame
+// plus margin for sync alignment.
+const DETECT_MIN_BYTES = 188 * 53 * 2; // ~20KB, guarantees 2 TSMF frames
 
 // TSMF constants (must match TSMFDemuxer)
 const TSMF_PID = 0x2f;
@@ -492,10 +494,10 @@ export default class StreamFilter extends EventEmitter {
                 if (sync !== TSMF_SYNC_A && sync !== TSMF_SYNC_B) {
                     continue;
                 }
-                // TSMF detected — check stream_type bits to determine TS or TLV
-                const streamTypeBits = (buffer[offset + 121] << 7) | (buffer[offset + 122] >> 1);
-                // If any stream has type=0 (TLV), it's tsmf-tlv
-                if (streamTypeBits !== 0x7fff) {
+                // TSMF detected — determine TS or TLV multiplexing.
+                // Note: stream_type bits are unreliable on some CATV systems (all set to 1/TS
+                // even for TLV streams). Use channel type as the primary indicator.
+                if (this._options.channel.type === "BS4K") {
                     return "tsmf-tlv";
                 }
                 return "tsmf-ts";
