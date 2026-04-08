@@ -235,6 +235,13 @@ export class Service {
                 continue;
             }
 
+            if (service.channel?.isMultiCarrier) {
+                if (service.channel?.tsmfGroupId !== undefined && service.channel?.tsmfGroupId !== null) {
+                    channelItem.setTsmfGroupId(service.channel.tsmfGroupId);
+                }
+                continue;
+            }
+
             if (service.networkId === undefined || service.serviceId === undefined) {
                 updated = true;
                 continue;
@@ -403,10 +410,25 @@ export class Service {
     private _save(): void {
         log.debug("saving services...");
 
-        db.saveServices(
-            this._items.map(service => service.export()),
-            _.configIntegrity.channels
-        );
+        const data: Partial<apid.Service>[] = this._items.map(service => service.export());
+
+        // Persist groupId for carrier-only channels (no services of their own)
+        const channelsWithServices = new Set(this._items.map(s => `${s.channel.type}:${s.channel.channel}`));
+        for (const channel of _.channel.items) {
+            if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined &&
+                !channelsWithServices.has(`${channel.type}:${channel.channel}`)) {
+                data.push({
+                    channel: {
+                        type: channel.type,
+                        channel: channel.channel,
+                        tsmfGroupId: channel.tsmfGroupId,
+                        isMultiCarrier: true
+                    }
+                });
+            }
+        }
+
+        db.saveServices(data, _.configIntegrity.channels);
     }
 
     private _queueCheckToAdd(channel: ChannelItem, serviceId: number): void {
@@ -548,7 +570,8 @@ export class Service {
             }
         }
 
-        // Abort sibling group scans after bonded scan completes
+        // After bonded scan completes, propagate groupId to sibling channels
+        // and abort their individual scan jobs. Also save to persist groupId.
         if (!tsmfDiscovery && channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
             const groupChannels = _.channel.items.filter(item =>
                 item.type === channel.type &&
@@ -556,9 +579,13 @@ export class Service {
                 item.isSameTsmfGroup(channel)
             );
             for (const ch of groupChannels) {
+                if (ch.tsmfGroupId !== channel.tsmfGroupId) {
+                    ch.setTsmfGroupId(channel.tsmfGroupId);
+                }
                 const key = `Service.Add.Scan.${ch.type}.${ch.channel}`;
                 _.job.abortByKey(key, "group primary scan completed");
             }
+            this.save();
         }
 
         log.info("ChannelItem#'%s' service scan has finished", channel.name);

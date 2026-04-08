@@ -44,6 +44,7 @@ export interface Channel {
     name?: string;
     tsmfRelTs?: number;
     tsmfGroupId?: number;
+    isMultiCarrier?: boolean;
     services?: Service[];
 }
 

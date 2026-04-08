@@ -138,7 +138,7 @@ export default class StreamFilter extends EventEmitter {
         }
         if (this._tsmfFilter) {
             this._tsmfFilter.releaseCarriers();
-            try { this._tsmfFilter.close(); } catch (e) { /* ignore */ }
+            this._tsmfFilter.close();
         }
 
         this.emit("close");
@@ -158,12 +158,9 @@ export default class StreamFilter extends EventEmitter {
     }
 
     forceKillDecoder(): void {
-        if (this._decoder) {
-            // TSDecoder handles its own cleanup
-        }
         if (this._tsmfFilter) {
             this._tsmfFilter.releaseCarriers();
-            try { this._tsmfFilter.close(); } catch (e) { /* ignore */ }
+            this._tsmfFilter.close();
             this._tsmfFilter = null;
         }
         this._closed = true;

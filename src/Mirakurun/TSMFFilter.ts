@@ -32,7 +32,7 @@ export default class TSMFFilter {
 
         this._demuxer.once("error", (err) => {
             log.error("TunerDevice#%d TSMFDemuxer error: %s", this._tunerIndex, err.message);
-            this._onFatal();
+            this._onFatal(true);
         });
     }
 
@@ -74,8 +74,7 @@ export default class TSMFFilter {
 
     setupCarriers(ch: ChannelItem): void {
         // Persist groupId to services DB as soon as detected.
-        // This ensures groupId survives restarts even if bonding fails on first boot.
-        this._demuxer.once("groupId", (groupId: number, numberOfCarriers: number) => {
+        this._demuxer.on("groupId", (groupId: number, numberOfCarriers: number) => {
             ch.setTsmfGroupId(groupId);
             log.debug("TunerDevice#%d TSMF detected groupId=%d numberOfCarriers=%d on %s",
                 this._tunerIndex, groupId, numberOfCarriers, ch.channel);
@@ -84,7 +83,7 @@ export default class TSMFFilter {
             }
         });
 
-        this._demuxer.once("needCarriers", (count: number) => {
+        this._demuxer.on("needCarriers", (count: number) => {
             log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
             if (count > 1) {
                 this._waitAndStartCarriers(ch, count);
@@ -102,13 +101,7 @@ export default class TSMFFilter {
 
     releaseCarriers(): void {
         this._closed = true;
-        for (const link of this._carrierLinks) {
-            try { link.sourceStream.removeAllListeners(); } catch (e) { /* ignore */ }
-            try { link.demuxerInput.end(); } catch (e) { /* ignore */ }
-            try { link.device.endStream(link.user, true); } catch (e) { /* ignore */ }
-        }
-        this._carrierLinks = [];
-        this._carrierInitPending = false;
+        this._releaseCarrierLinks();
     }
 
     // --- Event proxy ---
@@ -125,6 +118,34 @@ export default class TSMFFilter {
 
     // --- Private ---
 
+    private _releaseCarrierLinks(): void {
+        for (const link of this._carrierLinks) {
+            link.sourceStream.removeAllListeners();
+            if (!link.demuxerInput.writableEnded) {
+                link.demuxerInput.end();
+            }
+            link.device.endStream(link.user, true);
+        }
+        this._carrierLinks = [];
+        this._carrierInitPending = false;
+    }
+
+    /**
+     * Release all carriers and respawn the primary tuner process.
+     * The respawned process feeds fresh TSMF data, triggering needCarriers
+     * again via TSMFDemuxer to re-establish all carriers.
+     */
+    private _respawnAllCarriers(): void {
+        if (this._closed) {
+            return;
+        }
+        log.info("TunerDevice#%d releasing all carriers for respawn", this._tunerIndex);
+        this._releaseCarrierLinks();
+        this._demuxer.resetCarriers();
+        // Kill primary with closing=false so TunerDevice respawns the process
+        this._onFatal(false);
+    }
+
     /**
      * Start additional carriers for multi-carrier bonding.
      * Tuner availability is guaranteed by the job system's readyFn;
@@ -136,7 +157,7 @@ export default class TSMFFilter {
         }
         if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
             log.warn("TunerDevice#%d cannot attach extra carriers without tsmfGroupId, aborting stream", this._tunerIndex);
-            this._onFatal();
+            this._onFatal(true);
             return;
         }
         // Only the first channel in the group (by config order) should manage bonding.
@@ -157,7 +178,7 @@ export default class TSMFFilter {
         if (parsedCount < count) {
             log.warn("TunerDevice#%d not enough group channels for groupId=%d, need %d but got %d — aborting stream",
                 this._tunerIndex, ch.tsmfGroupId, count, parsedCount);
-            this._onFatal();
+            this._onFatal(true);
             return;
         }
         log.info("TunerDevice#%d starting %d additional carriers for groupId=%d",
@@ -200,7 +221,7 @@ export default class TSMFFilter {
             if (selected.length < required) {
                 log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
                     this._tunerIndex, required, selected.length);
-                this._onFatal();
+                this._onFatal(true);
                 return;
             }
 
@@ -256,10 +277,12 @@ export default class TSMFFilter {
                 });
 
                 sourceStream.once("end", () => {
-                    try { demuxerInput.end(); } catch (e) { /* ignore */ }
+                    if (!demuxerInput.writableEnded) {
+                        demuxerInput.end();
+                    }
                     if (!this._closed) {
-                        log.warn("TunerDevice#%d carrier stream ended on tuner #%d", this._tunerIndex, device.index);
-                        this._onFatal();
+                        log.warn("TunerDevice#%d carrier stream ended on tuner #%d, respawning all carriers", this._tunerIndex, device.index);
+                        this._respawnAllCarriers();
                     }
                 });
 
@@ -270,7 +293,7 @@ export default class TSMFFilter {
                 log.warn("TunerDevice#%d only %d of %d additional carriers started, retrying...",
                     this._tunerIndex, started, required);
                 this.releaseCarriers();
-                this._onFatal();
+                this._onFatal(true);
                 return;
             }
 

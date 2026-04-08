@@ -16,6 +16,7 @@
 import * as stream from "stream";
 import * as child_process from "child_process";
 import * as log from "./log";
+import * as common from "./common";
 import status from "./status";
 
 interface StreamOptions extends stream.TransformOptions {
@@ -100,7 +101,8 @@ export default class TSDecoder extends stream.Writable {
             log.warn("TSDecoder#%d respawning because dead (count=%d)", this._id, this._deadCount);
         }
 
-        const proc = this._process = child_process.spawn(this._command.split(" ")[0], this._command.split(" ").slice(1));
+        const parsed = common.parseCommandForSpawn(this._command);
+        const proc = this._process = child_process.spawn(parsed.command, parsed.args);
 
         proc.once("close", (code, signal) => {
             log.info(

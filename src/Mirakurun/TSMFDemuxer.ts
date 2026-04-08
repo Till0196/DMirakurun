@@ -364,6 +364,17 @@ export default class TSMFDemuxer extends EventEmitter {
         this._sources.delete(sourceId);
     }
 
+    /** Reset carrier state so needCarriers fires again after primary respawn. */
+    resetCarriers(): void {
+        this._carrierInfoEmitted = false;
+        for (const [id, source] of this._sources) {
+            if (id !== 1) {
+                this._sources.delete(id);
+            }
+        }
+        this._carrierStates.clear();
+    }
+
     close(): void {
         if (!this._closed && !this._closing) {
             this._close();
