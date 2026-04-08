@@ -224,6 +224,12 @@ export default class TunerDevice extends EventEmitter {
             }
         }
 
+        // If shared TSMF was just created by _spawn, notify StreamFilter
+        // to skip format detection (output is always TLV)
+        if (this._tsmfFilter && stream && "setPreDetectedFormat" in stream) {
+            (stream as StreamFilter).setPreDetectedFormat("tlv");
+        }
+
         log.info("TunerDevice#%d streaming to user `%s` (priority=%d)", this._index, user.id, user.priority);
 
         user._stream = stream;

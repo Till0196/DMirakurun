@@ -103,6 +103,12 @@ export default class StreamFilter extends EventEmitter {
         return this._tsmfFilter?.hasCarriers ?? false;
     }
 
+    setPreDetectedFormat(format: StreamFormat): void {
+        if (!this._detected) {
+            this._options = { ...this._options, preDetectedFormat: format };
+        }
+    }
+
     write(chunk: Buffer): void {
         if (this._closed) {
             return;
