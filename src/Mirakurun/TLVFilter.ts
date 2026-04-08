@@ -263,25 +263,36 @@ export default class TLVFilter extends EventEmitter {
     // --- SI event handlers ---
 
     private _onPLT(plt: PackageListTable): void {
-        this._serviceIds = new Set();
-        this._parseServiceIds = new Set();
+        const newServiceIds = new Set<number>();
 
         for (const pkg of plt.packages) {
             const serviceId = mmtPackageIdToServiceId(pkg.mmtPackageId);
-            this._serviceIds.add(serviceId);
-
-            const item = this._targetNetworkId === null ? null : _.service.get(this._targetNetworkId, serviceId);
-
-            log.debug(
-                "TLVFilter#_onPLT: detected MPT PID=%d as serviceId=%d (%s)",
-                pkg.locationInfo.packetId, serviceId, item ? item.name : "unregistered"
-            );
+            newServiceIds.add(serviceId);
 
             if (serviceId === this._provideServiceId) {
                 if (this._mptPid !== pkg.locationInfo.packetId) {
                     this._mptPid = pkg.locationInfo.packetId;
                 }
             }
+        }
+
+        // Only log and update when PLT content changes
+        if (this._serviceIds.size === newServiceIds.size &&
+            [...newServiceIds].every(id => this._serviceIds.has(id))) {
+            return;
+        }
+
+        this._serviceIds = newServiceIds;
+        this._parseServiceIds = new Set();
+
+        for (const pkg of plt.packages) {
+            const serviceId = mmtPackageIdToServiceId(pkg.mmtPackageId);
+            const item = this._targetNetworkId === null ? null : _.service.get(this._targetNetworkId, serviceId);
+
+            log.debug(
+                "TLVFilter#_onPLT: detected MPT PID=%d as serviceId=%d (%s)",
+                pkg.locationInfo.packetId, serviceId, item ? item.name : "unregistered"
+            );
 
             if (this._parseEIT && item) {
                 const channel = _.channel.get("BS4K", this._channel);
@@ -323,9 +334,6 @@ export default class TLVFilter extends EventEmitter {
         for (const tlvStream of nit.tlvStreams) {
             for (const desc of tlvStream.descriptors) {
                 if (desc.tag === "channelBondingCableDeliverySystem") {
-                    log.debug("TLVFilter#_onNIT: carrierBonding tsid=%d carriers=%s",
-                        tlvStream.tlvStreamId,
-                        JSON.stringify(desc.carriers.map(c => ({ freq: c.frequency, gid: c.groupId }))));
                     this.emit("carrierBonding", {
                         tlvStreamId: tlvStream.tlvStreamId,
                         carriers: desc.carriers.map(c => ({
