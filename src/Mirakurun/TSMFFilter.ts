@@ -307,11 +307,43 @@ export default class TSMFFilter {
         if (this._closed) {
             return [];
         }
-        return _.tuner.devices
+
+        const parentDevice = _.tuner.get(this._tunerIndex);
+        const carrierPriority = parentDevice ? parentDevice.getPriority() : -1;
+
+        // 1. Prefer free devices
+        const free = _.tuner.devices
             .map(d => _.tuner.get(d.index))
             .filter(d =>
-                d && d.index !== this._tunerIndex && !d.isRemote && d.config.types.includes(channelType) && d.isFree
-            )
-            .slice(0, required) as TunerDevice[];
+                d && d.index !== this._tunerIndex && !d.isRemote &&
+                d.config.types.includes(channelType) && d.isFree
+            ) as TunerDevice[];
+
+        if (free.length >= required) {
+            return free.slice(0, required);
+        }
+
+        // 2. Not enough free — takeover lower-priority devices
+        const selected = [...free];
+        if (carrierPriority >= 0) {
+            const takeoverCandidates = _.tuner.devices
+                .map(d => _.tuner.get(d.index))
+                .filter(d =>
+                    d && d.index !== this._tunerIndex && !d.isRemote &&
+                    d.config.types.includes(channelType) &&
+                    !d.isFree && !d.isAdditionalCarrier &&
+                    d.isUsing && d.getPriority() < carrierPriority
+                )
+                .sort((a, b) => a.getPriority() - b.getPriority()) as TunerDevice[];
+
+            for (const d of takeoverCandidates) {
+                if (selected.length >= required) {
+                    break;
+                }
+                selected.push(d);
+            }
+        }
+
+        return selected.slice(0, required);
     }
 }
