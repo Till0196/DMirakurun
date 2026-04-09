@@ -66,7 +66,6 @@ export interface StreamFilterOptions {
     readonly tunerIndex?: number;      // needed for TSMF multi-carrier bonding
     readonly onFatal: (closing?: boolean) => void;
     readonly tsmfDiscovery?: boolean;   // deferred pipeline: detect groupId then branch
-    readonly knownFormat?: StreamFormat;  // skip format detection when input format is already known
 }
 
 export default class StreamFilter extends EventEmitter {
@@ -104,12 +103,6 @@ export default class StreamFilter extends EventEmitter {
         return this._tsmfFilter?.hasCarriers ?? false;
     }
 
-    setKnownFormat(format: StreamFormat): void {
-        if (!this._detected) {
-            this._options = { ...this._options, knownFormat: format };
-        }
-    }
-
     write(chunk: Buffer): void {
         if (this._closed) {
             return;
@@ -117,23 +110,6 @@ export default class StreamFilter extends EventEmitter {
 
         if (this._detected) {
             this._innerFilter.write(chunk);
-            return;
-        }
-
-        // Input format already known (e.g. TunerDevice-level TSMF bonding outputs TLV)
-        if (this._options.knownFormat) {
-            this._detected = true;
-            this._format = this._options.knownFormat;
-            log.debug("StreamFilter: using known format: %s", this._format);
-            switch (this._format) {
-                case "tlv":
-                    this._setupTLV(chunk);
-                    break;
-                case "ts":
-                default:
-                    this._setupTS(chunk);
-                    break;
-            }
             return;
         }
 

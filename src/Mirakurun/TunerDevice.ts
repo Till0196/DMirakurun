@@ -157,10 +157,6 @@ export default class TunerDevice extends EventEmitter {
         return this._tsmfFilter !== null && this._tsmfFilter.hasCarriers;
     }
 
-    get hasSharedTSMF(): boolean {
-        return this._tsmfFilter !== null;
-    }
-
     getPriority(): number {
         let priority = -2;
 
@@ -222,12 +218,6 @@ export default class TunerDevice extends EventEmitter {
             } else {
                 this._spawn(channel, options);
             }
-        }
-
-        // If shared TSMF was just created by _spawn, notify StreamFilter
-        // that the input is already TLV (skip format detection)
-        if (this._tsmfFilter && stream && "setKnownFormat" in stream) {
-            (stream as StreamFilter).setKnownFormat("tlv");
         }
 
         log.info("TunerDevice#%d streaming to user `%s` (priority=%d)", this._index, user.id, user.priority);
