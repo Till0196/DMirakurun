@@ -69,8 +69,8 @@ const columns: IColumn[] = [
         key: "col-types",
         name: "Types",
         fieldName: "types",
-        minWidth: 60,
-        maxWidth: 105
+        minWidth: 80,
+        maxWidth: 130
     },
     {
         key: "col-options",
@@ -147,7 +147,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
             ),
             types: (
                 <Dropdown
-                    styles={{ root: { display: "inline-block", minWidth: 70 } }}
+                    styles={{ root: { display: "inline-block", minWidth: 90 } }}
                     multiSelect
                     options={[
                         { key: "GR", text: "GR" },
@@ -260,13 +260,27 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                     )}
                     {(!tuner.remoteMirakurunHost) && (
                         <TextField
-                            label="MMTS Decoder:"
-                            value={tuner.mmtsDecoder || ""}
+                            label="TLV to TS Decoder:"
+                            value={tuner.tlvToTsDecoder || ""}
                             onChange={(ev, newValue) => {
                                 if (newValue === "") {
-                                    delete tuner.mmtsDecoder;
+                                    delete tuner.tlvToTsDecoder;
                                 } else {
-                                    tuner.mmtsDecoder = newValue;
+                                    tuner.tlvToTsDecoder = newValue;
+                                }
+                                setEditing([...editing]);
+                            }}
+                        />
+                    )}
+                    {(!tuner.remoteMirakurunHost) && (
+                        <TextField
+                            label="TLV Decoder:"
+                            value={tuner.tlvDecoder || ""}
+                            onChange={(ev, newValue) => {
+                                if (newValue === "") {
+                                    delete tuner.tlvDecoder;
+                                } else {
+                                    tuner.tlvDecoder = newValue;
                                 }
                                 setEditing([...editing]);
                             }}
@@ -341,7 +355,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                                     command: `dvbv5-zap -a ${i} -c ./config/dvbconf-for-isdb/conf/dvbv5_channels_isdbs.conf -r -P <channel>`,
                                     dvbDevicePath: `/dev/dvb/adapter${i}/dvr0`,
                                     decoder: "arib-b25-stream-test",
-                                    mmtsDecoder: "dantto4k - -",
+                                    tlvToTsDecoder: "dantto4k - -",
                                     isDisabled: true
                                 });
                                 setEditing([...editing]);
