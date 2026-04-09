@@ -91,6 +91,24 @@ export interface CarrierSuperframe {
     frames: CarrierFrame[];
 }
 
+/**
+ * Parsed information from a TSMF Extended frame header (frame_type=0x02).
+ * See ARIB STD-B32 6.3.3 / 6.3.4. The `streamTypeBits` field encodes
+ * stream_type[1..15] in MSB-first order: bit (15-n) corresponds to
+ * relative stream `n`; value 0 = TLV, value 1 = TS or no stream.
+ */
+export interface TSMFHeaderInfo {
+    payload: Buffer;
+    slotMap: number[];        // 52 entries, each 0..15 (0 = unused)
+    streamTypeBits: number;   // 15 bits, MSB = relative stream 1
+    groupId: number;          // 0..254, 255 = undefined
+    numberOfCarriers: number; // 1..16
+    carrierSequence: number;  // 1..numberOfCarriers
+    framePosition: number;
+    numberOfFrames: number;
+    headerCRC: number;
+}
+
 interface CarrierState {
     carrierSequence: number;
     numberOfCarriers: number;
@@ -129,6 +147,74 @@ interface CarrierLink {
  */
 export default class TSMFFilter extends EventEmitter {
 
+    /**
+     * Parse a TSMF Extended frame header from a TS packet (PID=0x2F).
+     * Validates AFC, frame_sync, and CRC32. Returns null if the packet
+     * is not a valid TSMF header.
+     *
+     * Used by `StreamFilter._detectStreamFormat` to deterministically route
+     * each session to the TLV or TS pipeline based on the requested
+     * service's `stream_type`.
+     */
+    static parseTSMFHeader(packet: Buffer): TSMFHeaderInfo | null {
+        if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
+            return null;
+        }
+        // AFC 0x01: payload only; AFC 0x03: adaptation field + payload
+        const afc = (packet[3] & 0x30) >> 4;
+        if (afc !== 0x01 && afc !== 0x03) {
+            return null;
+        }
+        const base = afc === 0x03 ? 5 + packet[4] : 4;
+        if (base + 184 > PACKET_SIZE) {
+            return null;
+        }
+        const payload = packet.subarray(base, base + 184);
+
+        const frameSync = ((payload[0] << 8) | payload[1]) & 0x1fff;
+        if (frameSync !== TSMF_SYNC_A && frameSync !== TSMF_SYNC_B) {
+            return null;
+        }
+        if (TsCrc32.calc(payload) !== 0) {
+            return null;
+        }
+
+        const numberOfCarriers = payload[124];
+        const carrierSequence = payload[125];
+        if (numberOfCarriers < 1 || numberOfCarriers > 16 ||
+            carrierSequence < 1 || carrierSequence > numberOfCarriers) {
+            return null;
+        }
+
+        const slotMap: number[] = new Array(SLOT_COUNT);
+        for (let i = 0; i < SLOT_COUNT; i++) {
+            const b = payload[69 + (i >> 1)];
+            slotMap[i] = (i & 1) === 0 ? (b >> 4) & 0x0f : b & 0x0f;
+        }
+
+        const frameRaw = payload[126];
+        return {
+            payload,
+            slotMap,
+            streamTypeBits: (payload[121] << 7) | (payload[122] >> 1),
+            groupId: payload[123],
+            numberOfCarriers,
+            carrierSequence,
+            framePosition: frameRaw & 0x0f,
+            numberOfFrames: (frameRaw >> 4) & 0x0f,
+            headerCRC: (payload[180] << 24) | (payload[181] << 16) | (payload[182] << 8) | payload[183]
+        };
+    }
+
+    /**
+     * True iff relative stream `n` (1..15) carries TLV.
+     * stream_type bit 0 = TLV, 1 = TS or no stream (ARIB STD-B32 6.3.4.2,
+     * table 6.3-8). Bit (15-n) of `streamTypeBits` corresponds to stream n.
+     */
+    static isTLVStream(streamTypeBits: number, n: number): boolean {
+        return n >= 1 && n <= 15 && ((streamTypeBits >> (15 - n)) & 1) === 0;
+    }
+
     private _tunerIndex: number;
     private _assembler: TLVAssembler;
     private _onFatal: (closing?: boolean) => void;
@@ -143,6 +229,14 @@ export default class TSMFFilter extends EventEmitter {
     private _carrierConfirmValue = 0;
 
     private _targetRelStream: number | null;
+    /**
+     * True when `_targetRelStream` was set explicitly by the caller (via
+     * options.tsmfRelTs). In that case `_pickTargetStream` honors it even
+     * if the corresponding `stream_type` bit indicates TS — useful as a
+     * defensive guard so that a routing mistake at the StreamFilter level
+     * doesn't cause this filter to loop in fallback warnings.
+     */
+    private _targetRelStreamExplicit: boolean;
     private _expectedGroupId: number | null;
     private _detectedGroupId: number | null = null;
 
@@ -156,6 +250,7 @@ export default class TSMFFilter extends EventEmitter {
         this._tunerIndex = tunerIndex;
         this._onFatal = onFatal;
         this._targetRelStream = options?.tsmfRelTs ? options.tsmfRelTs : null;
+        this._targetRelStreamExplicit = this._targetRelStream !== null;
         this._expectedGroupId = typeof options?.groupId === "number" ? options.groupId : null;
 
         this._assembler = new TLVAssembler(tunerIndex, null);
@@ -381,7 +476,6 @@ export default class TSMFFilter extends EventEmitter {
         if (!frameInfo) {
             return;
         }
-        const payload = frameInfo.payload;
 
         const cc = packet[3] & 0x0f;
         const wasSynced = source.ccChecker.synced;
@@ -411,7 +505,7 @@ export default class TSMFFilter extends EventEmitter {
         // Skip when CRC matches the currently locked header.
         if (frameInfo.framePosition === 0 &&
             !(source.headerLocked && frameInfo.headerCRC === source.activeHeaderCRC)) {
-            this._applyTSMFHeader(source, payload, frameInfo.headerCRC);
+            this._applyTSMFHeader(source, frameInfo.slotMap, frameInfo.streamTypeBits, frameInfo.headerCRC);
         }
 
         if (source.currentFrame && source.currentFrame.slots.length > 0) {
@@ -426,20 +520,18 @@ export default class TSMFFilter extends EventEmitter {
         };
     }
 
-    private _applyTSMFHeader(source: SourceState, payload: Buffer, headerCRC: number): void {
-        const slotMap = this._parseSlotMap(payload);
-        const bits = (payload[121] << 7) | (payload[122] >> 1);
-        const target = this._pickTargetStream(slotMap, bits);
+    private _applyTSMFHeader(source: SourceState, slotMap: number[], streamTypeBits: number, headerCRC: number): void {
+        const target = this._pickTargetStream(slotMap, streamTypeBits);
 
         source.tsmfRelativeStreamNumber = slotMap;
-        source.streamTypeBits = bits;
+        source.streamTypeBits = streamTypeBits;
         source.effectiveTargetStreamNumber = target;
         source.headerLocked = true;
         source.activeHeaderCRC = headerCRC;
         // Pre-compute target slot mask used by every frame in this header epoch.
         source.targetSlotsCache = target <= 0
             ? new Array(SLOT_COUNT).fill(true)
-            : slotMap.map(v => v === target && this._isTLV(bits, v));
+            : slotMap.map(v => v === target && TSMFFilter.isTLVStream(streamTypeBits, v));
     }
 
     private _resolveCarrier(
@@ -520,31 +612,27 @@ export default class TSMFFilter extends EventEmitter {
         }
     }
 
-    private _parseSlotMap(payload: Buffer): number[] {
-        const relative: number[] = new Array(SLOT_COUNT);
-        for (let i = 0; i < SLOT_COUNT; i++) {
-            const b = payload[69 + (i >> 1)];
-            relative[i] = (i & 1) === 0 ? (b >> 4) & 0x0f : b & 0x0f;
-        }
-        return relative;
-    }
-
-    /** True iff stream `n` (1..15) carries TLV (bit 0 in streamTypeBits). */
-    private _isTLV(bits: number, n: number): boolean {
-        return n >= 1 && n <= 15 && ((bits >> (15 - n)) & 1) === 0;
-    }
-
     /**
      * Pick the target relative stream number for this carrier.
-     * Caches the first selection in `_targetRelStream`. If the cached
-     * stream is no longer TLV (e.g. header re-lock), re-selects from the
-     * stream with the most TLV slots, falling back to the most-slots stream
-     * of any type when no TLV stream is present.
+     *
+     * - Caller-supplied `_targetRelStream` (via options.tsmfRelTs) is
+     *   honored unconditionally so a future mixed multiplex routed via
+     *   StreamFilter does not collide with the TLV-preference fallback.
+     *   Note that the TLV pipeline still needs the target to actually be
+     *   TLV — StreamFilter is responsible for ensuring TS relTs values
+     *   are routed to `_initTsmfTs` instead of here.
+     * - Auto-selected targets are revalidated on header re-lock and may
+     *   fall back to the largest TLV stream / largest stream of any type.
      */
     private _pickTargetStream(relative: number[], streamTypeBits: number): number {
         const cached = this._targetRelStream;
-        if (cached !== null && this._isTLV(streamTypeBits, cached)) {
-            return cached;
+        if (cached !== null) {
+            if (this._targetRelStreamExplicit) {
+                return cached;
+            }
+            if (TSMFFilter.isTLVStream(streamTypeBits, cached)) {
+                return cached;
+            }
         }
 
         // Single pass: tally TLV-slot count and total-slot count per stream.
@@ -553,7 +641,7 @@ export default class TSMFFilter extends EventEmitter {
         for (const v of relative) {
             if (v >= 1 && v <= 15) {
                 all[v]++;
-                if (this._isTLV(streamTypeBits, v)) {
+                if (TSMFFilter.isTLVStream(streamTypeBits, v)) {
                     tlv[v]++;
                 }
             }
@@ -586,43 +674,25 @@ export default class TSMFFilter extends EventEmitter {
         numberOfFrames: number;
         carriers: { numberOfCarriers: number; carrierSequence: number };
         groupId: number;
+        slotMap: number[];
+        streamTypeBits: number;
     } | null {
-        if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
+        const info = TSMFFilter.parseTSMFHeader(packet);
+        if (!info) {
             return null;
         }
-        // AFC 0x01: payload only; AFC 0x03: adaptation field + payload
-        const afc = (packet[3] & 0x30) >> 4;
-        if (afc !== 0x01 && afc !== 0x03) {
-            return null;
-        }
-        const base = afc === 0x03 ? 5 + packet[4] : 4;
-        if (base + 184 > PACKET_SIZE) {
-            return null;
-        }
-        const payload = packet.subarray(base, base + 184);
-
-        const frameSync = ((payload[0] << 8) | payload[1]) & 0x1fff;
-        if (frameSync !== TSMF_SYNC_A && frameSync !== TSMF_SYNC_B) {
-            return null;
-        }
-        if (TsCrc32.calc(payload) !== 0) {
-            return null;
-        }
-
-        const numberOfCarriers = payload[124];
-        const carrierSequence = payload[125];
-        if (numberOfCarriers < 1 || numberOfCarriers > 16 || carrierSequence < 1 || carrierSequence > numberOfCarriers) {
-            return null;
-        }
-
-        const frameRaw = payload[126];
         return {
-            payload,
-            headerCRC: (payload[180] << 24) | (payload[181] << 16) | (payload[182] << 8) | payload[183],
-            framePosition: frameRaw & 0x0f,
-            numberOfFrames: (frameRaw >> 4) & 0x0f,
-            carriers: { numberOfCarriers, carrierSequence },
-            groupId: payload[123]
+            payload: info.payload,
+            headerCRC: info.headerCRC,
+            framePosition: info.framePosition,
+            numberOfFrames: info.numberOfFrames,
+            carriers: {
+                numberOfCarriers: info.numberOfCarriers,
+                carrierSequence: info.carrierSequence
+            },
+            groupId: info.groupId,
+            slotMap: info.slotMap,
+            streamTypeBits: info.streamTypeBits
         };
     }
 

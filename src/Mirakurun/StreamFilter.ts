@@ -23,9 +23,8 @@ import TSFilter from "./TSFilter";
 import TLVFilter from "./TLVFilter";
 import TSDecoder from "./TSDecoder";
 import TLVDecoder from "./TLVDecoder";
-import TSMFFilter from "./TSMFFilter";
+import TSMFFilter, { TsmfCCChecker, TSMFHeaderInfo } from "./TSMFFilter";
 import { TSMFSlotFilter } from "./TSMFSlotFilter";
-import { TsmfCCChecker } from "./TSMFFilter";
 import ChannelItem from "./ChannelItem";
 
 // Stream format detection constants
@@ -454,15 +453,25 @@ export default class StreamFilter extends EventEmitter {
         const opts = this._options;
         const ch = opts.channel;
 
+        // Resolve target relTs in the same priority order as _initTsmfTs:
+        //   1. URL query (?tsmfRelTs=)
+        //   2. per-service mapping for opts.serviceId
+        //   3. per-channel default (ch.tsmfRelTs)
+        // Without this, TSMF-TLV multiplexes containing multiple services
+        // (or future mixed TLV+TS multiplexes) cannot route per-service.
+        const targetRelTs = opts.tsmfRelTs
+            ?? (opts.serviceId ? ch.getTsmfRelTs(opts.serviceId) : undefined)
+            ?? ch.tsmfRelTs;
+
         log.info(
-            "StreamFilter TSMF-TLV %s (tsmfRelTs=%d, groupId=%s)",
+            "StreamFilter TSMF-TLV %s (tsmfRelTs=%s, groupId=%s)",
             opts.tsmfDiscovery ? "discovery" : "bonded scan",
-            ch.tsmfRelTs,
+            targetRelTs ?? "auto",
             ch.tsmfGroupId ?? "none"
         );
 
         this._tsmfFilter = new TSMFFilter(opts.tunerIndex ?? 0, {
-            tsmfRelTs: ch.tsmfRelTs,
+            tsmfRelTs: targetRelTs,
             groupId: ch.tsmfGroupId ?? undefined
         }, opts.onFatal);
 
@@ -600,8 +609,9 @@ export default class StreamFilter extends EventEmitter {
         }
 
         if (tsStart >= 0) {
-            // Check for TSMF headers with CC continuity check to skip stale DVR buffer data.
-            // After retune, the first TSMF frames may be from the previous channel.
+            // Find a CC-synced TSMF Extended frame header. After retune, the
+            // first TSMF frames may be stale DVR buffer data from the previous
+            // channel, so we require two consecutive CCs before trusting one.
             const ccChecker = new TsmfCCChecker();
 
             for (let offset = tsStart; offset + TS_PKT <= buffer.length; offset += TS_PKT) {
@@ -616,29 +626,18 @@ export default class StreamFilter extends EventEmitter {
                 if (sync !== TSMF_SYNC_A && sync !== TSMF_SYNC_B) {
                     continue;
                 }
-                // CC check: skip stale frames from previous channel
-                const cc = buffer[offset + 3] & 0x0f;
-                if (!ccChecker.check(cc)) {
+                if (!ccChecker.check(buffer[offset + 3] & 0x0f)) {
                     continue;
                 }
-                // CC-synced TSMF frame — this is from the current channel.
-                // Determine content type by looking at data slot PIDs.
-                // TLV data packets use PID=0x2D, TS data uses other PIDs.
-                const slotStart = offset + TS_PKT;
-                let hasTlvPid = false;
-                for (let s = 0; s < 10 && slotStart + s * TS_PKT + TS_PKT <= buffer.length; s++) {
-                    const slotOffset = slotStart + s * TS_PKT;
-                    if (buffer[slotOffset] !== TS_SYNC) {
-                        break;
-                    }
-                    const slotPid = ((buffer[slotOffset + 1] & 0x1f) << 8) | buffer[slotOffset + 2];
-                    if (slotPid === 0x2d) { // TLV_PID
-                        hasTlvPid = true;
-                        break;
-                    }
-                }
 
-                return hasTlvPid ? "tsmf-tlv" : "tsmf-ts";
+                // CC-synced TSMF packet — parse the full extended header for
+                // deterministic TLV/TS routing using stream_type[i].
+                const packet = buffer.subarray(offset, offset + TS_PKT);
+                const info = TSMFFilter.parseTSMFHeader(packet);
+                if (!info) {
+                    continue;
+                }
+                return this._routeTsmfFormat(info);
             }
 
             // TS sync found but no TSMF — plain TS
@@ -671,4 +670,81 @@ export default class StreamFilter extends EventEmitter {
 
         return "ts";
     }
+
+    /**
+     * Decide whether a TSMF Extended multiplex should route through the TLV
+     * pipeline or the TS pipeline, based on the requested service's
+     * `stream_type` bit (ARIB STD-B32 6.3.4.2).
+     *
+     * Resolution priority for the target relative stream:
+     *   1. opts.tsmfRelTs (explicit URL query override)
+     *   2. opts.channel.getTsmfRelTs(opts.serviceId) (per-service mapping)
+     *   3. ch.tsmfRelTs (per-channel default)
+     *   4. auto-pick: largest TLV stream → largest TS stream → relTs=1
+     */
+    private _routeTsmfFormat(info: TSMFHeaderInfo): StreamFormat {
+        const opts = this._options;
+        const ch = opts.channel;
+        let target = opts.tsmfRelTs
+            ?? (opts.serviceId ? ch.getTsmfRelTs(opts.serviceId) : undefined)
+            ?? ch.tsmfRelTs;
+
+        if (!target) {
+            target = autoPickRelTs(info.slotMap, info.streamTypeBits);
+        }
+
+        const isTLV = TSMFFilter.isTLVStream(info.streamTypeBits, target);
+        log.debug(
+            "StreamFilter TSMF route: relTs=%d stream_type=%s → %s (slotMap counts %j, streamTypeBits=0x%s)",
+            target, isTLV ? "TLV" : "TS", isTLV ? "tsmf-tlv" : "tsmf-ts",
+            countSlots(info.slotMap), info.streamTypeBits.toString(16)
+        );
+        return isTLV ? "tsmf-tlv" : "tsmf-ts";
+    }
+}
+
+/**
+ * Auto-pick the relative stream most likely to be the user's intended target
+ * when no explicit relTs was given. Prefers the TLV stream with the most
+ * slots; falls back to the TS stream with the most slots; finally returns 1.
+ */
+function autoPickRelTs(slotMap: number[], streamTypeBits: number): number {
+    const counts: number[] = new Array(16).fill(0);
+    for (const v of slotMap) {
+        if (v >= 1 && v <= 15) {
+            counts[v]++;
+        }
+    }
+    let bestTLV = 0;
+    let bestTLVCount = 0;
+    let bestTS = 0;
+    let bestTSCount = 0;
+    for (let n = 1; n <= 15; n++) {
+        if (counts[n] === 0) {
+            continue;
+        }
+        if (TSMFFilter.isTLVStream(streamTypeBits, n)) {
+            if (counts[n] > bestTLVCount) {
+                bestTLV = n;
+                bestTLVCount = counts[n];
+            }
+        } else {
+            if (counts[n] > bestTSCount) {
+                bestTS = n;
+                bestTSCount = counts[n];
+            }
+        }
+    }
+    return bestTLV || bestTS || 1;
+}
+
+/** Aggregate slot counts per relative stream for diagnostic logging. */
+function countSlots(slotMap: number[]): Record<number, number> {
+    const counts: Record<number, number> = {};
+    for (const v of slotMap) {
+        if (v >= 1 && v <= 15) {
+            counts[v] = (counts[v] || 0) + 1;
+        }
+    }
+    return counts;
 }
