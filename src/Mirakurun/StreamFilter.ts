@@ -24,7 +24,8 @@ import TLVFilter from "./TLVFilter";
 import TSDecoder from "./TSDecoder";
 import TLVDecoder from "./TLVDecoder";
 import TSMFFilter from "./TSMFFilter";
-import { TSMFSlotFilter, TsmfCCChecker } from "./TSMFDemuxer";
+import { TSMFSlotFilter } from "./TSMFSlotFilter";
+import { TsmfCCChecker } from "./TSMFFilter";
 import ChannelItem from "./ChannelItem";
 
 // Stream format detection constants
@@ -40,6 +41,49 @@ const DETECT_MIN_BYTES = 188 * 53 * 2; // ~20KB, guarantees 2 TSMF frames
 const TSMF_PID = 0x2f;
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
+const TS_PACKET_SIZE = 188;
+
+/**
+ * Extract service IDs from a PAT TS packet (used by TSMF auto-detection).
+ * Returns empty array if the packet does not contain a parsable PAT section.
+ */
+function parsePATPacket(packet: Buffer): number[] {
+    const pusi = (packet[1] & 0x40) !== 0;
+    if (!pusi) {
+        return [];
+    }
+
+    const afc = (packet[3] & 0x30) >> 4;
+    let payloadStart = 4;
+    if (afc === 0x03) {
+        payloadStart = 5 + packet[4];
+    } else if (afc !== 0x01) {
+        return [];
+    }
+
+    const pointerField = packet[payloadStart];
+    const sectionStart = payloadStart + 1 + pointerField;
+
+    if (sectionStart + 8 > TS_PACKET_SIZE) {
+        return [];
+    }
+    if (packet[sectionStart] !== 0x00) {
+        return [];
+    }
+
+    const sectionLength = ((packet[sectionStart + 1] & 0x0f) << 8) | packet[sectionStart + 2];
+    const serviceIds: number[] = [];
+    const end = Math.min(sectionStart + 3 + sectionLength - 4, TS_PACKET_SIZE);
+
+    for (let i = sectionStart + 8; i + 4 <= end; i += 4) {
+        const serviceId = (packet[i] << 8) | packet[i + 1];
+        if (serviceId !== 0) {
+            serviceIds.push(serviceId);
+        }
+    }
+
+    return serviceIds;
+}
 
 export type StreamFormat = "ts" | "tlv" | "tsmf-ts" | "tsmf-tlv";
 
@@ -315,29 +359,68 @@ export default class StreamFilter extends EventEmitter {
         } else {
             // Auto-detect TSMF mapping
             const detector = TSMFSlotFilter.createDetector();
-            detector.once("detected", (mapping: Map<number, Set<number>>) => {
-                for (const [relTs, serviceIds] of mapping) {
-                    for (const sid of serviceIds) {
-                        opts.channel.addTsmfRelTsMapping(sid, relTs);
+            const serviceMap = new Map<number, Set<number>>();
+            const activeStreams = new Set<number>();
+            const detectedStreams = new Set<number>();
+            let detectedGroupId: number | null = null;
+            let completed = false;
+
+            detector.on("slotMap", (slotMap: number[], groupId: number | null) => {
+                if (groupId !== null && detectedGroupId === null) {
+                    detectedGroupId = groupId;
+                }
+                for (const relTs of slotMap) {
+                    if (relTs > 0) {
+                        activeStreams.add(relTs);
                     }
                 }
-                if (detector.groupId !== null) {
-                    opts.channel.setTsmfGroupId(detector.groupId);
+            });
+
+            detector.on("patPacket", (relTs: number, packet: Buffer) => {
+                if (completed || detectedStreams.has(relTs)) {
+                    return;
+                }
+                const serviceIds = parsePATPacket(packet);
+                if (serviceIds.length === 0) {
+                    return;
+                }
+                let entry = serviceMap.get(relTs);
+                if (!entry) {
+                    entry = new Set();
+                    serviceMap.set(relTs, entry);
+                }
+                for (const sid of serviceIds) {
+                    entry.add(sid);
+                }
+                detectedStreams.add(relTs);
+
+                if (activeStreams.size === 0 || detectedStreams.size < activeStreams.size) {
+                    return;
+                }
+
+                completed = true;
+                for (const [rel, sids] of serviceMap) {
+                    for (const sid of sids) {
+                        opts.channel.addTsmfRelTsMapping(sid, rel);
+                    }
+                }
+                if (detectedGroupId !== null) {
+                    opts.channel.setTsmfGroupId(detectedGroupId);
                 }
                 log.info("StreamFilter TSMF auto-detected %d streams groupId=%s on %s",
-                    mapping.size,
-                    detector.groupId !== null ? String(detector.groupId) : "none",
+                    serviceMap.size,
+                    detectedGroupId !== null ? String(detectedGroupId) : "none",
                     opts.channel.channel);
 
                 // Always select a stream after detection to prevent NIT/SDT interleaving
-                if (mapping.size >= 1) {
+                if (serviceMap.size >= 1) {
                     const targetRelTs = opts.serviceId
                         ? opts.channel.getTsmfRelTs(opts.serviceId)
                         : undefined;
                     if (targetRelTs) {
                         detector.selectStream(targetRelTs);
                     } else {
-                        const firstRelTs = Math.min(...mapping.keys());
+                        const firstRelTs = Math.min(...serviceMap.keys());
                         detector.selectStream(firstRelTs);
                     }
                 }
