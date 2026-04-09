@@ -108,6 +108,22 @@ export interface TSMFHeaderInfo {
     headerCRC: number;
 }
 
+/**
+ * Result of `TSMFFilter.resolveRoute`.
+ *
+ * - `tsmf-tlv` / `tsmf-ts`: single-relTs pipeline. `pinned` is true when the
+ *   relTs came from caller hints (URL query / per-service mapping / channel
+ *   default), false when picked by auto-detection.
+ * - `tsmf-ts-scan`: multi-relTs scan fan-out (Tuner.getServices on a pure
+ *   TS multiplex with parseSDT=true).
+ * - `empty`: slot map is empty — multiplex is unusable.
+ */
+export type TSMFRouteDecision =
+    | { kind: "tsmf-tlv"; relTs: number; pinned: boolean; activeStreams: Set<number> }
+    | { kind: "tsmf-ts"; relTs: number; pinned: boolean; activeStreams: Set<number> }
+    | { kind: "tsmf-ts-scan"; activeStreams: Set<number> }
+    | { kind: "empty" };
+
 interface CarrierState {
     carrierSequence: number;
     numberOfCarriers: number;
@@ -245,6 +261,108 @@ export default class TSMFFilter extends EventEmitter {
      */
     static isTLVStream(streamTypeBits: number, n: number): boolean {
         return n >= 1 && n <= 15 && ((streamTypeBits >> (15 - n)) & 1) === 0;
+    }
+
+    /**
+     * Scan a TS-aligned buffer for the first CC-synced TSMF Extended frame
+     * and return its parsed header. Returns null if no valid TSMF packet is
+     * found within the buffer.
+     *
+     * Walks 188-byte aligned positions starting at `tsStart`. After retune,
+     * the first frames may be stale DVR buffer data from the previous
+     * channel, so we require two consecutive CCs (`TsmfCCChecker`) before
+     * trusting a frame.
+     */
+    static findFirstExtendedHeader(buffer: Buffer, tsStart: number): TSMFHeaderInfo | null {
+        const ccChecker = new TsmfCCChecker();
+        for (let offset = tsStart; offset + PACKET_SIZE <= buffer.length; offset += PACKET_SIZE) {
+            if (buffer[offset] !== TS_SYNC_BYTE) {
+                break;
+            }
+            const pid = ((buffer[offset + 1] & 0x1f) << 8) | buffer[offset + 2];
+            if (pid !== TSMF_PID) {
+                continue;
+            }
+            const sync = ((buffer[offset + 4] << 8) | buffer[offset + 5]) & 0x1fff;
+            if (sync !== TSMF_SYNC_A && sync !== TSMF_SYNC_B) {
+                continue;
+            }
+            if (!ccChecker.check(buffer[offset + 3] & 0x0f)) {
+                continue;
+            }
+            const packet = buffer.subarray(offset, offset + PACKET_SIZE);
+            const info = TSMFFilter.parseTSMFHeader(packet);
+            if (info) {
+                return info;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Decide how to route a TSMF multiplex into the StreamFilter inner
+     * pipelines, given the parsed Extended header and caller hints.
+     *
+     * Routing rules:
+     *   1. `requestedRelTs` set → use it; pick TS or TLV by stream_type bit.
+     *   2. otherwise: prefer the smallest TLV-bearing relTs (mixed/pure TLV).
+     *   3. otherwise (pure TS multiplex):
+     *      - parseSDT=true (Tuner.getServices scan): "tsmf-ts-scan" so the
+     *        caller can fan out per-relTs.
+     *      - parseSDT=false (streaming/EPG): "tsmf-ts" with the smallest
+     *        active relTs.
+     */
+    static resolveRoute(
+        header: TSMFHeaderInfo,
+        requestedRelTs: number | null | undefined,
+        parseSDT: boolean
+    ): TSMFRouteDecision {
+        const activeStreams = new Set<number>();
+        for (const r of header.slotMap) {
+            if (r >= 1 && r <= 15) {
+                activeStreams.add(r);
+            }
+        }
+        if (activeStreams.size === 0) {
+            return { kind: "empty" };
+        }
+
+        if (requestedRelTs !== undefined && requestedRelTs !== null) {
+            const isTLV = TSMFFilter.isTLVStream(header.streamTypeBits, requestedRelTs);
+            return {
+                kind: isTLV ? "tsmf-tlv" : "tsmf-ts",
+                relTs: requestedRelTs,
+                pinned: true,
+                activeStreams
+            };
+        }
+
+        for (let n = 1; n <= 15; n++) {
+            if (activeStreams.has(n) && TSMFFilter.isTLVStream(header.streamTypeBits, n)) {
+                return { kind: "tsmf-tlv", relTs: n, pinned: false, activeStreams };
+            }
+        }
+
+        if (parseSDT) {
+            return { kind: "tsmf-ts-scan", activeStreams };
+        }
+        return {
+            kind: "tsmf-ts",
+            relTs: Math.min(...activeStreams),
+            pinned: false,
+            activeStreams
+        };
+    }
+
+    /** Aggregate slot counts per relative stream for diagnostic logging. */
+    static countSlots(slotMap: number[]): Record<number, number> {
+        const counts: Record<number, number> = {};
+        for (const v of slotMap) {
+            if (v >= 1 && v <= 15) {
+                counts[v] = (counts[v] || 0) + 1;
+            }
+        }
+        return counts;
     }
 
     private _tunerIndex: number;

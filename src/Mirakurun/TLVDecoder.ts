@@ -17,6 +17,7 @@ import * as stream from "stream";
 import * as child_process from "child_process";
 import * as log from "./log";
 import * as common from "./common";
+import { OutputFormat } from "./common";
 import status from "./status";
 
 interface TLVDecoderOptions {
@@ -25,11 +26,57 @@ interface TLVDecoderOptions {
     readonly startupTimeout?: number;
 }
 
+/**
+ * Factory options for selecting an appropriate TLV-side sink for a session.
+ * The intent of each field:
+ * - `tlvDecoder`     : TLV→TLV decoder command (e.g. a TLV passthrough/normaliser)
+ * - `tlvToTsDecoder` : TLV→TS decoder command (e.g. dantto4k)
+ * - `outputFormat`   : what the caller wants on `output` ("ts" by default, or "tlv")
+ * - `disableDecoder` : bypass any decoder and write raw TLV to `output`
+ */
+export interface TLVDecoderFactoryOptions {
+    readonly output: stream.Writable;
+    readonly outputFormat?: OutputFormat;
+    readonly tlvDecoder?: string;
+    readonly tlvToTsDecoder?: string;
+    readonly disableDecoder?: boolean;
+}
+
 const DEFAULT_STARTUP_TIMEOUT = 10000;
 
 let idCounter = 0;
 
 export default class TLVDecoder extends stream.Writable {
+
+    /**
+     * Pick the right TLV sink for this session.
+     *
+     * Resolution rules (centralised here so callers don't repeat them):
+     *   1. `disableDecoder`            → return `output` directly (raw TLV)
+     *   2. `outputFormat === "tlv"`    → caller wants TLV out
+     *        - `tlvDecoder` set        → spawn TLV→TLV decoder
+     *        - else                    → return `output` directly (raw TLV)
+     *   3. otherwise (TS output)       → caller wants TS out
+     *        - `tlvToTsDecoder` set    → spawn TLV→TS decoder (preferred)
+     *        - else `tlvDecoder` set   → spawn that as a fallback
+     *        - else                    → return `output` directly (raw TLV)
+     */
+    static create(opts: TLVDecoderFactoryOptions): stream.Writable {
+        if (opts.disableDecoder) {
+            return opts.output;
+        }
+        if (opts.outputFormat === "tlv") {
+            if (opts.tlvDecoder) {
+                return new TLVDecoder({ output: opts.output, command: opts.tlvDecoder });
+            }
+            return opts.output;
+        }
+        const command = opts.tlvToTsDecoder || opts.tlvDecoder;
+        if (command) {
+            return new TLVDecoder({ output: opts.output, command });
+        }
+        return opts.output;
+    }
 
     private _output: stream.Writable;
 
