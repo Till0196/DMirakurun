@@ -369,6 +369,7 @@ export class Tuner {
                     tlvToTsDecoder: device.tlvToTsDecoder,
                     tlvDecoder: device.tlvDecoder,
                     disableDecoder: user.disableDecoder,
+                    outputFormat: user.outputFormat,
                     networkId: setting.networkId,
                     serviceId: setting.serviceId,
                     eventId: setting.eventId,

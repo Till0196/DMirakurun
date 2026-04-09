@@ -17,12 +17,15 @@ import rfdc from "rfdc";
 import ChannelItem from "./ChannelItem";
 import * as apid from "../../api";
 
+export type OutputFormat = "ts" | "tlv";
+
 export interface User {
     readonly id: string;
     readonly priority: number;
     readonly agent?: string;
     readonly url?: string;
     readonly disableDecoder?: boolean;
+    readonly outputFormat?: OutputFormat;
     readonly streamSetting?: StreamSetting;
     readonly streamInfo?: StreamInfo;
 }

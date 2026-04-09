@@ -16,7 +16,7 @@
 import {Operation} from "express-openapi";
 import * as api from "../../../../api";
 import * as apid from "../../../../../../api";
-import { channelTypes } from "../../../../common";
+import { channelTypes, OutputFormat } from "../../../../common";
 import _ from "../../../../_";
 
 export const parameters = [
@@ -48,6 +48,12 @@ export const parameters = [
     },
     {
         in: "query",
+        name: "format",
+        type: "string",
+        enum: ["ts", "tlv"]
+    },
+    {
+        in: "query",
         name: "tsmfRelTs",
         type: "integer",
         minimum: 0,
@@ -65,9 +71,11 @@ export const get: Operation = (req, res) => {
 
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
 
+    const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
+
     // HEAD request support
     if (req.method === "HEAD") {
-        res.setHeader("Content-Type", "video/MP2T");
+        res.setHeader("Content-Type", contentType);
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
@@ -80,13 +88,15 @@ export const get: Operation = (req, res) => {
     res.socket.setNoDelay(true);
 
     const tsmfRelTs = req.query.tsmfRelTs !== undefined ? parseInt(req.query.tsmfRelTs as string, 10) : undefined;
+    const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
 
     channel.getStream({
         id: userId,
         priority: parseInt(req.get("X-Mirakurun-Priority"), 10) || 0,
         agent: req.get("User-Agent"),
         url: req.url,
-        disableDecoder: (<number> <any> req.query.decode === 0)
+        disableDecoder: (<number> <any> req.query.decode === 0),
+        outputFormat
     }, res, tsmfRelTs)
         .then(tsFilter => {
             if (requestAborted === true || req.aborted === true) {
@@ -95,7 +105,7 @@ export const get: Operation = (req, res) => {
 
             req.once("close", () => tsFilter.close());
 
-            res.setHeader("Content-Type", "video/MP2T");
+            res.setHeader("Content-Type", contentType);
             res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
             res.status(200);
         })

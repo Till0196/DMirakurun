@@ -16,7 +16,7 @@
 import * as stream from "stream";
 import { Writable } from "stream";
 import EventEmitter = require("eventemitter3");
-import { StreamInfo } from "./common";
+import { StreamInfo, OutputFormat } from "./common";
 import * as log from "./log";
 import _ from "./_";
 import TSFilter from "./TSFilter";
@@ -54,6 +54,7 @@ export interface StreamFilterOptions {
     readonly tlvToTsDecoder?: string;  // TLV→TS decoder (dantto4k)
     readonly tlvDecoder?: string;      // TLV→TLV decoder
     readonly disableDecoder?: boolean;
+    readonly outputFormat?: OutputFormat;  // "ts" (default) or "tlv"
     readonly networkId?: number;
     readonly serviceId?: number;
     readonly eventId?: number;
@@ -222,6 +223,38 @@ export default class StreamFilter extends EventEmitter {
         }
     }
 
+    private _selectTLVOutput(): Writable {
+        const opts = this._options;
+        if (opts.disableDecoder) {
+            return opts.output;
+        }
+        if (opts.outputFormat === "tlv") {
+            if (opts.tlvDecoder) {
+                this._decoder = new TLVDecoder({
+                    output: opts.output,
+                    command: opts.tlvDecoder
+                });
+                return this._decoder;
+            }
+            return opts.output;
+        }
+        if (opts.tlvToTsDecoder) {
+            this._decoder = new TLVDecoder({
+                output: opts.output,
+                command: opts.tlvToTsDecoder
+            });
+            return this._decoder;
+        }
+        if (opts.tlvDecoder) {
+            this._decoder = new TLVDecoder({
+                output: opts.output,
+                command: opts.tlvDecoder
+            });
+            return this._decoder;
+        }
+        return opts.output;
+    }
+
     private _setupTS(buffered: Buffer): void {
         const opts = this._options;
 
@@ -253,25 +286,7 @@ export default class StreamFilter extends EventEmitter {
 
     private _setupTLV(buffered: Buffer): void {
         const opts = this._options;
-
-        let output: Writable;
-        if (opts.disableDecoder) {
-            output = opts.output;
-        } else if (opts.tlvToTsDecoder) {
-            this._decoder = new TLVDecoder({
-                output: opts.output,
-                command: opts.tlvToTsDecoder
-            });
-            output = this._decoder;
-        } else if (opts.tlvDecoder) {
-            this._decoder = new TLVDecoder({
-                output: opts.output,
-                command: opts.tlvDecoder
-            });
-            output = this._decoder;
-        } else {
-            output = opts.output;
-        }
+        const output = this._selectTLVOutput();
 
         const tlvFilter = new TLVFilter({
             output,
@@ -394,25 +409,7 @@ export default class StreamFilter extends EventEmitter {
             ch.tsmfGroupId ?? "none"
         );
 
-        // Create TLV output pipeline
-        let output: Writable;
-        if (opts.disableDecoder) {
-            output = opts.output;
-        } else if (opts.tlvToTsDecoder) {
-            this._decoder = new TLVDecoder({
-                output: opts.output,
-                command: opts.tlvToTsDecoder
-            });
-            output = this._decoder;
-        } else if (opts.tlvDecoder) {
-            this._decoder = new TLVDecoder({
-                output: opts.output,
-                command: opts.tlvDecoder
-            });
-            output = this._decoder;
-        } else {
-            output = opts.output;
-        }
+        const output = this._selectTLVOutput();
 
         // TSMFFilter wraps TSMFDemuxer for carrier management
         this._tsmfFilter = new TSMFFilter(opts.tunerIndex ?? 0, {
@@ -533,25 +530,7 @@ export default class StreamFilter extends EventEmitter {
         const opts = this._options;
         const ch = opts.channel;
 
-        // Create TLV output pipeline
-        let output: Writable;
-        if (opts.disableDecoder) {
-            output = opts.output;
-        } else if (opts.tlvToTsDecoder) {
-            this._decoder = new TLVDecoder({
-                output: opts.output,
-                command: opts.tlvToTsDecoder
-            });
-            output = this._decoder;
-        } else if (opts.tlvDecoder) {
-            this._decoder = new TLVDecoder({
-                output: opts.output,
-                command: opts.tlvDecoder
-            });
-            output = this._decoder;
-        } else {
-            output = opts.output;
-        }
+        const output = this._selectTLVOutput();
 
         const outputPassThrough = new stream.PassThrough();
 
