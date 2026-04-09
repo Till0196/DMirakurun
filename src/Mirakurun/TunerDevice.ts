@@ -353,10 +353,10 @@ export default class TunerDevice extends EventEmitter {
             inputStream = this._process.stdout;
         }
 
-        // Shared TSMF-TLV bonding pipeline for channels with a known groupId.
-        // The shared pipeline broadcasts decoded TLV from a single primary
-        // multiplex to multiple users sharing the channel — purely a tuner
-        // sharing optimisation.
+        // TSMF-TLV bonding pipeline for channels with a known groupId.
+        // Demuxes a single relTs from the bonded carriers in TunerDevice and
+        // broadcasts the decoded TLV to every user of this tuner, instead of
+        // letting each user run its own StreamFilter demuxer.
         //
         // We only enter it when we already know the target relTs. Carrier-only
         // channels (no services of their own) only persist groupId, so fall
@@ -365,25 +365,25 @@ export default class TunerDevice extends EventEmitter {
         // StreamFilter run its own `_initTsmfTlv` probe on the raw data —
         // notably, the bonded scan itself is the very operation that
         // discovers tsmfRelTs, so it must be allowed to run without it.
-        let sharedTargetRelTs: number | undefined =
+        let targetRelTs: number | undefined =
             tuneCh.tsmfRelTs !== null && tuneCh.tsmfRelTs !== undefined ? tuneCh.tsmfRelTs : undefined;
-        if (sharedTargetRelTs === undefined &&
+        if (targetRelTs === undefined &&
             tuneCh.tsmfGroupId !== null && tuneCh.tsmfGroupId !== undefined) {
             const sibling = _.channel.items.find(item =>
                 item.tsmfGroupId === tuneCh.tsmfGroupId &&
                 item.tsmfRelTs !== undefined && item.tsmfRelTs !== null
             );
             if (sibling) {
-                sharedTargetRelTs = sibling.tsmfRelTs;
+                targetRelTs = sibling.tsmfRelTs;
                 log.debug("TunerDevice#%d resolved tsmfRelTs=%d from sibling channel %s for %s",
-                    this._index, sharedTargetRelTs, sibling.channel, tuneCh.channel);
+                    this._index, targetRelTs, sibling.channel, tuneCh.channel);
             }
         }
 
         if (tuneCh.tsmfGroupId !== null && tuneCh.tsmfGroupId !== undefined &&
-            !options?.suppressGroupCombine && sharedTargetRelTs !== undefined) {
+            !options?.suppressGroupCombine && targetRelTs !== undefined) {
             this._tsmfFilter = new TSMFFilter(this._index, {
-                tsmfRelTs: sharedTargetRelTs,
+                tsmfRelTs: targetRelTs,
                 groupId: tuneCh.tsmfGroupId
             }, (closing) => this.killStream(closing));
 
@@ -413,7 +413,7 @@ export default class TunerDevice extends EventEmitter {
                 }
             });
 
-            log.info("TunerDevice#%d shared TSMF bonding for groupId=%d on %s", this._index, ch.tsmfGroupId, ch.channel);
+            log.info("TunerDevice#%d TSMF bonding pipeline started for groupId=%d on %s", this._index, ch.tsmfGroupId, ch.channel);
             // Set _stream to a dummy so _streamOnData doesn't receive raw data
             this._stream = new stream.PassThrough();
         } else {
