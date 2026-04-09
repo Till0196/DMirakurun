@@ -79,6 +79,7 @@ export default class StreamFilter extends EventEmitter {
     private _innerFilter: TSFilter | TLVFilter = null;
     private _decoder: TSDecoder | TLVDecoder = null;
     private _tsmfFilter: TSMFFilter = null;
+    private _activePipeline: TSFilter | TLVFilter | Writable = null;
     private _detectChunks: Buffer[] = [];
     private _detectLen = 0;
 
@@ -108,8 +109,8 @@ export default class StreamFilter extends EventEmitter {
             return;
         }
 
-        if (this._detected) {
-            this._innerFilter.write(chunk);
+        if (this._activePipeline) {
+            this._activePipeline.write(chunk);
             return;
         }
 
@@ -141,6 +142,7 @@ export default class StreamFilter extends EventEmitter {
         if (this._tsmfFilter) {
             this._tsmfFilter.releaseCarriers();
             this._tsmfFilter.close();
+            this._tsmfFilter = null;
         }
 
         this.emit("close");
@@ -153,19 +155,15 @@ export default class StreamFilter extends EventEmitter {
         }
     }
 
-    cleanup(): void {
+    /**
+     * Release TSMF carrier links early (called while stream is still active)
+     * so additional tuners can be freed at the same time as the primary,
+     * before the full close sequence.
+     */
+    releaseTsmfCarriers(): void {
         if (this._tsmfFilter) {
             this._tsmfFilter.releaseCarriers();
         }
-    }
-
-    forceKillDecoder(): void {
-        if (this._tsmfFilter) {
-            this._tsmfFilter.releaseCarriers();
-            this._tsmfFilter.close();
-            this._tsmfFilter = null;
-        }
-        this._closed = true;
     }
 
     // --- Private ---
@@ -184,22 +182,22 @@ export default class StreamFilter extends EventEmitter {
 
         switch (this._format) {
             case "tlv":
-                this._setupTLV(buffer);
+                this._initTlv(buffer);
                 break;
             case "tsmf-ts":
-                this._setupTSMF_TS(buffer);
+                this._initTsmfTs(buffer);
                 break;
             case "tsmf-tlv":
-                this._setupTSMF_TLV(buffer);
+                this._initTsmfTlv(buffer);
                 break;
             case "ts":
             default:
-                this._setupTS(buffer);
+                this._initTs(buffer);
                 break;
         }
     }
 
-    private _selectTLVOutput(): Writable {
+    private _selectTlvOutput(): Writable {
         const opts = this._options;
         if (opts.disableDecoder) {
             return opts.output;
@@ -231,7 +229,7 @@ export default class StreamFilter extends EventEmitter {
         return opts.output;
     }
 
-    private _setupTS(buffered: Buffer): void {
+    private _initTs(buffered: Buffer): void {
         const opts = this._options;
 
         let output: Writable;
@@ -255,14 +253,15 @@ export default class StreamFilter extends EventEmitter {
             parseEIT: opts.parseEIT
         });
         this._innerFilter = tsFilter;
+        this._activePipeline = tsFilter;
         this._proxyEvents(tsFilter);
 
         tsFilter.write(buffered);
     }
 
-    private _setupTLV(buffered: Buffer): void {
+    private _initTlv(buffered: Buffer): void {
         const opts = this._options;
-        const output = this._selectTLVOutput();
+        const output = this._selectTlvOutput();
 
         const tlvFilter = new TLVFilter({
             output,
@@ -275,6 +274,7 @@ export default class StreamFilter extends EventEmitter {
             channel: opts.channel.channel
         });
         this._innerFilter = tlvFilter;
+        this._activePipeline = tlvFilter;
         this._proxyEvents(tlvFilter);
 
         tlvFilter.write(buffered);
@@ -284,7 +284,7 @@ export default class StreamFilter extends EventEmitter {
      * TSMF with TS multiplexing (BS/CS over CATV).
      * Uses TSMFSlotFilter to extract the target relative stream.
      */
-    private _setupTSMF_TS(buffered: Buffer): void {
+    private _initTsmfTs(buffered: Buffer): void {
         const opts = this._options;
 
         let output: Writable;
@@ -348,6 +348,7 @@ export default class StreamFilter extends EventEmitter {
         }
 
         this._innerFilter = tsFilter;
+        this._activePipeline = tsFilter;
         this._proxyEvents(tsFilter);
 
         tsFilter.write(buffered);
@@ -366,7 +367,7 @@ export default class StreamFilter extends EventEmitter {
      *   - numberOfCarriers>1: emits "discovery" event (caller queues bonded scan)
      *   Used only by initial channel scan (getServices).
      */
-    private _setupTSMF_TLV(buffered: Buffer): void {
+    private _initTsmfTlv(buffered: Buffer): void {
         const opts = this._options;
         const ch = opts.channel;
 
@@ -383,6 +384,7 @@ export default class StreamFilter extends EventEmitter {
         }, opts.onFatal);
 
         const primaryInput = this._tsmfFilter.createInput();
+        this._activePipeline = primaryInput;
 
         if (opts.tsmfDiscovery) {
             // Wait for groupId before deciding: single-carrier builds the pipeline,
@@ -411,15 +413,7 @@ export default class StreamFilter extends EventEmitter {
             this._tsmfFilter.setupCarriers(ch);
         }
 
-        this._detected = true;
         primaryInput.write(buffered);
-
-        this.write = (chunk: Buffer) => {
-            if (this._closed) {
-                return;
-            }
-            primaryInput.write(chunk);
-        };
     }
 
     /**
@@ -430,7 +424,7 @@ export default class StreamFilter extends EventEmitter {
     private _attachTlvOutputPipeline(): void {
         const opts = this._options;
         const ch = opts.channel;
-        const output = this._selectTLVOutput();
+        const output = this._selectTlvOutput();
         const passThrough = new stream.PassThrough();
 
         this._tsmfFilter.once("ready", () => {

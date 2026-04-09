@@ -494,8 +494,8 @@ export default class TunerDevice extends EventEmitter {
             this._tsmfFilter.releaseCarriers();
         }
         for (const user of this._users) {
-            if (user._stream && "cleanup" in user._stream) {
-                (user._stream as StreamFilter).cleanup();
+            if (user._stream && "releaseTsmfCarriers" in user._stream) {
+                (user._stream as StreamFilter).releaseTsmfCarriers();
             }
         }
 
@@ -529,8 +529,8 @@ export default class TunerDevice extends EventEmitter {
         }
 
         for (const user of this._users) {
-            if (user._stream && "forceKillDecoder" in user._stream) {
-                (user._stream as StreamFilter).forceKillDecoder();
+            if (user._stream && "close" in user._stream && !(user._stream as StreamFilter).closed) {
+                (user._stream as StreamFilter).close();
             }
         }
 
