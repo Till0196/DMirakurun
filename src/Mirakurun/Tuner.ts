@@ -381,7 +381,7 @@ export class Tuner {
                     tunerIndex: device.index,
                     onFatal: (closing) => device.killStream(closing),
                     tsmfDiscovery: setting.tsmfDiscovery,
-                    preDetectedFormat: device.hasSharedTSMF ? "tlv" : undefined
+                    knownFormat: device.hasSharedTSMF ? "tlv" : undefined
                 });
 
                 Object.defineProperty(user, "streamInfo", {
