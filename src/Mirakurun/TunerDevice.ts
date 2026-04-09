@@ -112,12 +112,8 @@ export default class TunerDevice extends EventEmitter {
         return this._config.decoder || null;
     }
 
-    get mmtsDecoder(): string {
-        return this._config.mmtsDecoder || null;
-    }
-
     get tlvToTsDecoder(): string {
-        return this._config.tlvToTsDecoder || this._config.mmtsDecoder || null;
+        return this._config.tlvToTsDecoder || null;
     }
 
     get tlvDecoder(): string {

@@ -260,20 +260,6 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                     )}
                     {(!tuner.remoteMirakurunHost) && (
                         <TextField
-                            label="TLV to TS Decoder:"
-                            value={tuner.tlvToTsDecoder || ""}
-                            onChange={(ev, newValue) => {
-                                if (newValue === "") {
-                                    delete tuner.tlvToTsDecoder;
-                                } else {
-                                    tuner.tlvToTsDecoder = newValue;
-                                }
-                                setEditing([...editing]);
-                            }}
-                        />
-                    )}
-                    {(!tuner.remoteMirakurunHost) && (
-                        <TextField
                             label="TLV Decoder:"
                             value={tuner.tlvDecoder || ""}
                             onChange={(ev, newValue) => {
@@ -281,6 +267,20 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                                     delete tuner.tlvDecoder;
                                 } else {
                                     tuner.tlvDecoder = newValue;
+                                }
+                                setEditing([...editing]);
+                            }}
+                        />
+                    )}
+                    {(!tuner.remoteMirakurunHost) && (
+                        <TextField
+                            label="TLV to TS Decoder:"
+                            value={tuner.tlvToTsDecoder || ""}
+                            onChange={(ev, newValue) => {
+                                if (newValue === "") {
+                                    delete tuner.tlvToTsDecoder;
+                                } else {
+                                    tuner.tlvToTsDecoder = newValue;
                                 }
                                 setEditing([...editing]);
                             }}
