@@ -31,7 +31,7 @@ import ChannelItem from "./ChannelItem";
 const TS_SYNC = 0x47;
 const TS_PKT = 188;
 const TLV_SYNC = 0x7f;
-const TLV_VALID_TYPES = new Set([0x01, 0x02, 0x03, 0xfe]);
+const TLV_VALID_TYPES = new Set([0x01, 0x02, 0x03, 0xfe, 0xff]);
 // TSMF frames are 52 TS packets (9776 bytes). Need at least 1 full frame
 // plus margin for sync alignment.
 const DETECT_MIN_BYTES = 188 * 53 * 2; // ~20KB, guarantees 2 TSMF frames
@@ -481,46 +481,36 @@ export default class StreamFilter extends EventEmitter {
     /**
      * Detect stream format from buffered data.
      *
-     * 1. Check for TSMF: 0x47 at 188-byte intervals with PID=0x2F and TSMF sync
-     *    - stream_type bit=0 → tsmf-tlv, bit=1 → tsmf-ts
-     * 2. Check for plain TS: 0x47 at 188-byte intervals (no TSMF)
-     * 3. Check for TLV: 3 chained TLV packets (0x7F + valid type + length)
-     * 4. Fallback: first recognizable sync byte
-     * 5. Default: ts
+     * Order: TS/TSMF first, then TLV. TS detection uses a strict threshold
+     * (TS_MIN_CONSECUTIVE 0x47 bytes at 188-byte intervals) so that TLV payloads
+     * containing coincidental 0x47 patterns do not falsely match TS. Pure TLV
+     * streams contain null packets (0x7F 0xFF ...) and valid type packets that
+     * chain correctly; TLV detection accepts those as confirmation.
+     *
+     * 1. Check for TS sync pattern (TS_MIN_CONSECUTIVE consecutive 0x47)
+     *    - If found → check TSMF → tsmf-tlv / tsmf-ts / ts
+     * 2. Check for TLV: chained TLV packets (0x7F + valid type + length)
+     * 3. Default: ts
      */
     private _detectStreamFormat(buffer: Buffer): StreamFormat {
-        // TLV check first: TLV payloads can contain 0x47 at 188-byte intervals
-        // that would falsely match TS detection, so TLV must be checked before TS.
-        for (let i = 0; i <= buffer.length - 4; i++) {
-            if (buffer[i] !== TLV_SYNC) {
-                continue;
-            }
-            const tlvType = buffer[i + 1];
-            if (!TLV_VALID_TYPES.has(tlvType)) {
-                continue;
-            }
-            const len = (buffer[i + 2] << 8) | buffer[i + 3];
-            if (len > 65535) {
-                continue;
-            }
-            const next = i + 4 + len;
-            if (next + 4 > buffer.length) {
-                if (len > 0) {
-                    return "tlv";
-                }
-                continue;
-            }
-            if (buffer[next] === TLV_SYNC && TLV_VALID_TYPES.has(buffer[next + 1])) {
-                return "tlv";
-            }
-        }
-
-        // Find 3 consecutive TS sync bytes at 188-byte intervals
+        // TS sync: require TS_MIN_CONSECUTIVE (8) consecutive 0x47 at 188 intervals.
+        // 3 was too lax — TLV payloads frequently hit by chance.
+        // 8 consecutive on random data: (1/256)^7 ≈ 2e-17 per position, effectively 0.
+        const TS_MIN_CONSECUTIVE = 8;
         let tsStart = -1;
-        for (let i = 0; i <= buffer.length - TS_PKT * 3; i++) {
-            if (buffer[i] === TS_SYNC &&
-                buffer[i + TS_PKT] === TS_SYNC &&
-                buffer[i + TS_PKT * 2] === TS_SYNC) {
+        const tsScanEnd = buffer.length - TS_PKT * TS_MIN_CONSECUTIVE;
+        for (let i = 0; i <= tsScanEnd; i++) {
+            if (buffer[i] !== TS_SYNC) {
+                continue;
+            }
+            let ok = true;
+            for (let k = 1; k < TS_MIN_CONSECUTIVE; k++) {
+                if (buffer[i + TS_PKT * k] !== TS_SYNC) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
                 tsStart = i;
                 break;
             }
@@ -530,7 +520,6 @@ export default class StreamFilter extends EventEmitter {
             // Check for TSMF headers with CC continuity check to skip stale DVR buffer data.
             // After retune, the first TSMF frames may be from the previous channel.
             const ccChecker = new TsmfCCChecker();
-            let tsmfDetected = false;
 
             for (let offset = tsStart; offset + TS_PKT <= buffer.length; offset += TS_PKT) {
                 if (buffer[offset] !== TS_SYNC) {
@@ -550,13 +539,9 @@ export default class StreamFilter extends EventEmitter {
                     continue;
                 }
                 // CC-synced TSMF frame — this is from the current channel.
-                // Check slot map to determine if content is TLV or TS.
-                // Parse the first few slot assignments and check PID of data packets.
-                tsmfDetected = true;
-
-                // Look at actual data following this TSMF header to determine content type.
+                // Determine content type by looking at data slot PIDs.
                 // TLV data packets use PID=0x2D, TS data uses other PIDs.
-                const slotStart = offset + TS_PKT; // first data slot after TSMF header
+                const slotStart = offset + TS_PKT;
                 let hasTlvPid = false;
                 for (let s = 0; s < 10 && slotStart + s * TS_PKT + TS_PKT <= buffer.length; s++) {
                     const slotOffset = slotStart + s * TS_PKT;
@@ -570,17 +555,35 @@ export default class StreamFilter extends EventEmitter {
                     }
                 }
 
-                if (hasTlvPid) {
-                    return "tsmf-tlv";
-                }
-                return "tsmf-ts";
+                return hasTlvPid ? "tsmf-tlv" : "tsmf-ts";
             }
 
+            // TS sync found but no TSMF — plain TS
+            return "ts";
         }
 
-        // TS was found but no TSMF — plain TS
-        if (tsStart >= 0) {
-            return "ts";
+        // No TS pattern — try TLV detection.
+        // Scan for 0x7F + valid type (incl. 0xFF null packet) with a successful chain
+        // to the next TLV header, or a length that extends past the buffer end.
+        for (let i = 0; i <= buffer.length - 4; i++) {
+            if (buffer[i] !== TLV_SYNC) {
+                continue;
+            }
+            const tlvType = buffer[i + 1];
+            if (!TLV_VALID_TYPES.has(tlvType)) {
+                continue;
+            }
+            const len = (buffer[i + 2] << 8) | buffer[i + 3];
+            const next = i + 4 + len;
+            if (next + 4 > buffer.length) {
+                if (len > 0) {
+                    return "tlv";
+                }
+                continue;
+            }
+            if (buffer[next] === TLV_SYNC && TLV_VALID_TYPES.has(buffer[next + 1])) {
+                return "tlv";
+            }
         }
 
         return "ts";
