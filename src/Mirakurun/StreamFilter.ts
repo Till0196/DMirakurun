@@ -40,49 +40,6 @@ const DETECT_MIN_BYTES = 188 * 53 * 2; // ~20KB, guarantees 2 TSMF frames
 const TSMF_PID = 0x2f;
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
-const TS_PACKET_SIZE = 188;
-
-/**
- * Extract service IDs from a PAT TS packet (used by TSMF auto-detection).
- * Returns empty array if the packet does not contain a parsable PAT section.
- */
-function parsePATPacket(packet: Buffer): number[] {
-    const pusi = (packet[1] & 0x40) !== 0;
-    if (!pusi) {
-        return [];
-    }
-
-    const afc = (packet[3] & 0x30) >> 4;
-    let payloadStart = 4;
-    if (afc === 0x03) {
-        payloadStart = 5 + packet[4];
-    } else if (afc !== 0x01) {
-        return [];
-    }
-
-    const pointerField = packet[payloadStart];
-    const sectionStart = payloadStart + 1 + pointerField;
-
-    if (sectionStart + 8 > TS_PACKET_SIZE) {
-        return [];
-    }
-    if (packet[sectionStart] !== 0x00) {
-        return [];
-    }
-
-    const sectionLength = ((packet[sectionStart + 1] & 0x0f) << 8) | packet[sectionStart + 2];
-    const serviceIds: number[] = [];
-    const end = Math.min(sectionStart + 3 + sectionLength - 4, TS_PACKET_SIZE);
-
-    for (let i = sectionStart + 8; i + 4 <= end; i += 4) {
-        const serviceId = (packet[i] << 8) | packet[i + 1];
-        if (serviceId !== 0) {
-            serviceIds.push(serviceId);
-        }
-    }
-
-    return serviceIds;
-}
 
 export type StreamFormat = "ts" | "tlv" | "tsmf-ts" | "tsmf-tlv";
 
@@ -122,9 +79,22 @@ export default class StreamFilter extends EventEmitter {
     private _innerFilter: TSFilter | TLVFilter = null;
     private _decoder: TSDecoder | TLVDecoder = null;
     private _tsmfFilter: TSMFFilter = null;
-    private _activePipeline: TSFilter | TLVFilter | Writable = null;
+    private _activePipeline: TSFilter | TLVFilter | Writable | { write(chunk: Buffer): void } = null;
     private _detectChunks: Buffer[] = [];
     private _detectLen = 0;
+
+    // Multi-relTs auto-detect scan state (TSMF/TS one-pass scan)
+    private _relStreams: Array<{
+        relTs: number;
+        slot: TSMFSlotFilter;
+        ts: TSFilter;
+        gotServices: boolean;
+        gotNetwork: boolean;
+        services: any[] | null;
+    }> = [];
+    private _aggregatedNetwork: any = null;
+    private _emittedServices = false;
+    private _aggregationTimer: NodeJS.Timeout | null = null;
 
     constructor(options: StreamFilterOptions) {
         super();
@@ -178,6 +148,22 @@ export default class StreamFilter extends EventEmitter {
             return;
         }
         this._closed = true;
+
+        if (this._relStreams.length > 0) {
+            if (this._aggregationTimer) {
+                clearTimeout(this._aggregationTimer);
+                this._aggregationTimer = null;
+            }
+            // Flush whatever we've collected so Tuner.getServices still
+            // receives a services event before the close fires.
+            if (!this._emittedServices) {
+                this._emitMergedServices(true);
+            }
+            for (const e of this._relStreams) {
+                e.ts.close();
+            }
+            this._relStreams = [];
+        }
 
         if (this._innerFilter) {
             this._innerFilter.close();
@@ -330,110 +316,218 @@ export default class StreamFilter extends EventEmitter {
     private _initTsmfTs(buffered: Buffer): void {
         const opts = this._options;
 
-        let output: Writable;
-        if (opts.disableDecoder || !opts.decoder) {
-            output = opts.output;
-        } else {
-            this._decoder = new TSDecoder({
-                output: opts.output,
-                command: opts.decoder
-            });
-            output = this._decoder;
-        }
+        // --- Resolve target relTs ---
+        // 1. opts.tsmfRelTs: caller already knows which relTs to extract.
+        // 2. else: run a slot-map probe to discover the active relative TSes.
+        //    - parseSDT=false (streaming / EPG): pick the smallest active relTs.
+        //    - parseSDT=true  (Tuner.getServices scan): leave undefined and
+        //      fall through to the fan-out path below, which builds one
+        //      TSFilter per active relTs and aggregates services.
+        let targetRelTs: number | undefined = opts.tsmfRelTs;
+        const activeStreams = new Set<number>();
 
-        const tsFilter = new TSFilter({
-            output,
-            networkId: opts.networkId,
-            serviceId: opts.serviceId,
-            eventId: opts.eventId,
-            parseNIT: opts.parseNIT,
-            parseSDT: opts.parseSDT,
-            parseEIT: opts.parseEIT
-        });
-
-        const tsmfRelTs = opts.tsmfRelTs;
-        if (tsmfRelTs) {
-            const passHeader = !opts.serviceId;
-            tsFilter.setSlotFilter(new TSMFSlotFilter(tsmfRelTs, passHeader));
-        } else {
-            // Auto-detect TSMF mapping
-            const detector = TSMFSlotFilter.createDetector();
-            const serviceMap = new Map<number, Set<number>>();
-            const activeStreams = new Set<number>();
-            const detectedStreams = new Set<number>();
+        if (targetRelTs === undefined) {
+            // The probe consumes the buffered bytes once and emits slotMap
+            // synchronously (DETECT_MIN_BYTES guarantees ≥2 full TSMF frames).
+            const probe = TSMFSlotFilter.createSlotMapProbe();
             let detectedGroupId: number | null = null;
-            let completed = false;
-
-            detector.on("slotMap", (slotMap: number[], groupId: number | null) => {
+            probe.on("slotMap", (slotMap: number[], groupId: number | null) => {
+                for (const r of slotMap) {
+                    if (r > 0) { activeStreams.add(r); }
+                }
                 if (groupId !== null && detectedGroupId === null) {
                     detectedGroupId = groupId;
                 }
-                for (const relTs of slotMap) {
-                    if (relTs > 0) {
-                        activeStreams.add(relTs);
-                    }
-                }
-            });
+            }); // streamTypeBits emitted as 3rd arg, unused on the TS path
+            probe.write(buffered);
 
-            detector.on("patPacket", (relTs: number, packet: Buffer) => {
-                if (completed || detectedStreams.has(relTs)) {
-                    return;
-                }
-                const serviceIds = parsePATPacket(packet);
-                if (serviceIds.length === 0) {
-                    return;
-                }
-                let entry = serviceMap.get(relTs);
-                if (!entry) {
-                    entry = new Set();
-                    serviceMap.set(relTs, entry);
-                }
-                for (const sid of serviceIds) {
-                    entry.add(sid);
-                }
-                detectedStreams.add(relTs);
+            if (activeStreams.size === 0) {
+                log.warn("StreamFilter TSMF slotMap probe failed on %s — closing", opts.channel.channel);
+                this.close();
+                return;
+            }
 
-                if (activeStreams.size === 0 || detectedStreams.size < activeStreams.size) {
-                    return;
-                }
+            if (detectedGroupId !== null) {
+                opts.channel.setTsmfGroupId(detectedGroupId);
+            }
 
-                completed = true;
-                for (const [rel, sids] of serviceMap) {
-                    for (const sid of sids) {
-                        opts.channel.addTsmfRelTsMapping(sid, rel);
-                    }
-                }
-                if (detectedGroupId !== null) {
-                    opts.channel.setTsmfGroupId(detectedGroupId);
-                }
-                log.info("StreamFilter TSMF auto-detected %d streams groupId=%s on %s",
-                    serviceMap.size,
+            if (!opts.parseSDT) {
+                // Streaming / EPG: deterministically pick the smallest active
+                // relTs from the parsed slot map. The TSMF header already
+                // enumerates which relative TSes exist in the multiplex, so
+                // there is nothing to "guess" — any non-zero entry is a valid
+                // target and we just need a stable tie-breaker.
+                targetRelTs = Math.min(...activeStreams);
+                log.info("StreamFilter TSMF auto-detect (stream) on %s: active relTs=[%s], picking relTs=%d",
+                    opts.channel.channel,
+                    [...activeStreams].sort((a, b) => a - b).join(","),
+                    targetRelTs);
+            } else {
+                log.info("StreamFilter TSMF auto-detect (scan) started: %d relTs groupId=%s on %s",
+                    activeStreams.size,
                     detectedGroupId !== null ? String(detectedGroupId) : "none",
                     opts.channel.channel);
-
-                // Always select a stream after detection to prevent NIT/SDT interleaving
-                if (serviceMap.size >= 1) {
-                    const targetRelTs = opts.serviceId
-                        ? opts.channel.getTsmfRelTs(opts.serviceId)
-                        : undefined;
-                    if (targetRelTs) {
-                        detector.selectStream(targetRelTs);
-                    } else {
-                        const firstRelTs = Math.min(...serviceMap.keys());
-                        detector.selectStream(firstRelTs);
-                    }
-                }
-
-                _.service.save();
-            });
-            tsFilter.setSlotFilter(detector);
+            }
         }
 
-        this._innerFilter = tsFilter;
-        this._activePipeline = tsFilter;
-        this._proxyEvents(tsFilter);
+        // --- Single-relTs pipeline ---
+        // Hit by both the explicit opts.tsmfRelTs path and the streaming
+        // auto-detect fallback above.
+        if (targetRelTs !== undefined) {
+            let output: Writable;
+            if (opts.disableDecoder || !opts.decoder) {
+                output = opts.output;
+            } else {
+                this._decoder = new TSDecoder({
+                    output: opts.output,
+                    command: opts.decoder
+                });
+                output = this._decoder;
+            }
 
-        tsFilter.write(buffered);
+            const tsFilter = new TSFilter({
+                output,
+                networkId: opts.networkId,
+                serviceId: opts.serviceId,
+                eventId: opts.eventId,
+                parseNIT: opts.parseNIT,
+                parseSDT: opts.parseSDT,
+                parseEIT: opts.parseEIT
+            });
+
+            const passHeader = !opts.serviceId;
+            tsFilter.setSlotFilter(new TSMFSlotFilter(targetRelTs, passHeader));
+
+            this._innerFilter = tsFilter;
+            this._activePipeline = tsFilter;
+            this._proxyEvents(tsFilter);
+
+            tsFilter.write(buffered);
+            return;
+        }
+
+        // --- Scanning path: discover services from every active relTs in parallel ---
+        // The previous detector fed a single downstream TSFilter with interleaved
+        // PAT/SDT/NIT from every relTs, which corrupted the parser. Instead we:
+        //   1. Build one TSMFSlotFilter + TSFilter pair per active relTs.
+        //   2. Replay buffered bytes into each. Each TSFilter sees a clean
+        //      single-TS feed.
+        //   3. Aggregate their `network` / `services` events and emit once.
+        // Each per-relTs TSFilter is created with output=undefined; with no
+        // output set TSFilter forces _ready=false and _processPackets drops
+        // every packet before reaching the output buffer, so we don't need
+        // a sink at all.
+        for (const relTs of activeStreams) {
+            const slot = new TSMFSlotFilter(relTs, false);
+            const perTs = new TSFilter({
+                networkId: opts.networkId,
+                serviceId: opts.serviceId,
+                eventId: opts.eventId,
+                parseNIT: opts.parseNIT,
+                parseSDT: opts.parseSDT,
+                parseEIT: opts.parseEIT
+            });
+            perTs.setSlotFilter(slot);
+
+            const entry = {
+                relTs,
+                slot,
+                ts: perTs,
+                gotServices: false,
+                gotNetwork: false,
+                services: null as any[] | null
+            };
+
+            perTs.on("network", (net: any) => {
+                if (entry.gotNetwork) { return; }
+                entry.gotNetwork = true;
+                if (this._aggregatedNetwork === null) {
+                    this._aggregatedNetwork = net;
+                    this.emit("network", net);
+                }
+            });
+
+            perTs.on("services", (svs: any[]) => {
+                if (entry.gotServices) { return; }
+                entry.gotServices = true;
+                entry.services = svs;
+                if (this._relStreams.every(e => e.gotServices)) {
+                    this._emitMergedServices(false);
+                }
+            });
+
+            this._relStreams.push(entry);
+        }
+
+        // Replay buffered bytes into every per-relTs TSFilter so each one
+        // starts parsing from the same initial TSMF frame.
+        for (const e of this._relStreams) {
+            e.ts.write(buffered);
+        }
+
+        // Dispatcher: fan out subsequent writes to every per-relTs TSFilter.
+        this._activePipeline = {
+            write: (chunk: Buffer) => {
+                for (const e of this._relStreams) {
+                    if (!e.ts.closed) { e.ts.write(chunk); }
+                }
+            }
+        };
+
+        // Aggregation timeout: stay well under Tuner.getServices' 20s cap.
+        // If at least one relTs has delivered services by now, emit partial.
+        this._aggregationTimer = setTimeout(() => {
+            this._emitMergedServices(true);
+        }, 15000);
+
+        // Proxy streamInfo from the first relTs TSFilter (used for UI display).
+        Object.defineProperty(this, "streamInfo", {
+            get: () => this._relStreams[0]?.ts.streamInfo ?? {},
+            configurable: true
+        });
+    }
+
+    /**
+     * Merge services collected from each per-relTs TSFilter, persist the
+     * serviceId→relTs mapping, and emit the aggregated "services" event.
+     * Called when every relTs has delivered services, on the aggregation
+     * timeout, or from close() if the session is torn down prematurely.
+     */
+    private _emitMergedServices(partial: boolean): void {
+        if (this._emittedServices) { return; }
+        this._emittedServices = true;
+        if (this._aggregationTimer) {
+            clearTimeout(this._aggregationTimer);
+            this._aggregationTimer = null;
+        }
+
+        const seen = new Set<string>();
+        const merged: any[] = [];
+        for (const e of this._relStreams) {
+            if (!e.services) { continue; }
+            for (const svc of e.services) {
+                const key = `${svc.networkId}:${svc.serviceId}`;
+                if (seen.has(key)) { continue; }
+                seen.add(key);
+                merged.push(svc);
+                // fromConfig locks are honoured inside addTsmfRelTsMapping.
+                this._options.channel.addTsmfRelTsMapping(svc.serviceId, e.relTs);
+            }
+        }
+
+        const gotCount = this._relStreams.filter(e => e.gotServices).length;
+        if (partial) {
+            log.info("StreamFilter TSMF auto-detect partial emit: %d/%d relTs, %d services on %s",
+                gotCount, this._relStreams.length, merged.length, this._options.channel.channel);
+        } else {
+            log.info("StreamFilter TSMF auto-detect emit: %d relTs, %d services on %s",
+                this._relStreams.length, merged.length, this._options.channel.channel);
+        }
+
+        if (_.service) {
+            _.service.save();
+        }
+        this.emit("services", merged);
     }
 
     /**
@@ -457,16 +551,49 @@ export default class StreamFilter extends EventEmitter {
         //   1. URL query (?tsmfRelTs=)
         //   2. per-service mapping for opts.serviceId
         //   3. per-channel default (ch.tsmfRelTs)
-        // Without this, TSMF-TLV multiplexes containing multiple services
-        // (or future mixed TLV+TS multiplexes) cannot route per-service.
-        const targetRelTs = opts.tsmfRelTs
+        // For first-ever scans nothing is known yet, so fall back to a slot-map
+        // probe. The TSMF header's streamTypeBits flags each relative TS as
+        // TLV (bit=0) or TS/unused (bit=1) — we just pick the smallest TLV
+        // relTs that actually appears in the slot map. The picked value is
+        // persisted via channel.setTsmfRelTs() in `_attachTlvOutputPipeline`,
+        // so subsequent sessions skip the probe.
+        let targetRelTs = opts.tsmfRelTs
             ?? (opts.serviceId ? ch.getTsmfRelTs(opts.serviceId) : undefined)
             ?? ch.tsmfRelTs;
 
+        if (targetRelTs === undefined || targetRelTs === null) {
+            const probe = TSMFSlotFilter.createSlotMapProbe();
+            let pickedRelTs = 0;
+            probe.on("slotMap", (slotMap: number[], _groupId: number | null, streamTypeBits: number) => {
+                if (pickedRelTs !== 0) { return; }
+                const seen = new Set<number>();
+                for (const v of slotMap) {
+                    if (v >= 1 && v <= 15) { seen.add(v); }
+                }
+                for (let n = 1; n <= 15; n++) {
+                    if (seen.has(n) && TSMFFilter.isTLVStream(streamTypeBits, n)) {
+                        pickedRelTs = n;
+                        break;
+                    }
+                }
+            });
+            probe.write(buffered);
+            if (pickedRelTs > 0) {
+                targetRelTs = pickedRelTs;
+            }
+        }
+
+        if (targetRelTs === undefined || targetRelTs === null) {
+            log.warn("StreamFilter TSMF-TLV probe failed on %s — no TLV slot found, closing",
+                ch.channel);
+            this.close();
+            return;
+        }
+
         log.info(
-            "StreamFilter TSMF-TLV %s (tsmfRelTs=%s, groupId=%s)",
+            "StreamFilter TSMF-TLV %s (tsmfRelTs=%d, groupId=%s)",
             opts.tsmfDiscovery ? "discovery" : "bonded scan",
-            targetRelTs ?? "auto",
+            targetRelTs,
             ch.tsmfGroupId ?? "none"
         );
 
@@ -672,70 +799,44 @@ export default class StreamFilter extends EventEmitter {
     }
 
     /**
-     * Decide whether a TSMF Extended multiplex should route through the TLV
-     * pipeline or the TS pipeline, based on the requested service's
-     * `stream_type` bit (ARIB STD-B32 6.3.4.2).
+     * Decide whether a TSMF multiplex should route through the TLV pipeline
+     * or the TS pipeline, based on the `stream_type` bits in the TSMF header
+     * (ARIB STD-B32 6.3.4.2).
      *
-     * Resolution priority for the target relative stream:
-     *   1. opts.tsmfRelTs (explicit URL query override)
-     *   2. opts.channel.getTsmfRelTs(opts.serviceId) (per-service mapping)
-     *   3. ch.tsmfRelTs (per-channel default)
-     *   4. auto-pick: largest TLV stream → largest TS stream → relTs=1
+     * If the caller has already pinned a target relative TS (via URL query,
+     * per-service mapping, or channel default), we honour their choice and
+     * route by that relTs's stream_type. Otherwise we route to TLV iff any
+     * active relTs in the multiplex carries TLV — the TLV pipeline can
+     * handle the (currently theoretical) mixed multiplex by routing per
+     * service inside `_initTsmfTlv`.
      */
     private _routeTsmfFormat(info: TSMFHeaderInfo): StreamFormat {
         const opts = this._options;
         const ch = opts.channel;
-        let target = opts.tsmfRelTs
+        const target = opts.tsmfRelTs
             ?? (opts.serviceId ? ch.getTsmfRelTs(opts.serviceId) : undefined)
             ?? ch.tsmfRelTs;
 
-        if (!target) {
-            target = autoPickRelTs(info.slotMap, info.streamTypeBits);
+        let isTLV: boolean;
+        if (target) {
+            isTLV = TSMFFilter.isTLVStream(info.streamTypeBits, target);
+        } else {
+            isTLV = false;
+            for (const r of info.slotMap) {
+                if (r >= 1 && r <= 15 && TSMFFilter.isTLVStream(info.streamTypeBits, r)) {
+                    isTLV = true;
+                    break;
+                }
+            }
         }
 
-        const isTLV = TSMFFilter.isTLVStream(info.streamTypeBits, target);
         log.debug(
-            "StreamFilter TSMF route: relTs=%d stream_type=%s → %s (slotMap counts %j, streamTypeBits=0x%s)",
-            target, isTLV ? "TLV" : "TS", isTLV ? "tsmf-tlv" : "tsmf-ts",
+            "StreamFilter TSMF route: relTs=%s → %s (slotMap counts %j, streamTypeBits=0x%s)",
+            target ?? "auto", isTLV ? "tsmf-tlv" : "tsmf-ts",
             countSlots(info.slotMap), info.streamTypeBits.toString(16)
         );
         return isTLV ? "tsmf-tlv" : "tsmf-ts";
     }
-}
-
-/**
- * Auto-pick the relative stream most likely to be the user's intended target
- * when no explicit relTs was given. Prefers the TLV stream with the most
- * slots; falls back to the TS stream with the most slots; finally returns 1.
- */
-function autoPickRelTs(slotMap: number[], streamTypeBits: number): number {
-    const counts: number[] = new Array(16).fill(0);
-    for (const v of slotMap) {
-        if (v >= 1 && v <= 15) {
-            counts[v]++;
-        }
-    }
-    let bestTLV = 0;
-    let bestTLVCount = 0;
-    let bestTS = 0;
-    let bestTSCount = 0;
-    for (let n = 1; n <= 15; n++) {
-        if (counts[n] === 0) {
-            continue;
-        }
-        if (TSMFFilter.isTLVStream(streamTypeBits, n)) {
-            if (counts[n] > bestTLVCount) {
-                bestTLV = n;
-                bestTLVCount = counts[n];
-            }
-        } else {
-            if (counts[n] > bestTSCount) {
-                bestTS = n;
-                bestTSCount = counts[n];
-            }
-        }
-    }
-    return bestTLV || bestTS || 1;
 }
 
 /** Aggregate slot counts per relative stream for diagnostic logging. */

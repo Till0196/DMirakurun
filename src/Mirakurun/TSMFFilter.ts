@@ -18,7 +18,6 @@ const TSMF_PID = 0x2f;
 const SLOT_COUNT = 52 as const;
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
-const CARRIER_CONFIRM_THRESHOLD = 3;
 
 /**
  * TSMF continuity counter tracker.
@@ -148,9 +147,26 @@ interface CarrierLink {
 export default class TSMFFilter extends EventEmitter {
 
     /**
-     * Parse a TSMF Extended frame header from a TS packet (PID=0x2F).
-     * Validates AFC, frame_sync, and CRC32. Returns null if the packet
-     * is not a valid TSMF header.
+     * Parse a TSMF frame header from a TS packet (PID=0x2F).
+     *
+     * Validates AFC, frame_sync, and CRC32. The header layout is the
+     * "拡張 TSMF" (Extended TSMF) syntax defined in ARIB STD-B32 6.3.2 —
+     * the byte positions of stream_status, slot_map, group_id and the
+     * carrier bonding fields are identical regardless of frame_type.
+     *
+     * Per ARIB STD-B32 6.3.3.5 table 6.3-4, frame_type indicates how the
+     * multiplex is used:
+     *   0x1 = TS-only multiplexing, or partial mixed TS + multi-carrier.
+     *         Carrier bonding fields are unused; operators commonly fill
+     *         them with 0xFF.
+     *   0x2 = Multi-carrier (carrier bonding) only. number_of_carriers /
+     *         carrier_sequence are valid.
+     *   0xF = Single TS (no multiplexing) — never appears in a header.
+     *
+     * Range-check the carrier bonding fields only when frame_type=0x2;
+     * for frame_type=0x1 we synthesise (numberOfCarriers, carrierSequence)
+     * = (1, 1) so the rest of the pipeline can treat the multiplex as a
+     * single-carrier source.
      *
      * Used by `StreamFilter._detectStreamFormat` to deterministically route
      * each session to the TLV or TS pipeline based on the requested
@@ -179,11 +195,26 @@ export default class TSMFFilter extends EventEmitter {
             return null;
         }
 
-        const numberOfCarriers = payload[124];
-        const carrierSequence = payload[125];
-        if (numberOfCarriers < 1 || numberOfCarriers > 16 ||
-            carrierSequence < 1 || carrierSequence > numberOfCarriers) {
-            return null;
+        // frame_type: lower 4 bits of payload[2] (= TS packet byte 6).
+        // Layout: payload[2] = version_number(3) | rel_stream_mode(1) | frame_type(4)
+        const frameType = payload[2] & 0x0f;
+        const isMultiCarrier = frameType === 0x02;
+
+        let numberOfCarriers: number;
+        let carrierSequence: number;
+        if (isMultiCarrier) {
+            numberOfCarriers = payload[124];
+            carrierSequence = payload[125];
+            if (numberOfCarriers < 1 || numberOfCarriers > 16 ||
+                carrierSequence < 1 || carrierSequence > numberOfCarriers) {
+                return null;
+            }
+        } else {
+            // frame_type=0x1: TS-only multiplexing. Bonding fields are unused
+            // and frequently filled with 0xFF, so we cannot trust them; treat
+            // the multiplex as a single carrier.
+            numberOfCarriers = 1;
+            carrierSequence = 1;
         }
 
         const slotMap: number[] = new Array(SLOT_COUNT);
@@ -197,7 +228,8 @@ export default class TSMFFilter extends EventEmitter {
             payload,
             slotMap,
             streamTypeBits: (payload[121] << 7) | (payload[122] >> 1),
-            groupId: payload[123],
+            // group_id is meaningful only when carrier bonding is in use.
+            groupId: isMultiCarrier ? payload[123] : 0,
             numberOfCarriers,
             carrierSequence,
             framePosition: frameRaw & 0x0f,
@@ -225,18 +257,8 @@ export default class TSMFFilter extends EventEmitter {
 
     private _numberOfCarriers = 0;
     private _needCarriersEmitted = false;
-    private _carrierConfirmCount = 0;
-    private _carrierConfirmValue = 0;
 
-    private _targetRelStream: number | null;
-    /**
-     * True when `_targetRelStream` was set explicitly by the caller (via
-     * options.tsmfRelTs). In that case `_pickTargetStream` honors it even
-     * if the corresponding `stream_type` bit indicates TS — useful as a
-     * defensive guard so that a routing mistake at the StreamFilter level
-     * doesn't cause this filter to loop in fallback warnings.
-     */
-    private _targetRelStreamExplicit: boolean;
+    private _targetRelStream: number;
     private _expectedGroupId: number | null;
     private _detectedGroupId: number | null = null;
 
@@ -245,12 +267,11 @@ export default class TSMFFilter extends EventEmitter {
     private _closed = false;
     private _closing = false;
 
-    constructor(tunerIndex: number, options: { tsmfRelTs?: number; groupId?: number }, onFatal: (closing?: boolean) => void) {
+    constructor(tunerIndex: number, options: { tsmfRelTs: number; groupId?: number }, onFatal: (closing?: boolean) => void) {
         super();
         this._tunerIndex = tunerIndex;
         this._onFatal = onFatal;
-        this._targetRelStream = options?.tsmfRelTs ? options.tsmfRelTs : null;
-        this._targetRelStreamExplicit = this._targetRelStream !== null;
+        this._targetRelStream = options.tsmfRelTs;
         this._expectedGroupId = typeof options?.groupId === "number" ? options.groupId : null;
 
         this._assembler = new TLVAssembler(tunerIndex, null);
@@ -279,7 +300,7 @@ export default class TSMFFilter extends EventEmitter {
         return this._closed;
     }
 
-    get detectedRelTs(): number | null {
+    get detectedRelTs(): number {
         return this._targetRelStream;
     }
 
@@ -326,8 +347,6 @@ export default class TSMFFilter extends EventEmitter {
     resetCarriers(): void {
         this._needCarriersEmitted = false;
         this._numberOfCarriers = 0;
-        this._carrierConfirmCount = 0;
-        this._carrierConfirmValue = 0;
         for (const id of this._sources.keys()) {
             if (id !== 1) {
                 this._sources.delete(id);
@@ -521,7 +540,7 @@ export default class TSMFFilter extends EventEmitter {
     }
 
     private _applyTSMFHeader(source: SourceState, slotMap: number[], streamTypeBits: number, headerCRC: number): void {
-        const target = this._pickTargetStream(slotMap, streamTypeBits);
+        const target = this._targetRelStream;
 
         source.tsmfRelativeStreamNumber = slotMap;
         source.streamTypeBits = streamTypeBits;
@@ -529,35 +548,34 @@ export default class TSMFFilter extends EventEmitter {
         source.headerLocked = true;
         source.activeHeaderCRC = headerCRC;
         // Pre-compute target slot mask used by every frame in this header epoch.
-        source.targetSlotsCache = target <= 0
-            ? new Array(SLOT_COUNT).fill(true)
-            : slotMap.map(v => v === target && TSMFFilter.isTLVStream(streamTypeBits, v));
+        // The caller is expected to have already verified that `target` is a
+        // TLV slot in this multiplex (StreamFilter probes the slot map before
+        // constructing TSMFFilter), so we don't second-guess the choice here.
+        source.targetSlotsCache = slotMap.map(v => v === target && TSMFFilter.isTLVStream(streamTypeBits, v));
     }
 
     private _resolveCarrier(
         source: SourceState,
-        frameInfo: { carriers: { numberOfCarriers: number; carrierSequence: number } }
+        frameInfo: {
+            carriers: { numberOfCarriers: number; carrierSequence: number };
+        }
     ): CarrierState | null {
         const { numberOfCarriers, carrierSequence } = frameInfo.carriers;
 
-        // Require CARRIER_CONFIRM_THRESHOLD consecutive frames with the same
-        // numberOfCarriers before committing — guards against stale DVR buffer
-        // data or transient misparse at stream start.
+        // Commit numberOfCarriers on the first valid frame from any source.
+        // The frame has already passed CRC32 validation in parseTSMFHeader and
+        // CC sync in TsmfCCChecker, so the field value is authoritative — no
+        // multi-frame confirmation is needed. (The previous "wait N frames"
+        // heuristic was redundant defence against vanishingly rare CRC false
+        // positives, and could not be expressed in spec terms because the
+        // super-frame composition spans multiple carriers with potentially
+        // different modulations, none of which is known until carriers are
+        // actually attached.)
         if (this._numberOfCarriers === 0) {
-            if (numberOfCarriers !== this._carrierConfirmValue) {
-                if (this._carrierConfirmValue !== 0) {
-                    log.debug("TunerDevice#%d TSMF carrier count changed %d -> %d, resetting confirmation",
-                        this._tunerIndex, this._carrierConfirmValue, numberOfCarriers);
-                }
-                this._carrierConfirmValue = numberOfCarriers;
-                this._carrierConfirmCount = 0;
-            }
-            if (++this._carrierConfirmCount < CARRIER_CONFIRM_THRESHOLD) {
-                return null;
-            }
             this._numberOfCarriers = numberOfCarriers;
             this._assembler.setNumberOfCarriers(numberOfCarriers);
-            log.info("TunerDevice#%d TSMF confirmed %d carriers", this._tunerIndex, numberOfCarriers);
+            log.info("TunerDevice#%d TSMF confirmed %d carriers (from source%d)",
+                this._tunerIndex, numberOfCarriers, source.sourceId);
         }
 
         source.carrierSequence = carrierSequence;
@@ -610,61 +628,6 @@ export default class TSMFFilter extends EventEmitter {
             const frames = blocks.splice(i, n);
             this._assembler.pushSuperframe(carrier.carrierSequence, { numberOfFrames: n, frames });
         }
-    }
-
-    /**
-     * Pick the target relative stream number for this carrier.
-     *
-     * - Caller-supplied `_targetRelStream` (via options.tsmfRelTs) is
-     *   honored unconditionally so a future mixed multiplex routed via
-     *   StreamFilter does not collide with the TLV-preference fallback.
-     *   Note that the TLV pipeline still needs the target to actually be
-     *   TLV — StreamFilter is responsible for ensuring TS relTs values
-     *   are routed to `_initTsmfTs` instead of here.
-     * - Auto-selected targets are revalidated on header re-lock and may
-     *   fall back to the largest TLV stream / largest stream of any type.
-     */
-    private _pickTargetStream(relative: number[], streamTypeBits: number): number {
-        const cached = this._targetRelStream;
-        if (cached !== null) {
-            if (this._targetRelStreamExplicit) {
-                return cached;
-            }
-            if (TSMFFilter.isTLVStream(streamTypeBits, cached)) {
-                return cached;
-            }
-        }
-
-        // Single pass: tally TLV-slot count and total-slot count per stream.
-        const tlv = new Array(16).fill(0);
-        const all = new Array(16).fill(0);
-        for (const v of relative) {
-            if (v >= 1 && v <= 15) {
-                all[v]++;
-                if (TSMFFilter.isTLVStream(streamTypeBits, v)) {
-                    tlv[v]++;
-                }
-            }
-        }
-        const bestOf = (counts: number[]): number => {
-            let best = 0;
-            let max = 0;
-            for (let i = 1; i <= 15; i++) {
-                if (counts[i] > max) {
-                    best = i;
-                    max = counts[i];
-                }
-            }
-            return best;
-        };
-        const pick = bestOf(tlv) || bestOf(all) || 1;
-
-        if (cached !== null && cached !== pick) {
-            log.warn("TunerDevice#%d TSMF target stream %d is not TLV, fallback to %d",
-                this._tunerIndex, cached, pick);
-        }
-        this._targetRelStream = pick;
-        return pick;
     }
 
     private _validateTSMFFrame(packet: Buffer): {

@@ -521,32 +521,6 @@ export class Service {
 
         this._applyScannedServices(channel, result, add);
 
-        // For multi-stream TSMF channels, scan each additional stream individually
-        const relTsMap = channel.getRelTsMap();
-        if (relTsMap.size > 1) {
-            const scannedRelTs = new Set<number>();
-            for (const service of result) {
-                const relTs = channel.getTsmfRelTs(service.serviceId);
-                if (relTs !== undefined) {
-                    scannedRelTs.add(relTs);
-                }
-            }
-            for (const relTs of relTsMap.keys()) {
-                if (scannedRelTs.has(relTs)) {
-                    continue;
-                }
-                log.info("ChannelItem#'%s' scanning additional TSMF stream %d", channel.name, relTs);
-                try {
-                    const extraResult = await _.tuner.getServices(channel, { tsmfRelTs: relTs, tsmfDiscovery });
-                    if (!isDiscoveryResult(extraResult)) {
-                        this._applyScannedServices(channel, extraResult, add);
-                    }
-                } catch (e) {
-                    log.warn("ChannelItem#'%s' TSMF stream %d scan failed [%s]", channel.name, relTs, e);
-                }
-            }
-        }
-
         // After bonded scan completes, propagate groupId to sibling channels
         // and abort their individual scan jobs. Also save to persist groupId.
         if (!tsmfDiscovery && channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {

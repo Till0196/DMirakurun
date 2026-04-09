@@ -353,10 +353,37 @@ export default class TunerDevice extends EventEmitter {
             inputStream = this._process.stdout;
         }
 
-        // Shared TSMF-TLV bonding pipeline for channels with known groupId
-        if (tuneCh.tsmfGroupId !== null && tuneCh.tsmfGroupId !== undefined && !options?.suppressGroupCombine) {
+        // Shared TSMF-TLV bonding pipeline for channels with a known groupId.
+        // The shared pipeline broadcasts decoded TLV from a single primary
+        // multiplex to multiple users sharing the channel — purely a tuner
+        // sharing optimisation.
+        //
+        // We only enter it when we already know the target relTs. Carrier-only
+        // channels (no services of their own) only persist groupId, so fall
+        // back to a sibling channel in the same bonded group whose tsmfRelTs
+        // was set during the initial scan. If neither is available we let
+        // StreamFilter run its own `_initTsmfTlv` probe on the raw data —
+        // notably, the bonded scan itself is the very operation that
+        // discovers tsmfRelTs, so it must be allowed to run without it.
+        let sharedTargetRelTs: number | undefined =
+            tuneCh.tsmfRelTs !== null && tuneCh.tsmfRelTs !== undefined ? tuneCh.tsmfRelTs : undefined;
+        if (sharedTargetRelTs === undefined &&
+            tuneCh.tsmfGroupId !== null && tuneCh.tsmfGroupId !== undefined) {
+            const sibling = _.channel.items.find(item =>
+                item.tsmfGroupId === tuneCh.tsmfGroupId &&
+                item.tsmfRelTs !== undefined && item.tsmfRelTs !== null
+            );
+            if (sibling) {
+                sharedTargetRelTs = sibling.tsmfRelTs;
+                log.debug("TunerDevice#%d resolved tsmfRelTs=%d from sibling channel %s for %s",
+                    this._index, sharedTargetRelTs, sibling.channel, tuneCh.channel);
+            }
+        }
+
+        if (tuneCh.tsmfGroupId !== null && tuneCh.tsmfGroupId !== undefined &&
+            !options?.suppressGroupCombine && sharedTargetRelTs !== undefined) {
             this._tsmfFilter = new TSMFFilter(this._index, {
-                tsmfRelTs: tuneCh.tsmfRelTs,
+                tsmfRelTs: sharedTargetRelTs,
                 groupId: tuneCh.tsmfGroupId
             }, (closing) => this.killStream(closing));
 

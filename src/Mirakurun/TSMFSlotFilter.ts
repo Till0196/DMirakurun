@@ -30,8 +30,21 @@ export class TSMFSlotFilter extends stream.Transform {
         return filter;
     }
 
+    /**
+     * Create a probe that emits only `slotMap` / `patPacket` events without
+     * pushing any payload downstream. Used by StreamFilter to discover the
+     * set of active relative TSes before fanning out per-relTs TSFilters.
+     */
+    static createSlotMapProbe(): TSMFSlotFilter {
+        const filter = new TSMFSlotFilter(0, false);
+        filter._detectMode = true;
+        filter._slotMapOnly = true;
+        return filter;
+    }
+
     private _targetStream: number;
     private _detectMode: boolean;
+    private _slotMapOnly = false;
     private _slotCounter = -1;
     private _slotMap: number[] = [];
     private _partial = Buffer.alloc(PACKET_SIZE);
@@ -115,17 +128,21 @@ export class TSMFSlotFilter extends stream.Transform {
                     // frame_type is payload byte 2 lower nibble = TS packet byte 6
                     const frameType = packet[6] & 0x0f;
                     const groupId = frameType === 0x02 ? packet[127] : null;
-                    this.emit("slotMap", this._slotMap.slice(), groupId);
+                    // streamTypeBits: 15-bit field at payload[121..122] = TS
+                    // packet bytes 125..126 (ARIB STD-B32 6.3.4.2). Bit (15-n)
+                    // corresponds to relative stream n; 0=TLV, 1=TS or unused.
+                    const streamTypeBits = (packet[125] << 7) | (packet[126] >> 1);
+                    this.emit("slotMap", this._slotMap.slice(), groupId, streamTypeBits);
                 }
             }
-            if (this._passHeader) {
+            if (this._passHeader && !this._slotMapOnly) {
                 this.push(packet);
             }
             return;
         }
 
         if (this._slotCounter < 0 || this._slotCounter >= SLOT_COUNT) {
-            if (this._detectMode) {
+            if (this._detectMode && !this._slotMapOnly) {
                 this.push(packet);
             }
             return;
@@ -137,6 +154,11 @@ export class TSMFSlotFilter extends stream.Transform {
         // Detection: correlate PAT with relative stream number
         if (this._detectMode && relTs > 0 && pid === 0x0000) {
             this.emit("patPacket", relTs, packet);
+        }
+
+        if (this._slotMapOnly) {
+            // probe mode: drop all payload packets
+            return;
         }
 
         if (this._detectMode) {
