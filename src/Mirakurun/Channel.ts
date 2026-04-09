@@ -198,6 +198,29 @@ export class Channel {
         // so EPG must be gathered per-channel, not per-network.
         const MMT_NETWORK_IDS = new Set([0x0B, 0x0C]);
 
+        // EPG gathering yields to bonded scans. Bonded scans need every
+        // tuner of a multi-carrier group at once and are blocked indefinitely
+        // when EPG occupies even a single tuner — particularly fatal at
+        // first boot, where bonded scans are the only way to discover
+        // services on multi-carrier channels (e.g. BS8K). EPG can simply
+        // wait until any pending bonded scan finishes before claiming
+        // tuners.
+        const waitForBondedScans = async (logKey: string): Promise<void> => {
+            let logged = false;
+            while (true) {
+                const pending = _.job.jobs.some(job =>
+                    job.status !== "finished" &&
+                    job.key.startsWith("Service.Add.BondedScan.")
+                );
+                if (!pending) { return; }
+                if (!logged) {
+                    log.info("%s EPG gathering is yielding to pending bonded scan(s)", logKey);
+                    logged = true;
+                }
+                await common.sleep(3000);
+            }
+        };
+
         const addEPGJob = (networkId, service) => {
             _.job.add({
                 key: `EPG.Gather.NID.${networkId}`,
@@ -241,6 +264,7 @@ export class Channel {
                                 service.epgReady = false;
                             }
                         }
+                        await waitForBondedScans(`Network#${networkId}`);
                         return _.tuner.readyForJob(service.channel);
                     }
                 }
@@ -292,6 +316,7 @@ export class Channel {
                                 service.epgReady = false;
                             }
                         }
+                        await waitForBondedScans(`Channel#${channel.name}`);
                         // Multi-carrier: wait for all BS4K-capable tuners to be free
                         if (isMultiCarrier) {
                             const typeDevices = _.tuner.devices.filter(d => d.types.includes(channel.type));
