@@ -64,7 +64,6 @@ export interface StreamFilterOptions {
     readonly tsmfRelTs?: number;
     readonly channel: ChannelItem;
     readonly tunerIndex?: number;      // needed for TSMF multi-carrier bonding
-    readonly onFatal: (closing?: boolean) => void;
     readonly tsmfDiscovery?: boolean;   // deferred pipeline: detect groupId then branch
 }
 
@@ -600,7 +599,12 @@ export default class StreamFilter extends EventEmitter {
         this._tsmfFilter = new TSMFFilter(opts.tunerIndex ?? 0, {
             tsmfRelTs: targetRelTs,
             groupId: ch.tsmfGroupId ?? undefined
-        }, opts.onFatal);
+        });
+        this._tsmfFilter.once("close", () => {
+            if (!this._closed) {
+                this.close();
+            }
+        });
 
         const primaryInput = this._tsmfFilter.createInput();
         this._activePipeline = primaryInput;

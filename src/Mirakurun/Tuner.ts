@@ -379,7 +379,6 @@ export class Tuner {
                     tsmfRelTs: setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId),
                     channel: setting.channel,
                     tunerIndex: device.index,
-                    onFatal: (closing) => device.killStream(closing),
                     tsmfDiscovery: setting.tsmfDiscovery
                 });
 

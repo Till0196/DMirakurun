@@ -273,11 +273,6 @@ export default class TunerDevice extends EventEmitter {
         return programs;
     }
 
-    /** Public wrapper for _kill, used by StreamFilter onFatal callback. */
-    killStream(closing = false): void {
-        this._kill(closing).catch(log.error);
-    }
-
     private _spawn(ch: ChannelItem, options?: StartStreamOptions): void {
         log.debug("TunerDevice#%d spawn...", this._index);
 
@@ -385,7 +380,13 @@ export default class TunerDevice extends EventEmitter {
             this._tsmfFilter = new TSMFFilter(this._index, {
                 tsmfRelTs: targetRelTs,
                 groupId: tuneCh.tsmfGroupId
-            }, (closing) => this.killStream(closing));
+            });
+            this._tsmfFilter.once("close", () => {
+                if (this._closing || this._exited || !this._process) {
+                    return;
+                }
+                this._kill(true).catch(log.error);
+            });
 
             const primaryInput = this._tsmfFilter.createInput();
             this._tsmfFilter.setupCarriers(tuneCh);

@@ -249,7 +249,6 @@ export default class TSMFFilter extends EventEmitter {
 
     private _tunerIndex: number;
     private _assembler: TLVAssembler;
-    private _onFatal: (closing?: boolean) => void;
 
     private _sources = new Map<number, SourceState>();
     private _carrierStates = new Map<number, CarrierState>();
@@ -267,10 +266,9 @@ export default class TSMFFilter extends EventEmitter {
     private _closed = false;
     private _closing = false;
 
-    constructor(tunerIndex: number, options: { tsmfRelTs: number; groupId?: number }, onFatal: (closing?: boolean) => void) {
+    constructor(tunerIndex: number, options: { tsmfRelTs: number; groupId?: number }) {
         super();
         this._tunerIndex = tunerIndex;
-        this._onFatal = onFatal;
         this._targetRelStream = options.tsmfRelTs;
         this._expectedGroupId = typeof options?.groupId === "number" ? options.groupId : null;
 
@@ -284,7 +282,7 @@ export default class TSMFFilter extends EventEmitter {
 
         this.once("error", (err: Error) => {
             log.error("TunerDevice#%d TSMFFilter error: %s", this._tunerIndex, err.message);
-            this._onFatal(true);
+            this._close();
         });
     }
 
@@ -343,19 +341,6 @@ export default class TSMFFilter extends EventEmitter {
         this._assembler.setOutput(output);
     }
 
-    /** Reset carrier state so needCarriers fires again after primary respawn. */
-    resetCarriers(): void {
-        this._needCarriersEmitted = false;
-        this._numberOfCarriers = 0;
-        for (const id of this._sources.keys()) {
-            if (id !== 1) {
-                this._sources.delete(id);
-            }
-        }
-        this._carrierStates.clear();
-        this._assembler.resetCarriers();
-    }
-
     setupCarriers(ch: ChannelItem): void {
         // Persist groupId to services DB as soon as detected (fires once).
         this.once("groupId", (groupId: number, numberOfCarriers: number) => {
@@ -364,8 +349,6 @@ export default class TSMFFilter extends EventEmitter {
                 this._tunerIndex, groupId, numberOfCarriers, ch.channel);
             _.service?.save();
         });
-        // `needCarriers` may re-fire after a respawn (resetCarriers clears
-        // `_needCarriersEmitted`), so register a persistent listener.
         this.on("needCarriers", (count: number) => {
             log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
             if (count > 1) {
@@ -674,23 +657,6 @@ export default class TSMFFilter extends EventEmitter {
     }
 
     /**
-     * Detach all carriers and respawn the primary tuner process.
-     * The respawned process feeds fresh TSMF data, triggering needCarriers
-     * again to re-establish all carriers. The filter itself stays alive so
-     * the new carriers can attach.
-     */
-    private _respawnAllCarriers(): void {
-        if (this._closed) {
-            return;
-        }
-        log.info("TunerDevice#%d releasing all carriers for respawn", this._tunerIndex);
-        this._detachCarrierLinks();
-        this.resetCarriers();
-        // Kill primary with closing=false so TunerDevice respawns the process
-        this._onFatal(false);
-    }
-
-    /**
      * Start additional carriers for multi-carrier bonding.
      * Tuner availability is guaranteed by the job system's readyFn;
      * groupId discovery is handled by the reactive scan flow.
@@ -701,7 +667,7 @@ export default class TSMFFilter extends EventEmitter {
         }
         if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
             log.warn("TunerDevice#%d cannot attach extra carriers without tsmfGroupId, aborting stream", this._tunerIndex);
-            this._onFatal(true);
+            this._close();
             return;
         }
         // Only the first channel in the group (by config order) should manage bonding.
@@ -714,14 +680,14 @@ export default class TSMFFilter extends EventEmitter {
         if (!isFirstInGroup) {
             log.info("TunerDevice#%d not first in group (groupId=%d), deferring bonding to %s",
                 this._tunerIndex, ch.tsmfGroupId, groupChannels[0]?.channel);
-            this._onFatal(true);
+            this._close();
             return;
         }
 
         if (groupChannels.length < count) {
             log.warn("TunerDevice#%d not enough group channels for groupId=%d, need %d but got %d — aborting stream",
                 this._tunerIndex, ch.tsmfGroupId, count, groupChannels.length);
-            this._onFatal(true);
+            this._close();
             return;
         }
         log.info("TunerDevice#%d starting %d additional carriers for groupId=%d",
@@ -749,7 +715,7 @@ export default class TSMFFilter extends EventEmitter {
             if (selected.length < required) {
                 log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
                     this._tunerIndex, required, selected.length);
-                this._onFatal(true);
+                this._close();
                 return;
             }
 
@@ -803,9 +769,9 @@ export default class TSMFFilter extends EventEmitter {
                         a.demuxerInput.end();
                     }
                     if (!this._closed) {
-                        log.warn("TunerDevice#%d carrier stream ended on tuner #%d, respawning all carriers",
+                        log.warn("TunerDevice#%d carrier stream ended on tuner #%d, closing TSMFFilter",
                             this._tunerIndex, a.device.index);
-                        this._respawnAllCarriers();
+                        this._close();
                     }
                 });
                 this._carrierLinks.push({
@@ -818,7 +784,7 @@ export default class TSMFFilter extends EventEmitter {
                 log.warn("TunerDevice#%d only %d of %d additional carriers started, retrying...",
                     this._tunerIndex, started, required);
                 this.releaseCarriers();
-                this._onFatal(true);
+                this._close();
                 return;
             }
             log.info("TunerDevice#%d all additional carriers started", this._tunerIndex);
