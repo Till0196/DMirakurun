@@ -72,8 +72,8 @@ const columns: IColumn[] = [
         key: "col-type",
         name: "Type",
         fieldName: "type",
-        minWidth: 65,
-        maxWidth: 65
+        minWidth: 70,
+        maxWidth: 70
     },
     {
         key: "col-channel",

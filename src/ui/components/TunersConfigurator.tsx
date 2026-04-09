@@ -69,8 +69,8 @@ const columns: IColumn[] = [
         key: "col-types",
         name: "Types",
         fieldName: "types",
-        minWidth: 80,
-        maxWidth: 130
+        minWidth: 60,
+        maxWidth: 170
     },
     {
         key: "col-options",
@@ -147,7 +147,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
             ),
             types: (
                 <Dropdown
-                    styles={{ root: { display: "inline-block", minWidth: 90 } }}
+                    styles={{ root: { display: "inline-block", minWidth: 70 } }}
                     multiSelect
                     options={[
                         { key: "GR", text: "GR" },
