@@ -52,18 +52,30 @@ export default class ChannelItem {
         return this._tsmfGroupId;
     }
 
+    /** True iff `tsmfRelTs` was supplied via channels.yml (and is therefore not auto-detected). */
+    get hasConfigTsmfRelTs(): boolean {
+        return this._configTsmfRelTs;
+    }
+
+    /** True iff `tsmfGroupId` was supplied via channels.yml. */
+    get hasConfigTsmfGroupId(): boolean {
+        return this._configTsmfGroupId;
+    }
+
     setTsmfRelTs(relTs: number): void {
-        if (this._configTsmfRelTs) {
+        if (this._configTsmfRelTs || relTs === this._tsmfRelTs) {
             return;
         }
         this._tsmfRelTs = relTs;
+        _.tsmfMeta?.schedule();
     }
 
     setTsmfGroupId(groupId: number): void {
-        if (this._configTsmfGroupId) {
+        if (this._configTsmfGroupId || groupId === this._tsmfGroupId) {
             return;
         }
         this._tsmfGroupId = groupId;
+        _.tsmfMeta?.schedule();
     }
 
     addTsmfRelTsMapping(serviceId: number, tsmfRelTs: number, fromConfig = false): void {
@@ -73,7 +85,13 @@ export default class ChannelItem {
         if (this._configRelTs.has(serviceId) && !fromConfig) {
             return;
         }
+        if (this._relTsMap.get(serviceId) === tsmfRelTs) {
+            return;
+        }
         this._relTsMap.set(serviceId, tsmfRelTs);
+        if (!fromConfig) {
+            _.tsmfMeta?.schedule();
+        }
     }
 
     getTsmfRelTs(serviceId?: number): number | undefined {

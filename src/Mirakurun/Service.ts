@@ -212,13 +212,6 @@ export class Service {
                 continue;
             }
 
-            if (service.channel?.isMultiCarrier) {
-                if (service.channel?.tsmfGroupId !== undefined && service.channel?.tsmfGroupId !== null) {
-                    channelItem.setTsmfGroupId(service.channel.tsmfGroupId);
-                }
-                continue;
-            }
-
             if (service.networkId === undefined || service.serviceId === undefined) {
                 updated = true;
                 continue;
@@ -235,15 +228,6 @@ export class Service {
                     delete s.logoData;
                 });
                 updated = true;
-            }
-
-            // Restore auto-detected TSMF mappings from DB
-            if (service.channel?.tsmfRelTs !== undefined && service.channel?.tsmfRelTs !== null) {
-                channelItem.setTsmfRelTs(service.channel.tsmfRelTs);
-                channelItem.addTsmfRelTsMapping(service.serviceId, service.channel.tsmfRelTs);
-            }
-            if (service.channel?.tsmfGroupId !== undefined && service.channel?.tsmfGroupId !== null) {
-                channelItem.setTsmfGroupId(service.channel.tsmfGroupId);
             }
 
             this.add(
@@ -386,26 +370,10 @@ export class Service {
 
     private _save(): void {
         log.debug("saving services...");
-
-        const data: Partial<apid.Service>[] = this._items.map(service => service.export());
-
-        // Persist groupId for carrier-only channels (no services of their own)
-        const channelsWithServices = new Set(this._items.map(s => `${s.channel.type}:${s.channel.channel}`));
-        for (const channel of _.channel.items) {
-            if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined &&
-                !channelsWithServices.has(`${channel.type}:${channel.channel}`)) {
-                data.push({
-                    channel: {
-                        type: channel.type,
-                        channel: channel.channel,
-                        tsmfGroupId: channel.tsmfGroupId,
-                        isMultiCarrier: true
-                    }
-                });
-            }
-        }
-
-        db.saveServices(data, _.configIntegrity.channels);
+        db.saveServices(
+            this._items.map(service => service.export()),
+            _.configIntegrity.channels
+        );
     }
 
     private _queueCheckToAdd(channel: ChannelItem, serviceId: number): void {

@@ -40,7 +40,7 @@ export async function loadServices(integrity: string, sync = false): Promise<Ser
     return load(process.env.SERVICES_DB_PATH, integrity, sync);
 }
 
-export async function saveServices(data: Partial<Service>[], integrity: string): Promise<void> {
+export async function saveServices(data: Service[], integrity: string): Promise<void> {
     return save(process.env.SERVICES_DB_PATH, data, integrity);
 }
 

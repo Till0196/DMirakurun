@@ -64,6 +64,7 @@ import Channel from "./Mirakurun/Channel";
 import Service from "./Mirakurun/Service";
 import Program from "./Mirakurun/Program";
 import Server from "./Mirakurun/Server";
+import TsmfMeta from "./Mirakurun/TsmfMeta";
 import * as config from "./Mirakurun/config";
 import * as log from "./Mirakurun/log";
 
@@ -87,7 +88,11 @@ import * as log from "./Mirakurun/log";
     _.service = new Service();
     _.program = new Program();
     _.server = new Server();
+    _.tsmfMeta = new TsmfMeta();
 
+    // Load auto-detected TSMF state before services so multi-carrier groupId
+    // and per-service relTs mappings are in place when services boot.
+    await _.tsmfMeta.load();
     await _.service.load();
     await _.program.load();
 

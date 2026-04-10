@@ -21,6 +21,7 @@ import Channel from "./Channel";
 import Service from "./Service";
 import Program from "./Program";
 import Server from "./Server";
+import TsmfMeta from "./TsmfMeta";
 
 interface Shared {
     readonly config: {
@@ -38,6 +39,7 @@ interface Shared {
     service?: Service;
     program?: Program;
     server?: Server;
+    tsmfMeta?: TsmfMeta;
 }
 
 export const _: Shared = {
