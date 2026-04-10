@@ -138,6 +138,7 @@ export default class ServiceItem {
     }
 
     export(): apid.Service {
+        const relTs = this._channel.getTsmfRelTs(this._serviceId);
         const ret: apid.Service = {
             id: this._id,
             serviceId: this._serviceId,
@@ -150,7 +151,10 @@ export default class ServiceItem {
             epgUpdatedAt: this._epgUpdatedAt,
             channel: {
                 type: this._channel.type,
-                channel: this._channel.channel
+                channel: this._channel.channel,
+                ...(relTs !== undefined && relTs !== null && { tsmfRelTs: relTs }),
+                ...(this._channel.tsmfGroupId !== null && this._channel.tsmfGroupId !== undefined &&
+                    this._channel.tsmfGroupId !== 255 && { tsmfGroupId: this._channel.tsmfGroupId })
             }
         };
 

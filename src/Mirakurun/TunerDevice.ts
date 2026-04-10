@@ -105,18 +105,30 @@ export default class TunerDevice extends EventEmitter {
         return this._process ? this._process.pid : null;
     }
 
-    get users(): User[] {
+    get users(): common.User[] {
+        // Serialize streamSetting.channel to a plain object because
+        // yieldable-json (used by responseJSON) does not call toJSON()
+        // on class instances — ChannelItem would become "[object Object]".
         return [...this._users].map(user => {
+            const ss = user.streamSetting;
             return {
                 id: user.id,
                 priority: user.priority,
                 agent: user.agent,
                 url: user.url,
                 disableDecoder: user.disableDecoder,
-                streamSetting: user.streamSetting,
+                streamSetting: ss ? {
+                    channel: ss.channel ? { type: ss.channel.type, channel: ss.channel.channel } : undefined,
+                    networkId: ss.networkId,
+                    serviceId: ss.serviceId,
+                    eventId: ss.eventId,
+                    parseNIT: ss.parseNIT,
+                    parseSDT: ss.parseSDT,
+                    parseEIT: ss.parseEIT
+                } : undefined,
                 streamInfo: user.streamInfo
             };
-        });
+        }) as common.User[];
     }
 
     get decoder(): string {

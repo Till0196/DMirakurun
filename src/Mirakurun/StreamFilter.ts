@@ -591,6 +591,11 @@ export default class StreamFilter extends EventEmitter {
             const detectedGroupId = this._tsmfFilter.detectedGroupId;
             if (detectedRelTs !== null) {
                 ch.setTsmfRelTs(detectedRelTs);
+                // Populate per-service relTs mapping so BS4K channels
+                // store the same serviceId→relTs structure as TSMF→TS.
+                for (const service of ch.getServices()) {
+                    ch.addTsmfRelTsMapping(service.serviceId, detectedRelTs);
+                }
             }
             if (detectedGroupId !== null) {
                 ch.setTsmfGroupId(detectedGroupId);

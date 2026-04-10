@@ -50,6 +50,8 @@ export interface TsmfRecord {
     type: apid.ChannelType;
     channel: string;
     groupId?: number;
+    /** @deprecated Legacy per-channel default. Kept for backward compat on load; new saves use serviceRelTsMap. */
+    relTs?: number;
     /**
      * Per-service relTs map (`serviceId → relTs`). Every service's relTs
      * is stored here — including BS4K channels that currently have only
@@ -83,19 +85,23 @@ export default class Tsmf {
             if (record.groupId !== undefined && record.groupId !== null) {
                 channel.setTsmfGroupId(record.groupId);
             }
+            // Restore per-service relTs map and derive the per-channel default.
+            let firstRelTs: number | undefined;
             if (record.serviceRelTsMap) {
-                let firstRelTs: number | undefined;
                 for (const [serviceIdStr, relTs] of Object.entries(record.serviceRelTsMap)) {
                     channel.addTsmfRelTsMapping(Number(serviceIdStr), relTs);
                     if (firstRelTs === undefined) {
                         firstRelTs = relTs;
                     }
                 }
-                // Derive the per-channel default from the map so the TSMF
-                // pipeline can pick the target relTs without a serviceId.
-                if (firstRelTs !== undefined) {
-                    channel.setTsmfRelTs(firstRelTs);
-                }
+            }
+            // Legacy compat: older tsmf.json may have a per-channel `relTs`
+            // instead of a serviceRelTsMap.
+            if (firstRelTs === undefined && record.relTs !== undefined && record.relTs !== null) {
+                firstRelTs = record.relTs;
+            }
+            if (firstRelTs !== undefined) {
+                channel.setTsmfRelTs(firstRelTs);
             }
         }
         log.info("loaded tsmf db (%d records)", records.length);
