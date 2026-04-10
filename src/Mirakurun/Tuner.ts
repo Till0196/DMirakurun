@@ -184,23 +184,35 @@ export class Tuner {
         });
     }
 
-    async getServices(
-        channel: ChannelItem,
-        userOrOptions: Partial<common.User> | { serviceId?: number; tsmfRelTs?: number; tsmfDiscovery?: boolean } = {}
-    ): Promise<apid.Service[] | DiscoveryResult> {
-        const serviceId = "serviceId" in userOrOptions ? userOrOptions.serviceId : undefined;
-        // Default: tsmfDiscovery=true for initial scans (deferred pipeline).
-        // Callers that need full pipeline (bonded scan, update scan) pass tsmfDiscovery: false.
-        const tsmfDiscovery = "tsmfDiscovery" in userOrOptions ? userOrOptions.tsmfDiscovery : true;
-        const user: Partial<common.User> = "id" in userOrOptions || "priority" in userOrOptions
-            ? userOrOptions as Partial<common.User>
-            : {};
+    async getServices(channel: ChannelItem, user: Partial<common.User> = {}): Promise<apid.Service[]> {
+        // Upstream-shape: full pipeline, no TSMF discovery early-bail. Always
+        // returns Service[] (or rejects). For the deferred TSMF discovery
+        // flow, callers should use `discoverServices` instead.
+        const result = await this.discoverServices(channel, { ...user, tsmfDiscovery: false });
+        if (!Array.isArray(result)) {
+            throw new Error("getServices unexpectedly returned a discovery result; use discoverServices for the deferred TSMF flow");
+        }
+        return result;
+    }
 
-        const tsmfRelTs = ("tsmfRelTs" in userOrOptions && userOrOptions.tsmfRelTs)
-            ? userOrOptions.tsmfRelTs
-            : (serviceId !== undefined && serviceId !== null
-                ? channel.getTsmfRelTs(serviceId)
-                : undefined);
+    /**
+     * Scan a channel and return either the parsed service list or, when
+     * `tsmfDiscovery` is true (the default for initial scans), a
+     * `DiscoveryResult` for multi-carrier TSMF channels that need a separate
+     * bonded scan to complete.
+     */
+    async discoverServices(
+        channel: ChannelItem,
+        options: Partial<common.User> & {
+            serviceId?: number;
+            tsmfRelTs?: number;
+            tsmfDiscovery?: boolean;
+        } = {}
+    ): Promise<apid.Service[] | DiscoveryResult> {
+        const { serviceId, tsmfRelTs: explicitRelTs, tsmfDiscovery = true, ...user } = options;
+        const tsmfRelTs = explicitRelTs ?? (serviceId !== undefined && serviceId !== null
+            ? channel.getTsmfRelTs(serviceId)
+            : undefined);
 
         const tsFilter = await this._initTS({
             id: "Mirakurun:getServices()",

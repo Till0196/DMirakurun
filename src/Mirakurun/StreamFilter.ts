@@ -247,9 +247,10 @@ export default class StreamFilter extends EventEmitter {
 
     /**
      * Build a TSFilter wired to the appropriate output sink (raw or via TSDecoder).
-     * If `slot` is provided, attach it as a TSMF slot extractor inside the filter.
+     * Returns an upstream-shape TSFilter — TSMF slot filtering, when needed,
+     * is wired as a pre-stage by the caller (see `_initTs`).
      */
-    private _createTsFilter(slot?: TSMFSlotFilter): TSFilter {
+    private _createTsFilter(): TSFilter {
         const opts = this._options;
         let output: Writable;
         if (opts.disableDecoder || !opts.decoder) {
@@ -260,7 +261,7 @@ export default class StreamFilter extends EventEmitter {
                 command: opts.decoder
             });
         }
-        const tsFilter = new TSFilter({
+        return new TSFilter({
             output,
             networkId: opts.networkId,
             serviceId: opts.serviceId,
@@ -269,10 +270,6 @@ export default class StreamFilter extends EventEmitter {
             parseSDT: opts.parseSDT,
             parseEIT: opts.parseEIT
         });
-        if (slot) {
-            tsFilter.setSlotFilter(slot);
-        }
-        return tsFilter;
     }
 
     /**
@@ -300,16 +297,23 @@ export default class StreamFilter extends EventEmitter {
     }
 
     /**
-     * TS pipeline. If `slot` is provided (TSMF-TS single-relTs case), the
-     * TSMFSlotFilter is wired inside the TSFilter to extract just that
-     * relative stream.
+     * TS pipeline. If `slot` is provided (TSMF→TS single-relTs case), the
+     * TSMFSlotFilter is piped as a pre-stage in front of TSFilter so the
+     * TSFilter itself stays at upstream parity.
      */
     private _initTs(buffered: Buffer, slot?: TSMFSlotFilter): void {
-        const tsFilter = this._createTsFilter(slot);
+        const tsFilter = this._createTsFilter();
         this._innerFilter = tsFilter;
-        this._activePipeline = tsFilter;
         this._proxyEvents(tsFilter);
-        tsFilter.write(buffered);
+
+        if (slot) {
+            slot.on("data", (chunk: Buffer) => tsFilter.write(chunk));
+            this._activePipeline = slot;
+            slot.write(buffered);
+        } else {
+            this._activePipeline = tsFilter;
+            tsFilter.write(buffered);
+        }
     }
 
     private _initTlv(buffered: Buffer): void {
@@ -401,7 +405,7 @@ export default class StreamFilter extends EventEmitter {
                 parseSDT: opts.parseSDT,
                 parseEIT: opts.parseEIT
             });
-            perTs.setSlotFilter(slot);
+            slot.on("data", (chunk: Buffer) => perTs.write(chunk));
 
             const entry = {
                 relTs,
@@ -433,17 +437,17 @@ export default class StreamFilter extends EventEmitter {
             this._relStreams.push(entry);
         }
 
-        // Replay buffered bytes into every per-relTs TSFilter so each one
-        // starts parsing from the same initial TSMF frame.
+        // Replay buffered bytes through each slot filter; the slot extracts
+        // its target relTs and emits "data" into the corresponding TSFilter.
         for (const e of this._relStreams) {
-            e.ts.write(buffered);
+            e.slot.write(buffered);
         }
 
-        // Dispatcher: fan out subsequent writes to every per-relTs TSFilter.
+        // Dispatcher: fan out subsequent writes to every per-relTs slot filter.
         this._activePipeline = {
             write: (chunk: Buffer) => {
                 for (const e of this._relStreams) {
-                    if (!e.ts.closed) { e.ts.write(chunk); }
+                    if (!e.ts.closed) { e.slot.write(chunk); }
                 }
             }
         };

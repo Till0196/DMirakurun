@@ -454,9 +454,9 @@ export class Service {
     private async _checkToAdd(channel: ChannelItem, serviceId: number): Promise<void> {
         log.info("ChannelItem#'%s' serviceId=%d check has started", channel.name, serviceId);
 
-        let result: Awaited<ReturnType<typeof _.tuner.getServices>>;
+        let result: Awaited<ReturnType<typeof _.tuner.discoverServices>>;
         try {
-            result = await _.tuner.getServices(channel, { serviceId });
+            result = await _.tuner.discoverServices(channel, { serviceId });
         } catch (e) {
             log.warn("ChannelItem#'%s' serviceId=%d check has failed [%s]", channel.name, serviceId, e);
             throw new Error("Service check failed");
@@ -496,9 +496,9 @@ export class Service {
     private async _scan(channel: ChannelItem, add: boolean, tsmfDiscovery = true): Promise<void> {
         log.info("ChannelItem#'%s' service scan has started (tsmfDiscovery=%s)", channel.name, tsmfDiscovery);
 
-        let result: Awaited<ReturnType<typeof _.tuner.getServices>>;
+        let result: Awaited<ReturnType<typeof _.tuner.discoverServices>>;
         try {
-            result = await _.tuner.getServices(channel, { tsmfDiscovery });
+            result = await _.tuner.discoverServices(channel, { tsmfDiscovery });
         } catch (e) {
             log.warn("ChannelItem#'%s' service scan has failed [%s]", channel.name, e);
             throw new Error("Service scan failed");

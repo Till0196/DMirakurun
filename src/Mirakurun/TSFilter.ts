@@ -13,7 +13,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-import { Writable, Transform } from "stream";
+import { Writable } from "stream";
 import EventEmitter = require("eventemitter3");
 import { TsStreamLite, TsCrc32, TsChar, TsLogo, tsDataModule } from "@chinachu/aribts";
 import { StreamInfo, getTimeFromMJD } from "./common";
@@ -111,7 +111,6 @@ export default class TSFilter extends EventEmitter {
     private _targetNetworkId: number;
     private _enableParseCDT = false;
     private _enableParseDSMCC = false;
-    private _slotFilter: Transform | null = null;
 
     // aribts
     private _parser = new TsStreamLite();
@@ -241,31 +240,10 @@ export default class TSFilter extends EventEmitter {
         return this._closed;
     }
 
-    setSlotFilter(filter: Transform): void {
-        this._slotFilter = filter;
-        filter.on("data", (filtered: Buffer) => this._writePackets(filtered));
-    }
-
     write(chunk: Buffer): void {
         if (this._closed) {
             throw new Error("TSFilter has closed already");
         }
-        if (this._slotFilter) {
-            this._slotFilter.write(chunk);
-            return;
-        }
-        this._writePackets(chunk);
-    }
-
-    end(): void {
-        this._close();
-    }
-
-    close(): void {
-        this._close();
-    }
-
-    private _writePackets(chunk: Buffer): void {
 
         let offset = 0;
         const length = chunk.length;
@@ -316,6 +294,14 @@ export default class TSFilter extends EventEmitter {
                 }
             }
         }
+    }
+
+    end(): void {
+        this._close();
+    }
+
+    close(): void {
+        this._close();
     }
 
     private _processPackets(packets: Buffer[]): void {

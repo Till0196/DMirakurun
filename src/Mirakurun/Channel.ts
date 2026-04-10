@@ -194,25 +194,16 @@ export class Channel {
             this._startup = false;
         }
 
-        // MMT/TLV network IDs: MH-EIT only contains self TLV stream data (ARIB STD-B60 7.3.3.9),
-        // so EPG must be gathered per-channel, not per-network.
-        const MMT_NETWORK_IDS = new Set([0x0B, 0x0C]);
-
-        // EPG gathering yields to bonded scans. Bonded scans need every
-        // tuner of a multi-carrier group at once and are blocked indefinitely
-        // when EPG occupies even a single tuner — particularly fatal at
-        // first boot, where bonded scans are the only way to discover
-        // services on multi-carrier channels (e.g. BS8K). EPG can simply
-        // wait until any pending bonded scan finishes before claiming
-        // tuners.
+        // EPG gathering yields to bonded scans. Bonded scans need every tuner
+        // of a multi-carrier group at once and are blocked indefinitely when
+        // EPG occupies even a single tuner — particularly fatal at first boot
+        // where bonded scans are the only way to discover services on
+        // multi-carrier channels (e.g. BS8K).
         const waitForBondedScans = async (logKey: string): Promise<void> => {
             let logged = false;
-            while (true) {
-                const pending = _.job.jobs.some(job =>
-                    job.status !== "finished" &&
-                    job.key.startsWith("Service.Add.BondedScan.")
-                );
-                if (!pending) { return; }
+            while (_.job.jobs.some(job =>
+                job.status !== "finished" && job.key.startsWith("Service.Add.BondedScan.")
+            )) {
                 if (!logged) {
                     log.info("%s EPG gathering is yielding to pending bonded scan(s)", logKey);
                     logged = true;
@@ -221,7 +212,23 @@ export class Channel {
             }
         };
 
-        const addEPGJob = (networkId, service) => {
+        // MMT/TLV networks: MH-EIT is self-stream only (ARIB STD-B60 7.3.3.9),
+        // so EPG must be gathered per-channel, not per-network. They are
+        // handled by the second loop below.
+        const MMT_NETWORK_IDS = new Set([0x0B, 0x0C]);
+
+        const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
+
+        for (const networkId of networkIds) {
+            if (MMT_NETWORK_IDS.has(networkId)) {
+                continue;
+            }
+            const services = _.service.findByNetworkId(networkId);
+            if (services.length === 0) {
+                continue;
+            }
+            const service = services[0];
+
             _.job.add({
                 key: `EPG.Gather.NID.${networkId}`,
                 name: `EPG Gather Network#${networkId}`,
@@ -269,14 +276,30 @@ export class Channel {
                     }
                 }
             });
-        };
+        }
 
-        const addMMTEPGJob = (channel, service) => {
-            const isMultiCarrier = (() => {
-                const gid = channel.tsmfGroupId;
-                if (gid === null || gid === undefined) { return false; }
-                return _.channel.items.filter(ch => ch.tsmfGroupId === gid).length > 1;
-            })();
+        // MMT per-channel EPG gathering. MH-EIT is self-stream only, so each
+        // BS4K channel needs its own job; multi-carrier groups consolidate to
+        // a single primary channel.
+        const seenGroups = new Set<number>();
+        for (const channel of _.channel.items) {
+            const services = channel.getServices();
+            if (services.length === 0) {
+                continue;
+            }
+            if (!MMT_NETWORK_IDS.has(services[0].networkId)) {
+                continue;
+            }
+            const gid = channel.tsmfGroupId;
+            if (gid !== null && gid !== undefined) {
+                if (seenGroups.has(gid)) {
+                    continue;
+                }
+                seenGroups.add(gid);
+            }
+            const service = services[0];
+            const isMultiCarrier = gid !== null && gid !== undefined &&
+                _.channel.items.filter(ch => ch.tsmfGroupId === gid).length > 1;
 
             _.job.add({
                 key: `EPG.Gather.${channel.type}.${channel.channel}`,
@@ -317,11 +340,10 @@ export class Channel {
                             }
                         }
                         await waitForBondedScans(`Channel#${channel.name}`);
-                        // Multi-carrier: wait for all BS4K-capable tuners to be free
                         if (isMultiCarrier) {
+                            // Multi-carrier: wait for all type-matching tuners to be free
                             const typeDevices = _.tuner.devices.filter(d => d.types.includes(channel.type));
-                            while (true) {
-                                if (typeDevices.every(d => d.isFree)) { break; }
+                            while (typeDevices.some(d => !d.isFree)) {
                                 await common.sleep(3000);
                             }
                         }
@@ -329,41 +351,6 @@ export class Channel {
                     }
                 }
             });
-        };
-
-        const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
-        for (const networkId of networkIds) {
-            // MMT: MH-EIT is self-stream only, skip per-network gathering
-            if (MMT_NETWORK_IDS.has(networkId)) {
-                continue;
-            }
-            const services = _.service.findByNetworkId(networkId);
-            if (services.length === 0) {
-                continue;
-            }
-            addEPGJob(networkId, services[0]);
-        }
-
-        // MMT: per-channel EPG gathering (MH-EIT is self-stream only)
-        // For multi-carrier groups, only the first channel gathers EPG
-        const seenGroups = new Set<number>();
-        for (const channel of _.channel.items) {
-            const services = channel.getServices();
-            if (services.length === 0) {
-                continue;
-            }
-            if (!MMT_NETWORK_IDS.has(services[0].networkId)) {
-                continue;
-            }
-            // Skip non-primary carriers in bonded groups
-            const gid = channel.tsmfGroupId;
-            if (gid !== null && gid !== undefined) {
-                if (seenGroups.has(gid)) {
-                    continue;
-                }
-                seenGroups.add(gid);
-            }
-            addMMTEPGJob(channel, services[0]);
         }
     }
 }

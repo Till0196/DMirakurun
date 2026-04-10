@@ -619,20 +619,14 @@ async function runChannelScan(
             // Scan the channel for services
             let services: apid.Service[];
             try {
-                // Get services from the tuner (tsmfDiscovery: false to force full pipeline)
-                const result = await _.tuner.getServices(<any> {
+                // Get services from the tuner
+                services = await _.tuner.getServices(<any> {
                     type,
                     channel
                 }, {
                     id: "Mirakurun:API:channelScan",
-                    priority: 1,
-                    tsmfDiscovery: false
+                    priority: 1
                 });
-                if (!Array.isArray(result)) {
-                    // DiscoveryResult — skip this channel in manual scan
-                    continue;
-                }
-                services = result;
             } catch (error) {
                 // Handle errors (often no signal)
                 const isNoSignalError = /stream has closed before get network/.test(String(error));
