@@ -271,9 +271,10 @@ export class Channel {
                                 service.epgReady = false;
                             }
                         }
-                        await waitForBondedScans(`Network#${networkId}`);
-                        return _.tuner.readyForJob(service.channel);
                     }
+
+                    await waitForBondedScans(`Network#${networkId}`);
+                    return _.tuner.readyForJob(service.channel);
                 }
             });
         }
@@ -339,16 +340,17 @@ export class Channel {
                                 service.epgReady = false;
                             }
                         }
-                        await waitForBondedScans(`Channel#${channel.name}`);
-                        if (isMultiCarrier) {
-                            // Multi-carrier: wait for all type-matching tuners to be free
-                            const typeDevices = _.tuner.devices.filter(d => d.types.includes(channel.type));
-                            while (typeDevices.some(d => !d.isFree)) {
-                                await common.sleep(3000);
-                            }
-                        }
-                        return _.tuner.readyForJob(channel);
                     }
+
+                    await waitForBondedScans(`Channel#${channel.name}`);
+                    if (isMultiCarrier) {
+                        // Multi-carrier: wait for all type-matching tuners to be free
+                        const typeDevices = _.tuner.devices.filter(d => d.types.includes(channel.type));
+                        while (typeDevices.some(d => !d.isFree)) {
+                            await common.sleep(3000);
+                        }
+                    }
+                    return _.tuner.readyForJob(channel);
                 }
             });
         }

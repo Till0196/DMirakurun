@@ -54,6 +54,7 @@ export class Tuner {
     async readyForJob(channel: ChannelItem, requiredCount: number = 1): Promise<boolean> {
         const devices = this._getDevicesByType(channel.type);
         if (devices.length === 0) {
+            log.error("readyForJob: no tuners for channel type: %s", channel.type);
             return false;
         }
 
@@ -75,8 +76,10 @@ export class Tuner {
                 const device = this._pickTunerDevice(devices, channel, -1);
                 if (device && !this._readyForJobPickedDeviceSet.has(device)) {
                     this._readyForJobPickedDeviceSet.add(device);
+                    log.debug("readyForJob: picked device: #%d (%s)", device.index, device.config.name);
                     setTimeout(() => {
                         this._readyForJobPickedDeviceSet.delete(device);
+                        log.debug("readyForJob: released device: #%d (%s)", device.index, device.config.name);
                     }, 1000 * 5);
                     return true;
                 }
