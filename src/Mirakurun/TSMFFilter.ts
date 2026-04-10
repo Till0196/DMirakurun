@@ -2,13 +2,7 @@ import * as stream from "stream";
 import EventEmitter = require("eventemitter3");
 import { TsCrc32 } from "@chinachu/aribts";
 import * as log from "./log";
-import _ from "./_";
-import * as common from "./common";
 import TLVAssembler from "./TLVAssembler";
-import ChannelItem from "./ChannelItem";
-import * as apid from "../../api";
-import TSFilter from "./TSFilter";
-import type TunerDevice from "./TunerDevice";
 
 // TS / TSMF constants (ARIB STD-B32)
 const PACKET_SIZE = 188;
@@ -145,20 +139,15 @@ interface SourceState {
     ccChecker: TsmfCCChecker;
 }
 
-interface CarrierLink {
-    device: TunerDevice;
-    user: common.User & { _stream?: TSFilter };
-    tsFilter: TSFilter;
-    sourceStream: stream.PassThrough;
-    demuxerInput: stream.Writable;
-}
-
 /**
- * TSMF→TLV→TS pipeline orchestrator.
+ * TSMF→TLV demuxer + parser.
  *
- * - Parses TSMF frames (CRC, slot map, target stream selection, carrier bonding).
+ * - Parses TSMF frames (CRC, slot map, target stream selection).
  * - Hands packed superframes to TLVAssembler for offset detection and TLV output.
- * - Manages additional tuner carriers for multi-carrier streams (BS4K bonding).
+ * - Emits `needCarriers` when the multiplex requires multi-carrier bonding.
+ *   The actual carrier acquisition is done by `TSMFCarrierBonding` (in TSMF.ts),
+ *   which subscribes to that event and feeds additional bytes back through
+ *   `createInput()`.
  */
 export default class TSMFFilter extends EventEmitter {
 
@@ -379,8 +368,6 @@ export default class TSMFFilter extends EventEmitter {
     private _expectedGroupId: number | null;
     private _detectedGroupId: number | null = null;
 
-    private _carrierLinks: CarrierLink[] = [];
-    private _carrierInitPending = false;
     private _closed = false;
     private _closing = false;
 
@@ -406,10 +393,6 @@ export default class TSMFFilter extends EventEmitter {
 
     get ready(): boolean {
         return this._assembler.ready;
-    }
-
-    get hasCarriers(): boolean {
-        return this._carrierLinks.length > 0;
     }
 
     get closed(): boolean {
@@ -459,37 +442,7 @@ export default class TSMFFilter extends EventEmitter {
         this._assembler.setOutput(output);
     }
 
-    setupCarriers(ch: ChannelItem): void {
-        // Persist groupId to services DB as soon as detected (fires once).
-        this.once("groupId", (groupId: number, numberOfCarriers: number) => {
-            ch.setTsmfGroupId(groupId);
-            log.debug("TunerDevice#%d TSMF detected groupId=%d numberOfCarriers=%d on %s",
-                this._tunerIndex, groupId, numberOfCarriers, ch.channel);
-            _.service?.save();
-        });
-        this.on("needCarriers", (count: number) => {
-            log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
-            if (count > 1) {
-                this._waitAndStartCarriers(ch, count);
-            }
-        });
-    }
-
-    syncPriorities(newPriority: number): void {
-        for (const link of this._carrierLinks) {
-            if (link.user.priority !== newPriority) {
-                (link.user as { priority: number }).priority = newPriority;
-            }
-        }
-    }
-
-    releaseCarriers(): void {
-        this._closed = true;
-        this._detachCarrierLinks();
-    }
-
     close(): void {
-        this.releaseCarriers();
         this._close();
     }
 
@@ -760,191 +713,4 @@ export default class TSMFFilter extends EventEmitter {
         };
     }
 
-    // --- Private: carrier link management ---
-
-    private _detachCarrierLinks(): void {
-        for (const link of this._carrierLinks) {
-            link.sourceStream.removeAllListeners();
-            if (!link.demuxerInput.writableEnded) {
-                link.demuxerInput.end();
-            }
-            link.device.endStream(link.user, true);
-        }
-        this._carrierLinks = [];
-        this._carrierInitPending = false;
-    }
-
-    /**
-     * Start additional carriers for multi-carrier bonding.
-     * Tuner availability is guaranteed by the job system's readyFn;
-     * groupId discovery is handled by the reactive scan flow.
-     */
-    private _waitAndStartCarriers(ch: ChannelItem, count: number): void {
-        if (this._closed) {
-            return;
-        }
-        if (ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-            log.warn("TunerDevice#%d cannot attach extra carriers without tsmfGroupId, aborting stream", this._tunerIndex);
-            this._close();
-            return;
-        }
-        // Only the first channel in the group (by config order) should manage bonding.
-        // Others abort immediately to free their tuners.
-        const groupChannels = _.channel.items.filter(item =>
-            item.tsmfGroupId === ch.tsmfGroupId
-        );
-        const isFirstInGroup = groupChannels.length === 0 || groupChannels[0].channel === ch.channel;
-
-        if (!isFirstInGroup) {
-            log.info("TunerDevice#%d not first in group (groupId=%d), deferring bonding to %s",
-                this._tunerIndex, ch.tsmfGroupId, groupChannels[0]?.channel);
-            this._close();
-            return;
-        }
-
-        if (groupChannels.length < count) {
-            log.warn("TunerDevice#%d not enough group channels for groupId=%d, need %d but got %d — aborting stream",
-                this._tunerIndex, ch.tsmfGroupId, count, groupChannels.length);
-            this._close();
-            return;
-        }
-        log.info("TunerDevice#%d starting %d additional carriers for groupId=%d",
-            this._tunerIndex, count - 1, ch.tsmfGroupId);
-        const additional = groupChannels.filter(item => item.channel !== ch.channel);
-        this._startCarriers(ch, additional).catch(log.error);
-    }
-
-    private async _startCarriers(ch: ChannelItem, groupChannels: ChannelItem[]): Promise<void> {
-        if (this._carrierInitPending || this._carrierLinks.length > 0 ||
-            !_.tuner || ch.tsmfGroupId === null || ch.tsmfGroupId === undefined) {
-            return;
-        }
-
-        this._carrierInitPending = true;
-        try {
-            const required = groupChannels.length;
-            if (required < 1) {
-                log.warn("TunerDevice#%d no additional channels found for groupId=%d",
-                    this._tunerIndex, ch.tsmfGroupId);
-                return;
-            }
-
-            const selected = this._selectDevices(required, ch.type);
-            if (selected.length < required) {
-                log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
-                    this._tunerIndex, required, selected.length);
-                this._close();
-                return;
-            }
-
-            log.info("TunerDevice#%d starting %d additional carriers on tuners %s",
-                this._tunerIndex, selected.length, selected.map(d => `#${d.index}`).join(", "));
-
-            // Start all additional carriers in parallel to minimize tuning latency.
-            // Each startStream may need to kill/release an existing process (~1s each),
-            // so parallel startup saves N seconds vs serial.
-            const carrierPriority = _.tuner.get(this._tunerIndex)?.getPriority() ?? -1;
-            const attempts = selected.map((device, i) => {
-                const channel = groupChannels[i];
-                const demuxerInput = this.createInput();
-                const sourceStream = new stream.PassThrough();
-                const tsFilter = sourceStream as unknown as TSFilter;
-                const user: common.User & { _stream?: TSFilter } = {
-                    id: "Mirakurun:addCarrier()",
-                    priority: carrierPriority,
-                    disableDecoder: true,
-                    streamSetting: { channel }
-                };
-                return { device, channel, demuxerInput, sourceStream, tsFilter, user };
-            });
-
-            const results = await Promise.allSettled(attempts.map(a =>
-                a.device.startStream(a.user, a.tsFilter, a.channel, { suppressGroupCombine: true })
-            ));
-
-            if (this._closed) {
-                this.releaseCarriers();
-                return;
-            }
-
-            let started = 0;
-            for (let i = 0; i < results.length; i++) {
-                const a = attempts[i];
-                if (results[i].status === "rejected") {
-                    log.error("TunerDevice#%d carrier start failed on tuner #%d `%s`",
-                        this._tunerIndex, a.device.index,
-                        (results[i] as PromiseRejectedResult).reason?.message);
-                    continue;
-                }
-                started++;
-                stream.pipeline(a.sourceStream, a.demuxerInput, err => {
-                    if (err && !this._closed) {
-                        log.error("TunerDevice#%d pipeline error: %s", this._tunerIndex, (err as Error).message);
-                    }
-                });
-                a.sourceStream.once("end", () => {
-                    if (!a.demuxerInput.writableEnded) {
-                        a.demuxerInput.end();
-                    }
-                    if (!this._closed) {
-                        log.warn("TunerDevice#%d carrier stream ended on tuner #%d, closing TSMFFilter",
-                            this._tunerIndex, a.device.index);
-                        this._close();
-                    }
-                });
-                this._carrierLinks.push({
-                    device: a.device, user: a.user, tsFilter: a.tsFilter,
-                    sourceStream: a.sourceStream, demuxerInput: a.demuxerInput
-                });
-            }
-
-            if (started < required) {
-                log.warn("TunerDevice#%d only %d of %d additional carriers started, retrying...",
-                    this._tunerIndex, started, required);
-                this.releaseCarriers();
-                this._close();
-                return;
-            }
-            log.info("TunerDevice#%d all additional carriers started", this._tunerIndex);
-        } finally {
-            this._carrierInitPending = false;
-        }
-    }
-
-    private _selectDevices(required: number, channelType: apid.ChannelType): TunerDevice[] {
-        if (this._closed) {
-            return [];
-        }
-
-        const all = _.tuner.devices
-            .map(d => _.tuner.get(d.index))
-            .filter((d): d is TunerDevice =>
-                !!d && d.index !== this._tunerIndex && !d.isRemote &&
-                d.config.types.includes(channelType)
-            );
-
-        // 1. Prefer free devices.
-        const free = all.filter(d => d.isFree);
-        if (free.length >= required) {
-            return free.slice(0, required);
-        }
-
-        // 2. Not enough — take over lower-priority devices, lowest priority first.
-        const selected = [...free];
-        const carrierPriority = _.tuner.get(this._tunerIndex)?.getPriority() ?? -1;
-        if (carrierPriority >= 0) {
-            const takeover = all
-                .filter(d => !d.isFree && !d.isAdditionalCarrier && d.isUsing &&
-                    d.getPriority() < carrierPriority)
-                .sort((a, b) => a.getPriority() - b.getPriority());
-            for (const d of takeover) {
-                if (selected.length >= required) {
-                    break;
-                }
-                selected.push(d);
-            }
-        }
-
-        return selected.slice(0, required);
-    }
 }

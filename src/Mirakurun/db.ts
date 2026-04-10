@@ -23,6 +23,7 @@ const stringifyAsync = promisify(yieldableJSON.stringifyAsync);
 import Queue from "promise-queue";
 import * as apid from "../../api";
 import * as log from "./log";
+import type { TsmfRecord } from "./TSMF";
 
 interface Service extends apid.Service {
     /** @deprecated */
@@ -50,6 +51,14 @@ export async function loadPrograms(integrity: string, sync = false): Promise<Pro
 
 export async function savePrograms(data: Program[], integrity: string): Promise<void> {
     return save(process.env.PROGRAMS_DB_PATH, data, integrity);
+}
+
+export async function loadTsmf(integrity: string, sync = false): Promise<TsmfRecord[]> {
+    return load(process.env.TSMF_DB_PATH, integrity, sync);
+}
+
+export async function saveTsmf(data: TsmfRecord[], integrity: string): Promise<void> {
+    return save(process.env.TSMF_DB_PATH, data, integrity);
 }
 
 // use queue because async fs ops is not thread safe

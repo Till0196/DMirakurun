@@ -25,6 +25,7 @@ import status from "./status";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import TSMFFilter from "./TSMFFilter";
+import { TSMFCarrierBonding } from "./TSMF";
 import Client, { ProgramsQuery } from "../client";
 
 /** Surface that TunerDevice uses for both TSFilter and BS4K-aware StreamFilter. */
@@ -66,6 +67,7 @@ export default class TunerDevice extends EventEmitter {
     private _process: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
     private _tsmfFilter: TSMFFilter = null;
+    private _tsmfBonding: TSMFCarrierBonding = null;
 
     private _users = new Set<User>();
 
@@ -159,7 +161,7 @@ export default class TunerDevice extends EventEmitter {
     }
 
     get isMultiCarrier(): boolean {
-        return this._tsmfFilter !== null && this._tsmfFilter.hasCarriers;
+        return this._tsmfBonding !== null && this._tsmfBonding.hasCarriers;
     }
 
     getPriority(): number {
@@ -391,6 +393,7 @@ export default class TunerDevice extends EventEmitter {
                 tsmfRelTs: targetRelTs,
                 groupId: tuneCh.tsmfGroupId
             });
+            this._tsmfBonding = new TSMFCarrierBonding(this._tsmfFilter, this._index);
             this._tsmfFilter.once("close", () => {
                 if (this._closing || this._exited || !this._process) {
                     return;
@@ -399,7 +402,7 @@ export default class TunerDevice extends EventEmitter {
             });
 
             const primaryInput = this._tsmfFilter.createInput();
-            this._tsmfFilter.setupCarriers(tuneCh);
+            this._tsmfBonding.setupCarriers(tuneCh);
 
             // Writable sink that broadcasts TLV output to all users
             const broadcastSink = new stream.Writable({
@@ -479,9 +482,7 @@ export default class TunerDevice extends EventEmitter {
 
     private _syncStreamFilterPriorities(): void {
         const priority = this.getPriority();
-        if (this._tsmfFilter) {
-            this._tsmfFilter.syncPriorities(priority);
-        }
+        this._tsmfBonding?.syncPriorities(priority);
         for (const user of this._users) {
             user._stream?.syncPriorities?.(priority);
         }
@@ -492,6 +493,10 @@ export default class TunerDevice extends EventEmitter {
 
         this._stream.removeAllListeners("data");
 
+        if (this._tsmfBonding) {
+            this._tsmfBonding.releaseCarriers();
+            this._tsmfBonding = null;
+        }
         if (this._tsmfFilter) {
             this._tsmfFilter.close();
             this._tsmfFilter = null;
@@ -522,9 +527,7 @@ export default class TunerDevice extends EventEmitter {
 
         // Release carrier links immediately so additional tuners are freed
         // at the same time as the primary (not delayed by _release timeout)
-        if (this._tsmfFilter) {
-            this._tsmfFilter.releaseCarriers();
-        }
+        this._tsmfBonding?.releaseCarriers();
         for (const user of this._users) {
             user._stream?.releaseTsmfCarriers?.();
         }
@@ -590,6 +593,7 @@ export default class TunerDevice extends EventEmitter {
         this._fatalCount = 0;
         this._channel = null;
         this._tsmfFilter = null;
+        this._tsmfBonding = null;
         this._users.clear();
 
         if (this._isFault === false) {

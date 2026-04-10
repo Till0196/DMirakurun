@@ -24,7 +24,7 @@ import TLVFilter from "./TLVFilter";
 import TSDecoder from "./TSDecoder";
 import TLVDecoder from "./TLVDecoder";
 import TSMFFilter, { TSMFHeaderInfo } from "./TSMFFilter";
-import { TSMFSlotFilter } from "./TSMFSlotFilter";
+import { TSMFSlotFilter, TSMFCarrierBonding } from "./TSMF";
 import ChannelItem from "./ChannelItem";
 
 // Stream format detection constants
@@ -86,6 +86,7 @@ export default class StreamFilter extends EventEmitter {
     private _options: StreamFilterOptions;
     private _innerFilter: TSFilter | TLVFilter = null;
     private _tsmfFilter: TSMFFilter = null;
+    private _tsmfBonding: TSMFCarrierBonding = null;
     private _activePipeline: TSFilter | TLVFilter | Writable | { write(chunk: Buffer): void } = null;
     private _detectChunks: Buffer[] = [];
     private _detectLen = 0;
@@ -121,7 +122,7 @@ export default class StreamFilter extends EventEmitter {
     }
 
     get isMultiCarrier(): boolean {
-        return this._tsmfFilter?.hasCarriers ?? false;
+        return this._tsmfBonding?.hasCarriers ?? false;
     }
 
     write(chunk: Buffer): void {
@@ -175,8 +176,11 @@ export default class StreamFilter extends EventEmitter {
         if (this._innerFilter) {
             this._innerFilter.close();
         }
+        if (this._tsmfBonding) {
+            this._tsmfBonding.releaseCarriers();
+            this._tsmfBonding = null;
+        }
         if (this._tsmfFilter) {
-            this._tsmfFilter.releaseCarriers();
             this._tsmfFilter.close();
             this._tsmfFilter = null;
         }
@@ -186,9 +190,7 @@ export default class StreamFilter extends EventEmitter {
     }
 
     syncPriorities(newPriority: number): void {
-        if (this._tsmfFilter) {
-            this._tsmfFilter.syncPriorities(newPriority);
-        }
+        this._tsmfBonding?.syncPriorities(newPriority);
     }
 
     /**
@@ -197,9 +199,7 @@ export default class StreamFilter extends EventEmitter {
      * before the full close sequence.
      */
     releaseTsmfCarriers(): void {
-        if (this._tsmfFilter) {
-            this._tsmfFilter.releaseCarriers();
-        }
+        this._tsmfBonding?.releaseCarriers();
     }
 
     // --- Private ---
@@ -537,6 +537,7 @@ export default class StreamFilter extends EventEmitter {
             tsmfRelTs: relTs,
             groupId: ch.tsmfGroupId ?? undefined
         });
+        this._tsmfBonding = new TSMFCarrierBonding(this._tsmfFilter, opts.tunerIndex ?? 0);
         this._tsmfFilter.once("close", () => {
             if (!this._closed) {
                 this.close();
@@ -570,7 +571,7 @@ export default class StreamFilter extends EventEmitter {
             });
         } else {
             this._attachTlvOutputPipeline();
-            this._tsmfFilter.setupCarriers(ch);
+            this._tsmfBonding.setupCarriers(ch);
         }
 
         primaryInput.write(buffered);

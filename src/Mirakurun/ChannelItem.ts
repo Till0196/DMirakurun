@@ -67,7 +67,7 @@ export default class ChannelItem {
             return;
         }
         this._tsmfRelTs = relTs;
-        _.tsmfMeta?.schedule();
+        _.tsmf?.schedule();
     }
 
     setTsmfGroupId(groupId: number): void {
@@ -75,7 +75,7 @@ export default class ChannelItem {
             return;
         }
         this._tsmfGroupId = groupId;
-        _.tsmfMeta?.schedule();
+        _.tsmf?.schedule();
     }
 
     addTsmfRelTsMapping(serviceId: number, tsmfRelTs: number, fromConfig = false): void {
@@ -90,7 +90,7 @@ export default class ChannelItem {
         }
         this._relTsMap.set(serviceId, tsmfRelTs);
         if (!fromConfig) {
-            _.tsmfMeta?.schedule();
+            _.tsmf?.schedule();
         }
     }
 
