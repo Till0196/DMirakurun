@@ -50,8 +50,12 @@ export interface TsmfRecord {
     type: apid.ChannelType;
     channel: string;
     groupId?: number;
-    relTs?: number;
-    /** Per-service auto-detected relTs map (`serviceId → relTs`). */
+    /**
+     * Per-service relTs map (`serviceId → relTs`). Every service's relTs
+     * is stored here — including BS4K channels that currently have only
+     * one service — so the schema naturally extends to multi-service
+     * multiplexes without change.
+     */
     serviceRelTsMap?: { [serviceId: string]: number };
 }
 
@@ -79,12 +83,18 @@ export default class Tsmf {
             if (record.groupId !== undefined && record.groupId !== null) {
                 channel.setTsmfGroupId(record.groupId);
             }
-            if (record.relTs !== undefined && record.relTs !== null) {
-                channel.setTsmfRelTs(record.relTs);
-            }
             if (record.serviceRelTsMap) {
+                let firstRelTs: number | undefined;
                 for (const [serviceIdStr, relTs] of Object.entries(record.serviceRelTsMap)) {
                     channel.addTsmfRelTsMapping(Number(serviceIdStr), relTs);
+                    if (firstRelTs === undefined) {
+                        firstRelTs = relTs;
+                    }
+                }
+                // Derive the per-channel default from the map so the TSMF
+                // pipeline can pick the target relTs without a serviceId.
+                if (firstRelTs !== undefined) {
+                    channel.setTsmfRelTs(firstRelTs);
                 }
             }
         }
@@ -121,24 +131,23 @@ export default class Tsmf {
                 record.groupId = channel.tsmfGroupId;
                 hasData = true;
             }
-            if (channel.tsmfRelTs !== null && channel.tsmfRelTs !== undefined &&
-                !channel.hasConfigTsmfRelTs) {
-                record.relTs = channel.tsmfRelTs;
-                hasData = true;
-            }
 
-            const relTsMap = channel.getRelTsMap();
-            if (relTsMap.size > 0) {
-                const serialized: { [serviceId: string]: number } = {};
-                for (const [relTs, serviceIds] of relTsMap) {
-                    for (const serviceId of serviceIds) {
-                        serialized[String(serviceId)] = relTs;
-                    }
+            // Build serviceRelTsMap from all services on this channel.
+            // getTsmfRelTs(serviceId) returns the per-service mapping if
+            // one was explicitly added, otherwise the per-channel default.
+            // This unified representation naturally extends to multi-service
+            // multiplexes (ARIB allows multiple services per relTs).
+            const services = channel.getServices();
+            const serialized: { [serviceId: string]: number } = {};
+            for (const service of services) {
+                const relTs = channel.getTsmfRelTs(service.serviceId);
+                if (relTs !== undefined && relTs !== null) {
+                    serialized[String(service.serviceId)] = relTs;
                 }
-                if (Object.keys(serialized).length > 0) {
-                    record.serviceRelTsMap = serialized;
-                    hasData = true;
-                }
+            }
+            if (Object.keys(serialized).length > 0) {
+                record.serviceRelTsMap = serialized;
+                hasData = true;
             }
 
             if (hasData) {
