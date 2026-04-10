@@ -27,7 +27,6 @@ interface StreamOptions extends stream.TransformOptions {
 let idCounter = 0;
 
 export default class TSDecoder extends stream.Writable {
-
     // output
     private _output: stream.Writable;
 
@@ -69,7 +68,6 @@ export default class TSDecoder extends stream.Writable {
     }
 
     _write(chunk: Buffer, encoding: string, callback: Function) {
-
         if (!this._writable) {
             callback();
             return;
@@ -92,7 +90,6 @@ export default class TSDecoder extends stream.Writable {
     }
 
     private _spawn(): void {
-
         if (this._closed === true || this._process) {
             return;
         }
@@ -125,7 +122,6 @@ export default class TSDecoder extends stream.Writable {
     }
 
     private _dead(): void {
-
         if (this._closed === true) {
             return;
         }
@@ -144,7 +140,6 @@ export default class TSDecoder extends stream.Writable {
     }
 
     private _fallback(): void {
-
         const passThrough = new stream.PassThrough({ allowHalfOpen: false });
 
         passThrough.on("data", chunk => this._output.write(chunk));
@@ -156,7 +151,6 @@ export default class TSDecoder extends stream.Writable {
     }
 
     private _kill(): void {
-
         if (this._process) {
             this._process.kill("SIGKILL");
             delete this._process;
@@ -174,7 +168,6 @@ export default class TSDecoder extends stream.Writable {
     }
 
     private _close(): void {
-
         if (this._closed === true) {
             return;
         }

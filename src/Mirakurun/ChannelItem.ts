@@ -19,6 +19,7 @@ import * as common from "./common";
 import * as apid from "../../api";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
+import StreamFilter from "./StreamFilter";
 
 export default class ChannelItem {
     readonly name: string;
@@ -111,7 +112,7 @@ export default class ChannelItem {
         return this.tsmfGroupId === other.tsmfGroupId;
     }
 
-    getStream(user: common.User, output: stream.Writable, tsmfRelTs?: number): Promise<any> {
+    getStream(user: common.User, output: stream.Writable, tsmfRelTs?: number): Promise<TSFilter | StreamFilter> {
         return _.tuner.initChannelStream(this, user, output, tsmfRelTs);
     }
 }
