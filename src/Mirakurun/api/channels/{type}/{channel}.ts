@@ -43,24 +43,7 @@ export const get: Operation = (req, res) => {
         return;
     }
 
-    const body: apid.Channel = {
-        type: channel.type,
-        channel: channel.channel,
-        name: channel.name,
-        services: channel.getServices().map(service => {
-            const tsmfRelTs = channel.getTsmfRelTs(service.serviceId);
-            return {
-                id: service.id,
-                serviceId: service.serviceId,
-                networkId: service.networkId,
-                name: service.name,
-                type: service.type,
-                ...(tsmfRelTs !== undefined && tsmfRelTs !== null && { tsmfRelTs })
-            };
-        })
-    };
-
-    api.responseJSON(res, body);
+    api.responseJSON(res, channel.toJSON());
 };
 
 get.apiDoc = {

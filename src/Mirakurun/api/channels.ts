@@ -21,26 +21,7 @@ import _ from "../_";
 import { channelTypes } from "../common";
 
 export const get: Operation = (req, res) => {
-    const channels: apid.Channel[] = _.channel.items.map(channel => {
-        const ch: apid.Channel = {
-            type: channel.type,
-            channel: channel.channel,
-            name: channel.name,
-            services: channel.getServices().map(service => {
-                const tsmfRelTs = channel.getTsmfRelTs(service.serviceId);
-                return {
-                    id: service.id,
-                    serviceId: service.serviceId,
-                    networkId: service.networkId,
-                    name: service.name,
-                    type: service.type,
-                    ...(tsmfRelTs !== undefined && tsmfRelTs !== null && { tsmfRelTs })
-                };
-            })
-        };
-
-        return ch;
-    }).filter(sift(req.query));
+    const channels: apid.Channel[] = _.channel.items.map(channel => channel.toJSON()).filter(sift(req.query));
 
     api.responseJSON(res, channels);
 };

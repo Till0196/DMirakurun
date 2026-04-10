@@ -24,13 +24,22 @@ import * as apid from "../../api";
 import status from "./status";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
-import TSFilter from "./TSFilter";
-import StreamFilter from "./StreamFilter";
 import TSMFFilter from "./TSMFFilter";
 import Client, { ProgramsQuery } from "../client";
 
+/** Surface that TunerDevice uses for both TSFilter and BS4K-aware StreamFilter. */
+interface StreamSink {
+    readonly closed: boolean;
+    write(chunk: Buffer): boolean | void;
+    close(): void;
+    end(): void;
+    once(event: "close", listener: () => void): unknown;
+    syncPriorities?(priority: number): void;
+    releaseTsmfCarriers?(): void;
+}
+
 interface User extends common.User {
-    _stream?: TSFilter | StreamFilter;
+    _stream?: StreamSink;
 }
 
 interface StartStreamOptions {
@@ -185,7 +194,7 @@ export default class TunerDevice extends EventEmitter {
         await this._kill(true);
     }
 
-    async startStream(user: User, stream: TSFilter | StreamFilter, channel?: ChannelItem, options?: StartStreamOptions): Promise<void> {
+    async startStream(user: User, stream: StreamSink, channel?: ChannelItem, options?: StartStreamOptions): Promise<void> {
         log.debug("TunerDevice#%d start stream for user `%s` (priority=%d)...", this._index, user.id, user.priority);
 
         if (this._isAvailable === false) {
@@ -473,9 +482,7 @@ export default class TunerDevice extends EventEmitter {
             this._tsmfFilter.syncPriorities(priority);
         }
         for (const user of this._users) {
-            if (user._stream && "syncPriorities" in user._stream) {
-                (user._stream as StreamFilter).syncPriorities(priority);
-            }
+            user._stream?.syncPriorities?.(priority);
         }
     }
 
@@ -518,9 +525,7 @@ export default class TunerDevice extends EventEmitter {
             this._tsmfFilter.releaseCarriers();
         }
         for (const user of this._users) {
-            if (user._stream && "releaseTsmfCarriers" in user._stream) {
-                (user._stream as StreamFilter).releaseTsmfCarriers();
-            }
+            user._stream?.releaseTsmfCarriers?.();
         }
 
         this._updated();
@@ -553,8 +558,8 @@ export default class TunerDevice extends EventEmitter {
         }
 
         for (const user of this._users) {
-            if (user._stream && "close" in user._stream && !(user._stream as StreamFilter).closed) {
-                (user._stream as StreamFilter).close();
+            if (user._stream && !user._stream.closed) {
+                user._stream.close();
             }
         }
 
@@ -565,7 +570,7 @@ export default class TunerDevice extends EventEmitter {
         if (this._closing === false && this._users.size !== 0) {
             // Remove users whose streams are already closed (e.g. HTTP client disconnected)
             for (const user of this._users) {
-                if (user._stream && "closed" in user._stream && (user._stream as StreamFilter).closed) {
+                if (user._stream?.closed) {
                     this._users.delete(user);
                 }
             }

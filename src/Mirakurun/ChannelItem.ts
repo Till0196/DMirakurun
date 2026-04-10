@@ -115,4 +115,25 @@ export default class ChannelItem {
     getStream(user: common.User, output: stream.Writable, tsmfRelTs?: number): Promise<TSFilter | StreamFilter> {
         return _.tuner.initChannelStream(this, user, output, tsmfRelTs);
     }
+
+    toJSON(): apid.Channel {
+        return {
+            type: this.type,
+            channel: this.channel,
+            name: this.name,
+            ...(this._tsmfRelTs !== null && this._tsmfRelTs !== undefined && { tsmfRelTs: this._tsmfRelTs }),
+            ...(this._tsmfGroupId !== null && this._tsmfGroupId !== undefined && { tsmfGroupId: this._tsmfGroupId }),
+            services: this.getServices().map(service => {
+                const tsmfRelTs = this.getTsmfRelTs(service.serviceId);
+                return {
+                    id: service.id,
+                    serviceId: service.serviceId,
+                    networkId: service.networkId,
+                    name: service.name,
+                    type: service.type,
+                    ...(tsmfRelTs !== undefined && tsmfRelTs !== null && { tsmfRelTs })
+                };
+            })
+        };
+    }
 }
