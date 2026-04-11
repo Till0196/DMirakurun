@@ -35,6 +35,12 @@ const TLV_VALID_TYPES = new Set([0x01, 0x02, 0x03, 0xfe, 0xff]);
 // TSMF frames are 52 TS packets (9776 bytes). Need at least 1 full frame
 // plus margin for sync alignment.
 const DETECT_MIN_BYTES = 188 * 53 * 2; // ~20KB, guarantees 2 TSMF frames
+// In tsmfDiscovery mode, wait this long for a TSMF-check failure before
+// committing to TSMF. Stale DVR buffer (6 MB) drains in ~60 ms, then there is
+// a 100–500 ms silence while the demodulator re-locks; the fresh non-TSMF data
+// that follows will fail the check. If no failure is seen within this window
+// the stream is genuinely TSMF.
+const TSMF_CONFIRM_TIMEOUT_MS = 2000;
 
 /**
  * Top-level stream format. TSMF is conceptually a sub-classification of TS
@@ -91,11 +97,20 @@ export default class StreamFilter extends EventEmitter {
     private _detectChunks: Buffer[] = [];
     private _detectLen = 0;
 
-    // Multi-relTs auto-detect scan state (TSMF/TS one-pass scan)
+    // TSMF candidate confirmation state (tsmfDiscovery=true only)
+    private _tsmfConfirming = false;
+    private _tsmfConfirmChunks: Buffer[] = [];
+    private _tsmfConfirmChunksLen = 0;
+    private _tsmfConfirmAccum = 0;       // new bytes accumulated since last check
+    private _tsmfConfirmTimer: NodeJS.Timeout | null = null;
+    private _tsmfConfirmHeader: TSMFHeaderInfo | null = null;
+
+    // Multi-relTs auto-detect scan state (TSMF scan — TS and/or TLV)
     private _relStreams: Array<{
-        relTs: number;
+        relTs?: number;
+        relTlv?: number;
         slot: TSMFSlotFilter;
-        ts: TSFilter;
+        filter: TSFilter | TLVFilter;
         gotServices: boolean;
         gotNetwork: boolean;
         services: any[] | null;
@@ -135,6 +150,11 @@ export default class StreamFilter extends EventEmitter {
             return;
         }
 
+        if (this._tsmfConfirming) {
+            this._tsmfConfirmUpdate(chunk);
+            return;
+        }
+
         // Buffer data for format detection
         this._detectChunks.push(chunk);
         this._detectLen += chunk.length;
@@ -157,6 +177,11 @@ export default class StreamFilter extends EventEmitter {
         }
         this._closed = true;
 
+        if (this._tsmfConfirmTimer) {
+            clearTimeout(this._tsmfConfirmTimer);
+            this._tsmfConfirmTimer = null;
+        }
+
         if (this._relStreams.length > 0) {
             if (this._aggregationTimer) {
                 clearTimeout(this._aggregationTimer);
@@ -168,7 +193,7 @@ export default class StreamFilter extends EventEmitter {
                 this._emitMergedServices(true);
             }
             for (const e of this._relStreams) {
-                e.ts.close();
+                e.filter.close();
             }
             this._relStreams = [];
         }
@@ -239,7 +264,15 @@ export default class StreamFilter extends EventEmitter {
 
         // Step 2: within TS-family, plain TS or TSMF wrapper.
         if (result.tsmfHeader) {
-            this._initTsmf(buffer, result.tsmfHeader);
+            if (this._options.tsmfDiscovery) {
+                // In discovery mode, don't commit immediately: a stale DVR
+                // kernel buffer may contain valid TSMF data from the previous
+                // channel. Confirm by checking whether TSMF persists in a
+                // rolling window over the next TSMF_CONFIRM_TIMEOUT_MS.
+                this._startTsmfConfirmation(buffer, result.tsmfHeader);
+            } else {
+                this._initTsmf(buffer, result.tsmfHeader);
+            }
         } else {
             this._initTs(buffer);
         }
@@ -342,6 +375,17 @@ export default class StreamFilter extends EventEmitter {
             ch.setTsmfGroupId(header.groupId);
         }
 
+        // Persist stream_id per relTs from the TSMF header for future
+        // stream_id–based routing extensibility.
+        const activeStreams = new Set<number>();
+        for (const r of header.slotMap) {
+            if (r >= 1 && r <= 15) { activeStreams.add(r); }
+        }
+        for (const relTs of activeStreams) {
+            const isTlv = TSMFFilter.isTLVStream(header.streamTypeBits, relTs);
+            ch.setTsmfStream(relTs, header.streamIds[relTs - 1], header.originalNetworkIds[relTs - 1], isTlv);
+        }
+
         const requestedRelTs = opts.tsmfRelTs
             ?? (opts.serviceId ? ch.getTsmfRelTs(opts.serviceId) : undefined)
             ?? ch.tsmfRelTs ?? undefined;
@@ -369,54 +413,70 @@ export default class StreamFilter extends EventEmitter {
                 this._initTs(buffered, new TSMFSlotFilter(decision.relTs, !opts.serviceId));
                 return;
 
-            case "tsmf-ts-scan":
-                log.info("StreamFilter TSMF auto-detect (scan) started: %d relTs groupId=%s on %s",
+            case "tsmf-scan":
+                log.info("StreamFilter TSMF scan started: %d relTs groupId=%s on %s",
                     decision.activeStreams.size,
                     header.groupId !== 0 && header.groupId !== 255 ? String(header.groupId) : "none",
                     ch.channel);
-                this._initTsmfTsScan(buffered, decision.activeStreams);
+                this._initTsmfScan(buffered, decision.activeStreams, decision.streamTypeBits);
                 return;
         }
     }
 
     /**
-     * TSMF→TS multi-relTs scan pipeline. Builds one TSMFSlotFilter+TSFilter
-     * pair per active relTs, fans out incoming bytes to all of them, and
-     * aggregates per-stream `services` events into a single emit.
+     * TSMF multi-relTs scan pipeline. Builds one TSMFSlotFilter per active
+     * relTs, paired with either a TSFilter (TS stream) or TLVFilter (TLV
+     * stream) based on `streamTypeBits`. Fans out incoming bytes to all of
+     * them and aggregates per-stream `services` events into a single emit.
      *
-     * Used only by Tuner.getServices() (parseSDT=true) on pure-TS multiplexes
-     * where we need to discover services across every relative TS.
-     *
-     * The previous detector fed a single downstream TSFilter with interleaved
-     * PAT/SDT/NIT from every relTs, which corrupted the parser. Each per-relTs
-     * TSFilter sees a clean single-TS feed instead. They are created without
-     * an output sink — TSFilter then forces _ready=false and drops every
-     * payload packet, so we don't need to attach a sink at all.
+     * Used by Tuner.getServices() (parseSDT=true). Handles pure-TS, pure-TLV,
+     * and mixed TLV+TS multiplexes uniformly.
      */
-    private _initTsmfTsScan(buffered: Buffer, activeStreams: Set<number>): void {
+    private _initTsmfScan(buffered: Buffer, activeStreams: Set<number>, streamTypeBits: number): void {
         const opts = this._options;
+        const ch = opts.channel;
         for (const relTs of activeStreams) {
+            const isTlv = TSMFFilter.isTLVStream(streamTypeBits, relTs);
             const slot = new TSMFSlotFilter(relTs, false);
-            const perTs = new TSFilter({
-                networkId: opts.networkId,
-                serviceId: opts.serviceId,
-                eventId: opts.eventId,
-                parseNIT: opts.parseNIT,
-                parseSDT: opts.parseSDT,
-                parseEIT: opts.parseEIT
-            });
-            slot.on("data", (chunk: Buffer) => perTs.write(chunk));
+
+            // Record channel-level relTs for TLV streams immediately.
+            // TLV services may not be discoverable during scan (needs dantto4k),
+            // but the relTs number is known from streamTypeBits.
+            if (isTlv) {
+                ch.setTsmfRelTs(relTs);
+            }
+
+            const filter: TSFilter | TLVFilter = isTlv
+                ? new TLVFilter({
+                    networkId: opts.networkId,
+                    serviceId: opts.serviceId,
+                    eventId: opts.eventId,
+                    parseNIT: opts.parseNIT,
+                    parseSDT: opts.parseSDT,
+                    parseEIT: opts.parseEIT,
+                    channel: opts.channel.channel
+                })
+                : new TSFilter({
+                    networkId: opts.networkId,
+                    serviceId: opts.serviceId,
+                    eventId: opts.eventId,
+                    parseNIT: opts.parseNIT,
+                    parseSDT: opts.parseSDT,
+                    parseEIT: opts.parseEIT
+                });
+
+            slot.on("data", (chunk: Buffer) => filter.write(chunk));
 
             const entry = {
-                relTs,
+                ...(isTlv ? { relTlv: relTs } : { relTs }),
                 slot,
-                ts: perTs,
+                filter,
                 gotServices: false,
                 gotNetwork: false,
                 services: null as any[] | null
             };
 
-            perTs.on("network", (net: any) => {
+            filter.on("network", (net: any) => {
                 if (entry.gotNetwork) { return; }
                 entry.gotNetwork = true;
                 if (this._aggregatedNetwork === null) {
@@ -425,7 +485,7 @@ export default class StreamFilter extends EventEmitter {
                 }
             });
 
-            perTs.on("services", (svs: any[]) => {
+            filter.on("services", (svs: any[]) => {
                 if (entry.gotServices) { return; }
                 entry.gotServices = true;
                 entry.services = svs;
@@ -437,8 +497,7 @@ export default class StreamFilter extends EventEmitter {
             this._relStreams.push(entry);
         }
 
-        // Replay buffered bytes through each slot filter; the slot extracts
-        // its target relTs and emits "data" into the corresponding TSFilter.
+        // Replay buffered bytes through each slot filter.
         for (const e of this._relStreams) {
             e.slot.write(buffered);
         }
@@ -447,27 +506,27 @@ export default class StreamFilter extends EventEmitter {
         this._activePipeline = {
             write: (chunk: Buffer) => {
                 for (const e of this._relStreams) {
-                    if (!e.ts.closed) { e.slot.write(chunk); }
+                    if (!e.filter.closed) { e.slot.write(chunk); }
                 }
             }
         };
 
         // Aggregation timeout: stay well under Tuner.getServices' 20s cap.
-        // If at least one relTs has delivered services by now, emit partial.
         this._aggregationTimer = setTimeout(() => {
             this._emitMergedServices(true);
         }, 15000);
 
-        // Proxy streamInfo from the first relTs TSFilter (used for UI display).
+        // Proxy streamInfo from the first entry.
         Object.defineProperty(this, "streamInfo", {
-            get: () => this._relStreams[0]?.ts.streamInfo ?? {},
+            get: () => this._relStreams[0]?.filter.streamInfo ?? {},
             configurable: true
         });
     }
 
     /**
-     * Merge services collected from each per-relTs TSFilter, persist the
-     * serviceId→relTs mapping, and emit the aggregated "services" event.
+     * Merge services collected from each per-relTs filter, persist the
+     * serviceId→relTs mapping (TS or TLV map as appropriate), and emit the
+     * aggregated "services" event.
      * Called when every relTs has delivered services, on the aggregation
      * timeout, or from close() if the session is torn down prematurely.
      */
@@ -479,6 +538,7 @@ export default class StreamFilter extends EventEmitter {
             this._aggregationTimer = null;
         }
 
+        const ch = this._options.channel;
         const seen = new Set<string>();
         const merged: any[] = [];
         for (const e of this._relStreams) {
@@ -488,8 +548,12 @@ export default class StreamFilter extends EventEmitter {
                 if (seen.has(key)) { continue; }
                 seen.add(key);
                 merged.push(svc);
-                // fromConfig locks are honoured inside addTsmfRelTsMapping.
-                this._options.channel.addTsmfRelTsMapping(svc.serviceId, e.relTs);
+                if (e.relTs !== undefined) {
+                    // fromConfig locks are honoured inside addTsmfServiceId.
+                    ch.addTsmfServiceId(svc.serviceId, e.relTs);
+                }
+                // relTlv: per-service mapping is not needed; channel-level
+                // tsmfRelTs is set in _initTsmfScan / _initTsmf.
             }
         }
 
@@ -591,11 +655,6 @@ export default class StreamFilter extends EventEmitter {
             const detectedGroupId = this._tsmfFilter.detectedGroupId;
             if (detectedRelTs !== null) {
                 ch.setTsmfRelTs(detectedRelTs);
-                // Populate per-service relTs mapping so BS4K channels
-                // store the same serviceId→relTs structure as TSMF→TS.
-                for (const service of ch.getServices()) {
-                    ch.addTsmfRelTsMapping(service.serviceId, detectedRelTs);
-                }
             }
             if (detectedGroupId !== null) {
                 ch.setTsmfGroupId(detectedGroupId);
@@ -631,6 +690,96 @@ export default class StreamFilter extends EventEmitter {
             get: () => inner.streamInfo,
             configurable: true
         });
+    }
+
+    /**
+     * Enter TSMF candidate confirmation phase (tsmfDiscovery=true only).
+     *
+     * Seeds a rolling window with the tail of the detection buffer and starts a
+     * TSMF_CONFIRM_TIMEOUT_MS timer. Subsequent writes are routed here via
+     * `_tsmfConfirmUpdate` instead of the regular detection path. Two exit paths:
+     *   - timer fires without any TSMF failure → commit to TSMF
+     *   - TSMF check fails on the rolling window → commit to plain TS
+     */
+    private _startTsmfConfirmation(detectionBuf: Buffer, header: TSMFHeaderInfo): void {
+        log.debug("StreamFilter: TSMF candidate on %s, entering %dms confirmation phase",
+            this._options.channel.channel, TSMF_CONFIRM_TIMEOUT_MS);
+
+        this._tsmfConfirmHeader = header;
+        this._tsmfConfirming = true;
+        this._tsmfConfirmAccum = 0;
+
+        // Seed rolling window with the tail of what we have so far
+        const seed = detectionBuf.length > DETECT_MIN_BYTES
+            ? detectionBuf.subarray(detectionBuf.length - DETECT_MIN_BYTES)
+            : detectionBuf;
+        this._tsmfConfirmChunks = [Buffer.from(seed)];
+        this._tsmfConfirmChunksLen = seed.length;
+
+        this._tsmfConfirmTimer = setTimeout(() => {
+            this._tsmfConfirmTimer = null;
+            this._commitTsmfConfirm(true);
+        }, TSMF_CONFIRM_TIMEOUT_MS);
+    }
+
+    /**
+     * Called for every incoming chunk while in TSMF confirmation phase.
+     * Maintains a rolling window of the last DETECT_MIN_BYTES and runs a
+     * TSMF header check every DETECT_MIN_BYTES of new data. Calls
+     * `_commitTsmfConfirm(false)` as soon as the check fails.
+     */
+    private _tsmfConfirmUpdate(chunk: Buffer): void {
+        // Grow rolling window
+        this._tsmfConfirmChunks.push(chunk);
+        this._tsmfConfirmChunksLen += chunk.length;
+        this._tsmfConfirmAccum += chunk.length;
+
+        // Trim window: keep only the last DETECT_MIN_BYTES
+        while (this._tsmfConfirmChunks.length > 1 &&
+               this._tsmfConfirmChunksLen - this._tsmfConfirmChunks[0].length >= DETECT_MIN_BYTES) {
+            this._tsmfConfirmChunksLen -= this._tsmfConfirmChunks.shift().length;
+        }
+
+        // Check once per DETECT_MIN_BYTES of new data
+        if (this._tsmfConfirmAccum < DETECT_MIN_BYTES) {
+            return;
+        }
+        this._tsmfConfirmAccum -= DETECT_MIN_BYTES;
+
+        const window = Buffer.concat(this._tsmfConfirmChunks);
+        const tsStart = this._findTsStart(window);
+        const stillTsmf = tsStart >= 0 &&
+            !!TSMFFilter.findFirstExtendedHeader(window, tsStart);
+
+        if (!stillTsmf) {
+            this._commitTsmfConfirm(false);
+        }
+    }
+
+    /**
+     * Finalise the TSMF confirmation phase and branch to the appropriate
+     * pipeline. `isTsmf=true` → TSMF pipeline; `isTsmf=false` → plain TS
+     * (stale DVR burst detected).
+     */
+    private _commitTsmfConfirm(isTsmf: boolean): void {
+        if (!this._tsmfConfirming) { return; }
+        this._tsmfConfirming = false;
+        if (this._tsmfConfirmTimer) {
+            clearTimeout(this._tsmfConfirmTimer);
+            this._tsmfConfirmTimer = null;
+        }
+        const window = Buffer.concat(this._tsmfConfirmChunks);
+        this._tsmfConfirmChunks = [];
+        this._tsmfConfirmChunksLen = 0;
+
+        if (isTsmf) {
+            log.info("StreamFilter: TSMF confirmed on %s", this._options.channel.channel);
+            this._initTsmf(window, this._tsmfConfirmHeader);
+        } else {
+            log.info("StreamFilter: TSMF candidate lost → plain TS (stale DVR burst) on %s",
+                this._options.channel.channel);
+            this._initTs(window);
+        }
     }
 
     /**

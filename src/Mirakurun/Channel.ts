@@ -173,7 +173,7 @@ export class Channel {
             const existing = this.get(channel.type, channel.channel);
             if (existing) {
                 if (channel.serviceId && channel.tsmfRelTs !== undefined && channel.tsmfRelTs !== null) {
-                    existing.addTsmfRelTsMapping(channel.serviceId, channel.tsmfRelTs, true);
+                    existing.addTsmfServiceId(channel.serviceId, channel.tsmfRelTs, true);
                 }
             } else {
                 if (channel.serviceId) {
@@ -181,7 +181,7 @@ export class Channel {
                 }
                 const item = new ChannelItem(channel);
                 if (channel.serviceId && channel.tsmfRelTs !== undefined && channel.tsmfRelTs !== null) {
-                    item.addTsmfRelTsMapping(channel.serviceId, channel.tsmfRelTs, true);
+                    item.addTsmfServiceId(channel.serviceId, channel.tsmfRelTs, true);
                 }
                 this.add(item);
             }

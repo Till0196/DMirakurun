@@ -46,19 +46,22 @@ const TSMF_SYNC_B = 0x0579;
  * are NOT persisted here — they live in config and are applied at ChannelItem
  * construction time.
  */
+/**
+ * TSMF stream entry. Exactly one of `relTs` (TS stream) or `relTlv` (TLV stream) is set.
+ */
+export interface TsmfStreamEntry {
+    relTs?: number;
+    relTlv?: number;
+    streamId: number;
+    onId: number;
+    serviceIds?: number[];
+}
+
 export interface TsmfRecord {
     type: apid.ChannelType;
     channel: string;
     groupId?: number;
-    /** @deprecated Legacy per-channel default. Kept for backward compat on load; new saves use serviceRelTsMap. */
-    relTs?: number;
-    /**
-     * Per-service relTs map (`serviceId → relTs`). Every service's relTs
-     * is stored here — including BS4K channels that currently have only
-     * one service — so the schema naturally extends to multi-service
-     * multiplexes without change.
-     */
-    serviceRelTsMap?: { [serviceId: string]: number };
+    streams?: TsmfStreamEntry[];
 }
 
 /**
@@ -85,20 +88,26 @@ export default class Tsmf {
             if (record.groupId !== undefined && record.groupId !== null) {
                 channel.setTsmfGroupId(record.groupId);
             }
-            // Restore per-service relTs map and derive the per-channel default.
             let firstRelTs: number | undefined;
-            if (record.serviceRelTsMap) {
-                for (const [serviceIdStr, relTs] of Object.entries(record.serviceRelTsMap)) {
-                    channel.addTsmfRelTsMapping(Number(serviceIdStr), relTs);
-                    if (firstRelTs === undefined) {
-                        firstRelTs = relTs;
+            if (record.streams) {
+                for (const entry of record.streams) {
+                    if ("relTs" in entry) {
+                        channel.setTsmfStream(entry.relTs, entry.streamId, entry.onId, false);
+                        if (entry.serviceIds) {
+                            for (const sid of entry.serviceIds) {
+                                channel.addTsmfServiceId(sid, entry.relTs);
+                            }
+                        }
+                        if (firstRelTs === undefined) {
+                            firstRelTs = entry.relTs;
+                        }
+                    } else {
+                        channel.setTsmfStream(entry.relTlv, entry.streamId, entry.onId, true);
+                        if (firstRelTs === undefined) {
+                            firstRelTs = entry.relTlv;
+                        }
                     }
                 }
-            }
-            // Legacy compat: older tsmf.json may have a per-channel `relTs`
-            // instead of a serviceRelTsMap.
-            if (firstRelTs === undefined && record.relTs !== undefined && record.relTs !== null) {
-                firstRelTs = record.relTs;
             }
             if (firstRelTs !== undefined) {
                 channel.setTsmfRelTs(firstRelTs);
@@ -138,21 +147,21 @@ export default class Tsmf {
                 hasData = true;
             }
 
-            // Build serviceRelTsMap from all services on this channel.
-            // getTsmfRelTs(serviceId) returns the per-service mapping if
-            // one was explicitly added, otherwise the per-channel default.
-            // This unified representation naturally extends to multi-service
-            // multiplexes (ARIB allows multiple services per relTs).
-            const services = channel.getServices();
-            const serialized: { [serviceId: string]: number } = {};
-            for (const service of services) {
-                const relTs = channel.getTsmfRelTs(service.serviceId);
-                if (relTs !== undefined && relTs !== null) {
-                    serialized[String(service.serviceId)] = relTs;
+            // Build unified streams array from TSMF stream info + per-service mappings.
+            const tsmfStreams = channel.getTsmfStreams();
+            if (tsmfStreams.size > 0) {
+                record.streams = [];
+                for (const [relTs, info] of tsmfStreams) {
+                    const entry: TsmfStreamEntry = {
+                        ...(info.isTlv ? { relTlv: relTs } : { relTs }),
+                        streamId: info.streamId,
+                        onId: info.onId
+                    };
+                    if (info.serviceIds.size > 0) {
+                        entry.serviceIds = [...info.serviceIds];
+                    }
+                    record.streams.push(entry);
                 }
-            }
-            if (Object.keys(serialized).length > 0) {
-                record.serviceRelTsMap = serialized;
                 hasData = true;
             }
 

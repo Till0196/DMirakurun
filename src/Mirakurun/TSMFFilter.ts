@@ -94,6 +94,10 @@ export interface TSMFHeaderInfo {
     payload: Buffer;
     slotMap: number[];        // 52 entries, each 0..15 (0 = unused)
     streamTypeBits: number;   // 15 bits, MSB = relative stream 1
+    /** stream_id per relative stream (index 0 = relTs 1). ARIB STD-B32 6.3.2. */
+    streamIds: number[];      // 15 entries, each 16-bit unsigned
+    /** original_network_id per relative stream (index 0 = relTs 1). */
+    originalNetworkIds: number[]; // 15 entries, each 16-bit unsigned
     groupId: number;          // 0..254, 255 = undefined
     numberOfCarriers: number; // 1..16
     carrierSequence: number;  // 1..numberOfCarriers
@@ -108,14 +112,15 @@ export interface TSMFHeaderInfo {
  * - `tsmf-tlv` / `tsmf-ts`: single-relTs pipeline. `pinned` is true when the
  *   relTs came from caller hints (URL query / per-service mapping / channel
  *   default), false when picked by auto-detection.
- * - `tsmf-ts-scan`: multi-relTs scan fan-out (Tuner.getServices on a pure
- *   TS multiplex with parseSDT=true).
+ * - `tsmf-scan`: multi-relTs scan fan-out (Tuner.getServices with parseSDT=true).
+ *   Covers both pure-TS and mixed TLV+TS multiplexes; the caller inspects
+ *   `streamTypeBits` per relTs to choose TSFilter or TLVFilter.
  * - `empty`: slot map is empty — multiplex is unusable.
  */
 export type TSMFRouteDecision =
     | { kind: "tsmf-tlv"; relTs: number; pinned: boolean; activeStreams: Set<number> }
     | { kind: "tsmf-ts"; relTs: number; pinned: boolean; activeStreams: Set<number> }
-    | { kind: "tsmf-ts-scan"; activeStreams: Set<number> }
+    | { kind: "tsmf-scan"; activeStreams: Set<number>; streamTypeBits: number }
     | { kind: "empty" };
 
 interface CarrierState {
@@ -222,6 +227,17 @@ export default class TSMFFilter extends EventEmitter {
             carrierSequence = 1;
         }
 
+        // Parse stream_id[0..14] and original_network_id[0..14] from
+        // 識別子/相対ストリーム番号対応情報 (payload[5..64], 480 bits).
+        // Each entry: stream_id(16) + original_network_id(16) = 4 bytes.
+        const streamIds: number[] = new Array(15);
+        const originalNetworkIds: number[] = new Array(15);
+        for (let i = 0; i < 15; i++) {
+            const off = 5 + i * 4;
+            streamIds[i] = (payload[off] << 8) | payload[off + 1];
+            originalNetworkIds[i] = (payload[off + 2] << 8) | payload[off + 3];
+        }
+
         const slotMap: number[] = new Array(SLOT_COUNT);
         for (let i = 0; i < SLOT_COUNT; i++) {
             const b = payload[69 + (i >> 1)];
@@ -233,6 +249,8 @@ export default class TSMFFilter extends EventEmitter {
             payload,
             slotMap,
             streamTypeBits: (payload[121] << 7) | (payload[122] >> 1),
+            streamIds,
+            originalNetworkIds,
             // group_id is meaningful only when carrier bonding is in use.
             groupId: isMultiCarrier ? payload[123] : 0,
             numberOfCarriers,
@@ -326,14 +344,16 @@ export default class TSMFFilter extends EventEmitter {
             };
         }
 
+        // Scan mode: discover services across all active relTs (both TLV and TS).
+        if (parseSDT) {
+            return { kind: "tsmf-scan", activeStreams, streamTypeBits: header.streamTypeBits };
+        }
+
+        // Streaming without explicit relTs: prefer TLV, then smallest TS.
         for (let n = 1; n <= 15; n++) {
             if (activeStreams.has(n) && TSMFFilter.isTLVStream(header.streamTypeBits, n)) {
                 return { kind: "tsmf-tlv", relTs: n, pinned: false, activeStreams };
             }
-        }
-
-        if (parseSDT) {
-            return { kind: "tsmf-ts-scan", activeStreams };
         }
         return {
             kind: "tsmf-ts",

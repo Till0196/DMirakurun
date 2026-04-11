@@ -30,8 +30,14 @@ export default class ChannelItem {
     private _configTsmfRelTs: boolean;
     private _tsmfGroupId: number;
     private _configTsmfGroupId: boolean;
-    private _relTsMap = new Map<number, number>(); // <serviceId, tsmfRelTs>
-    private _configRelTs = new Set<number>(); // serviceIds with config-specified tsmfRelTs
+    /** TSMF stream info keyed by relTs. Stores stream_id, onId, serviceIds, and TS/TLV type. */
+    private _tsmfStreams = new Map<number, {
+        streamId: number;
+        onId: number;
+        isTlv: boolean;
+        serviceIds: Set<number>;
+        configServiceIds: Set<number>;
+    }>();
 
     constructor(config: apid.ConfigChannelsItem) {
         this.name = config.name;
@@ -78,39 +84,59 @@ export default class ChannelItem {
         _.tsmf?.schedule();
     }
 
-    addTsmfRelTsMapping(serviceId: number, tsmfRelTs: number, fromConfig = false): void {
+    addTsmfServiceId(serviceId: number, relTs: number, fromConfig = false): void {
+        const entry = this._getOrCreateStream(relTs);
         if (fromConfig) {
-            this._configRelTs.add(serviceId);
+            entry.configServiceIds.add(serviceId);
         }
-        if (this._configRelTs.has(serviceId) && !fromConfig) {
+        if (entry.configServiceIds.has(serviceId) && !fromConfig) {
             return;
         }
-        if (this._relTsMap.get(serviceId) === tsmfRelTs) {
+        if (entry.serviceIds.has(serviceId)) {
             return;
         }
-        this._relTsMap.set(serviceId, tsmfRelTs);
+        entry.serviceIds.add(serviceId);
         if (!fromConfig) {
             _.tsmf?.schedule();
         }
     }
 
     getTsmfRelTs(serviceId?: number): number | undefined {
-        if (serviceId !== undefined && serviceId !== null && this._relTsMap.has(serviceId)) {
-            return this._relTsMap.get(serviceId);
+        if (serviceId !== undefined && serviceId !== null) {
+            for (const [relTs, entry] of this._tsmfStreams) {
+                if (entry.serviceIds.has(serviceId)) {
+                    return relTs;
+                }
+            }
         }
         return this.tsmfRelTs;
     }
 
-    /** Returns the relTs→serviceIds mapping discovered by TSMF auto-detection. */
-    getRelTsMap(): Map<number, Set<number>> {
-        const map = new Map<number, Set<number>>();
-        for (const [serviceId, relTs] of this._relTsMap) {
-            if (!map.has(relTs)) {
-                map.set(relTs, new Set());
+    /**
+     * Record TSMF stream info (relTs → streamId) parsed from the TSMF header.
+     * Preserves existing serviceIds if the entry already exists.
+     */
+    setTsmfStream(relTs: number, streamId: number, onId: number, isTlv: boolean): void {
+        const existing = this._tsmfStreams.get(relTs);
+        if (existing) {
+            if (existing.streamId === streamId && existing.onId === onId && existing.isTlv === isTlv) {
+                return;
             }
-            map.get(relTs).add(serviceId);
+            existing.streamId = streamId;
+            existing.onId = onId;
+            existing.isTlv = isTlv;
+        } else {
+            this._tsmfStreams.set(relTs, {
+                streamId, onId, isTlv,
+                serviceIds: new Set(),
+                configServiceIds: new Set()
+            });
         }
-        return map;
+        _.tsmf?.schedule();
+    }
+
+    getTsmfStreams(): typeof this._tsmfStreams {
+        return this._tsmfStreams;
     }
 
     getServices(): ServiceItem[] {
@@ -153,5 +179,14 @@ export default class ChannelItem {
                 };
             })
         };
+    }
+
+    private _getOrCreateStream(relTs: number) {
+        let entry = this._tsmfStreams.get(relTs);
+        if (!entry) {
+            entry = { streamId: 0, onId: 0, isTlv: false, serviceIds: new Set(), configServiceIds: new Set() };
+            this._tsmfStreams.set(relTs, entry);
+        }
+        return entry;
     }
 }
