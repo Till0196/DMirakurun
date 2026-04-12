@@ -18,7 +18,7 @@ import * as common from "./common";
 import _ from "./_";
 import * as apid from "../../api";
 import Event from "./Event";
-import ChannelItem from "./ChannelItem";
+import ChannelItem, { StreamEntry } from "./ChannelItem";
 import TSFilter from "./TSFilter";
 import StreamFilter from "./StreamFilter";
 
@@ -162,7 +162,7 @@ export default class ServiceItem {
         ret.channels = this.channels.map(ch => {
             // Look up StreamEntry by (streamId, networkId): bonded sub-carriers
             // share the same streamId but have empty serviceIds.
-            let entry: import("./ChannelItem").StreamEntry | undefined;
+            let entry: StreamEntry | undefined;
             for (const e of ch.getStreams().values()) {
                 if (e.streamId === this._streamId && e.networkId === this._networkId) {
                     entry = e;

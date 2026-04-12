@@ -329,23 +329,27 @@ export class TSMFCarrierBonding {
                 const demuxerInput = this._demuxer.createInput();
                 const sourceStream = new stream.PassThrough();
                 const tsFilter = sourceStream as unknown as TSFilter;
-                const streamSetting: { channel: typeof channel; tsmfRelTs?: number; tsmfRelTlv?: number } = { channel };
-                let carrierEntry: { relTs?: number; isTlv: boolean } | undefined;
+
+                let carrierRelTs: number | undefined;
+                let carrierIsTlv = false;
                 for (const e of channel.getStreams().values()) {
-                    if (e.relTs !== undefined) { carrierEntry = e; break; }
-                }
-                if (carrierEntry?.relTs !== undefined) {
-                    if (carrierEntry.isTlv) {
-                        streamSetting.tsmfRelTlv = carrierEntry.relTs;
-                    } else {
-                        streamSetting.tsmfRelTs = carrierEntry.relTs;
+                    if (e.relTs !== undefined) {
+                        carrierRelTs = e.relTs;
+                        carrierIsTlv = e.isTlv;
+                        break;
                     }
                 }
+
                 const user: common.User & { _stream?: TSFilter } = {
                     id: "Mirakurun:addCarrier()",
                     priority: carrierPriority,
                     disableDecoder: true,
-                    streamSetting
+                    streamSetting: {
+                        channel,
+                        ...(carrierRelTs !== undefined && (carrierIsTlv
+                            ? { tsmfRelTlv: carrierRelTs }
+                            : { tsmfRelTs: carrierRelTs }))
+                    }
                 };
                 return { device, channel, demuxerInput, sourceStream, tsFilter, user };
             });

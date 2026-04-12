@@ -143,26 +143,26 @@ export class Channel {
             let firstRelTs: number | undefined;
             if (record.streams) {
                 for (const entry of record.streams) {
-                    let slotKey: number;
+                    let streamKey: number;
                     let isTlv: boolean;
                     let relTs: number | undefined;
                     if (entry.relTs !== undefined) {
-                        slotKey = entry.relTs;
+                        streamKey = entry.relTs;
                         isTlv = false;
                         relTs = entry.relTs;
                     } else if (entry.relTlv !== undefined) {
-                        slotKey = entry.relTlv;
+                        streamKey = entry.relTlv;
                         isTlv = true;
                         relTs = entry.relTlv;
                     } else {
-                        slotKey = 0;
+                        streamKey = 0;
                         isTlv = false;
                         relTs = undefined;
                     }
-                    channel.setStream(slotKey, entry.streamId, entry.networkId, isTlv, relTs);
+                    channel.setStream(streamKey, entry.streamId, entry.networkId, isTlv, relTs);
                     if (entry.serviceIds) {
                         for (const sid of entry.serviceIds) {
-                            channel.addServiceId(sid, slotKey);
+                            channel.addServiceId(sid, streamKey);
                         }
                     }
                     if (firstRelTs === undefined && relTs !== undefined) {

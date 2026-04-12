@@ -344,7 +344,7 @@ export default class StreamFilter extends EventEmitter {
 
         const requestedRelTs = opts.tsmfRelTs
             ?? (opts.serviceId ? ch.getRelTs(opts.serviceId) : undefined)
-            ?? ch.tsmfRelTs ?? undefined;
+            ?? ch.tsmfRelTs;
 
         const decision = TSMFFilter.resolveRoute(header, requestedRelTs, !!opts.parseSDT);
 

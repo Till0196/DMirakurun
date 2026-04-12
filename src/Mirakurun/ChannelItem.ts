@@ -23,7 +23,7 @@ import TSFilter from "./TSFilter";
 import StreamFilter from "./StreamFilter";
 
 /**
- * One MPEG-TS or TLV stream carried by a channel. Keyed by `slotKey`:
+ * One MPEG-TS or TLV stream carried by a channel. Keyed by `streamKey`:
  * `0` = non-TSMF (plain TS or direct-TLV), `1..15` = TSMF slot (== relTs).
  */
 export interface StreamEntry {
@@ -91,27 +91,27 @@ export default class ChannelItem {
         this._tsmfGroupId = groupId;
     }
 
-    addServiceId(serviceId: number, slotKey: number, fromConfig = false): void {
-        // Skip a config-loaded slotKey=0 entry on a channel that has TSMF
+    addServiceId(serviceId: number, streamKey: number, fromConfig = false): void {
+        // Skip a config-loaded streamKey=0 entry on a channel that has TSMF
         // slot entries — likely a missing `tsmfRelTs:` in channels.yml.
-        if (fromConfig && slotKey === 0) {
+        if (fromConfig && streamKey === 0) {
             for (const key of this._streams.keys()) {
                 if (key >= 1) {
                     return;
                 }
             }
         }
-        let entry = this._streams.get(slotKey);
+        let entry = this._streams.get(streamKey);
         if (!entry) {
             entry = {
                 streamId: 0,
                 networkId: 0,
                 isTlv: false,
-                relTs: slotKey >= 1 ? slotKey : undefined,
+                relTs: streamKey >= 1 ? streamKey : undefined,
                 serviceIds: new Set(),
                 configServiceIds: new Set()
             };
-            this._streams.set(slotKey, entry);
+            this._streams.set(streamKey, entry);
         }
         if (fromConfig) {
             entry.configServiceIds.add(serviceId);
@@ -134,24 +134,24 @@ export default class ChannelItem {
         return this.tsmfRelTs;
     }
 
-    setStream(slotKey: number, streamId: number, networkId: number, isTlv: boolean, relTs?: number): void {
+    setStream(streamKey: number, streamId: number, networkId: number, isTlv: boolean, relTs?: number): void {
         if (streamId === 0xFFFF) {
             return;
         }
 
-        if (slotKey >= 1) {
+        if (streamKey >= 1) {
             const stale = this._streams.get(0);
             if (stale && stale.configServiceIds.size === 0) {
                 this._streams.delete(0);
             }
-        } else if (slotKey === 0) {
+        } else if (streamKey === 0) {
             const existing = this._streams.get(0);
             if (existing && existing.isTlv !== isTlv) {
                 this._streams.delete(0);
             }
         }
 
-        const existing = this._streams.get(slotKey);
+        const existing = this._streams.get(streamKey);
         if (existing) {
             if (existing.streamId === streamId &&
                 existing.networkId === networkId &&
@@ -164,7 +164,7 @@ export default class ChannelItem {
             existing.isTlv = isTlv;
             existing.relTs = relTs;
         } else {
-            this._streams.set(slotKey, {
+            this._streams.set(streamKey, {
                 streamId, networkId, isTlv, relTs,
                 serviceIds: new Set(),
                 configServiceIds: new Set()
@@ -208,20 +208,20 @@ export default class ChannelItem {
             return false;
         }
 
-        const aSlots = [...this._streams].filter(([k]) => k >= 1);
-        const bSlots = [...other._streams].filter(([k]) => k >= 1);
-        if (aSlots.length === 0 || bSlots.length === 0) {
+        const entries = [...this._streams].filter(([k]) => k >= 1);
+        const otherEntries = [...other._streams].filter(([k]) => k >= 1);
+        if (entries.length === 0 || otherEntries.length === 0) {
             return true;
         }
-        if (aSlots.length !== bSlots.length) {
+        if (entries.length !== otherEntries.length) {
             return false;
         }
-        for (const [key, a] of aSlots) {
-            const b = other._streams.get(key);
-            if (!b ||
-                a.streamId !== b.streamId ||
-                a.networkId !== b.networkId ||
-                a.isTlv !== b.isTlv) {
+        for (const [streamKey, entry] of entries) {
+            const otherEntry = other._streams.get(streamKey);
+            if (!otherEntry ||
+                entry.streamId !== otherEntry.streamId ||
+                entry.networkId !== otherEntry.networkId ||
+                entry.isTlv !== otherEntry.isTlv) {
                 return false;
             }
         }
