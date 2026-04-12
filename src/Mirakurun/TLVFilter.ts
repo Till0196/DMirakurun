@@ -331,18 +331,10 @@ export default class TLVFilter extends EventEmitter {
             channel: `${s}`
         }));
         this.emit("networkStreams", channels);
-
-        // One-shot stream metadata for channels.json persistence (direct TLV
-        // path only — TSMF-bonded TLV gets its streamId from the Extended TSMF
-        // header in StreamFilter._initTsmf). Use tlvStreams[0] as the primary
-        // stream; for ISDB-S3 single-carrier this is the only entry.
-        if (!this._streamInfoEmitted && nit.tlvStreams.length > 0) {
-            this._streamInfoEmitted = true;
-            this.emit("streamInfo", {
-                streamId: nit.tlvStreams[0].tlvStreamId,
-                networkId: nit.networkId
-            });
-        }
+        // streamInfo is emitted from `_onSDT` using `SDT[actual].tlvStreamId`,
+        // which uniquely identifies the currently received stream. The NIT's
+        // `tlvStreams[]` is a network-wide list and `[0]` is not necessarily
+        // the current stream.
 
         // Extract carrier bonding info (groupId per frequency/channel)
         for (const tlvStream of nit.tlvStreams) {
@@ -390,6 +382,15 @@ export default class TLVFilter extends EventEmitter {
 
         if (sdt.tableId !== "SDT[actual]") {
             return;
+        }
+
+        // SDT[actual] uniquely identifies the currently received TLV stream.
+        if (!this._streamInfoEmitted) {
+            this._streamInfoEmitted = true;
+            this.emit("streamInfo", {
+                streamId: sdt.tlvStreamId,
+                networkId: sdt.originalNetworkId
+            });
         }
 
         const _services: Partial<apid.Service>[] = [];

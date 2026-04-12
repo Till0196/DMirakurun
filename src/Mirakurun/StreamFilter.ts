@@ -293,14 +293,21 @@ export default class StreamFilter extends EventEmitter {
         this._proxyEvents(tlvFilter);
 
         const ch = this._options.channel;
-        tlvFilter.once("streamInfo", ({ streamId, networkId }: { streamId: number; networkId: number }) => {
-            ch.setStream(0, streamId, networkId, true);
-        });
-        tlvFilter.on("services", (services: { serviceId: number }[]) => {
-            for (const svc of services) {
-                ch.addServiceId(svc.serviceId, 0);
-            }
-        });
+        // For TSMF-bonded channels, the slot entry was already populated by
+        // TunerDevice's TSMF demux via `_initTsmf`. Skip the slotKey=0
+        // writes here so we don't create a parallel entry that would make
+        // `findByChannel` return duplicate services.
+        const isBondedOutput = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
+        if (!isBondedOutput) {
+            tlvFilter.once("streamInfo", ({ streamId, networkId }: { streamId: number; networkId: number }) => {
+                ch.setStream(0, streamId, networkId, true);
+            });
+            tlvFilter.on("services", (services: { serviceId: number }[]) => {
+                for (const svc of services) {
+                    ch.addServiceId(svc.serviceId, 0);
+                }
+            });
+        }
 
         tlvFilter.write(buffered);
     }
