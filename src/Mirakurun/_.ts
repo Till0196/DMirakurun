@@ -21,8 +21,6 @@ import Channel from "./Channel";
 import Service from "./Service";
 import Program from "./Program";
 import Server from "./Server";
-import Tsmf from "./TSMF";
-
 interface Shared {
     readonly config: {
         server?: apid.ConfigServer;
@@ -39,7 +37,6 @@ interface Shared {
     service?: Service;
     program?: Program;
     server?: Server;
-    tsmf?: Tsmf;
 }
 
 export const _: Shared = {

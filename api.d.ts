@@ -42,7 +42,15 @@ export interface Channel {
     type: ChannelType;
     channel: string;
     name?: string;
+    /**
+     * Transmission path classification (default inferred from `type`):
+     *   GR → TER, BS → SAT, CS → SAT, SKY → SAT, BS4K → SAT.
+     */
+    route?: ChannelRoute;
+    /** TSMF relative TS slot number for TS streams (mutually exclusive with `tsmfRelTlv`). */
     tsmfRelTs?: number;
+    /** TSMF relative TS slot number for TLV streams (mutually exclusive with `tsmfRelTs`). */
+    tsmfRelTlv?: number;
     tsmfGroupId?: number;
     isMultiCarrier?: boolean;
     services?: Service[];
@@ -50,10 +58,29 @@ export interface Channel {
 
 export type ChannelType = "GR" | "BS" | "CS" | "SKY" | "BS4K";
 
+/**
+ * Channel transmission path (independent of logical `ChannelType`):
+ *   - TER: terrestrial antenna direct reception
+ *   - SAT: satellite antenna direct reception
+ *   - CATV: cable TV (incl. trans-modulation / TSMF re-broadcast)
+ *   - HIKARI: optical (e.g. FLET'S TV, premium HIKARI)
+ */
+export type ChannelRoute = "TER" | "SAT" | "CATV" | "HIKARI";
+
 export interface Service {
     id: ServiceItemId;
     serviceId: ServiceId;
     networkId: NetworkId;
+    /**
+     * Identifies the logical transport stream that carries this service.
+     * For TS streams this is `transport_stream_id` from PAT; for TLV streams
+     * it is `tlv_stream_id` from the TLV-NIT. The `(networkId, streamId)`
+     * pair uniquely identifies the multiplex regardless of which physical
+     * `route` (TER/SAT/CATV/HIKARI) delivers it. Persisted in services.json
+     * — channel objects are then resolved at runtime via
+     * `Channel.findByStreamId(networkId, streamId)`.
+     */
+    streamId?: number;
     name: string;
     type: number;
     logoId?: number;
@@ -61,7 +88,18 @@ export interface Service {
     remoteControlKeyId?: number;
     epgReady?: boolean;
     epgUpdatedAt?: number;
-    channel?: Channel;
+    /**
+     * All physical channels currently carrying this service's stream,
+     * derived at API serialization time from `(networkId, streamId)` lookup
+     * against the channel registry. Each entry includes per-route TSMF
+     * relTs/relTlv/groupId. May be empty if no channel currently provides
+     * this stream (e.g. channels.yml was edited).
+     */
+    channels?: Channel[];
+    /** TSMF relative TS slot number (per-service, set by `Channel.toJSON()` for TS slots). */
+    tsmfRelTs?: number;
+    /** TSMF relative TS slot number (per-service, set by `Channel.toJSON()` for TLV slots). */
+    tsmfRelTlv?: number;
 }
 
 export interface Program {
@@ -202,6 +240,7 @@ export interface TunerDevice {
     index: number;
     name: string;
     types: ChannelType[];
+    routes?: ChannelRoute[];
     command: string;
     pid: number;
     users: TunerUser[];
@@ -232,6 +271,7 @@ interface StreamSetting {
     parseSDT?: boolean;
     parseEIT?: boolean;
     tsmfRelTs?: number;
+    tsmfRelTlv?: number;
 }
 
 export interface StreamInfo {
@@ -328,6 +368,13 @@ export interface ConfigTunersItem {
     name: string;
     /** channel type. */
     types: ChannelType[];
+    /**
+     * Supported transmission paths. If omitted, the tuner accepts every
+     * route (backward-compatible default — all existing tuners.yml entries
+     * keep working without modification). If set, the device selector only
+     * picks this tuner for channels whose `route` is in this list.
+     */
+    routes?: ChannelRoute[];
     /** [chardev][dvb] command to get TS. */
     command?: string;
     /** [dvb] dvr adapter device path */
@@ -353,6 +400,12 @@ export type ConfigChannels = ConfigChannelsItem[];
 export interface ConfigChannelsItem {
     name: string;
     type: ChannelType;
+    /**
+     * Transmission path classification. Optional — if omitted, defaults
+     * are inferred from `type` (GR → TER, BS/CS/SKY/BS4K → SAT). Used by
+     * the tuner device selector to match `ConfigTunersItem.routes`.
+     */
+    route?: ChannelRoute;
     /** passed to tuning command */
     channel: string;
     serviceId?: number;

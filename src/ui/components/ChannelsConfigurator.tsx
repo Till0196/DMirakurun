@@ -39,7 +39,7 @@ import {
     MessageBarType
 } from "@fluentui/react";
 import { UIState } from "../index";
-import { ConfigChannels, ChannelType } from "../../../api";
+import { ConfigChannels, ChannelType, ChannelRoute } from "../../../api";
 
 const configAPI = "/api/config/channels";
 
@@ -48,6 +48,7 @@ interface Item {
     enable: JSX.Element;
     name: JSX.Element;
     type: JSX.Element;
+    route: JSX.Element;
     channel: JSX.Element;
     options: JSX.Element;
     controls: JSX.Element;
@@ -74,6 +75,13 @@ const columns: IColumn[] = [
         fieldName: "type",
         minWidth: 70,
         maxWidth: 70
+    },
+    {
+        key: "col-route",
+        name: "Route",
+        fieldName: "route",
+        minWidth: 80,
+        maxWidth: 80
     },
     {
         key: "col-channel",
@@ -359,6 +367,28 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                     selectedKey={ch.type}
                     onChange={(ev, option) => {
                         ch.type = option.key as any;
+                        setEditing([...editing]);
+                    }}
+                />
+            ),
+            route: (
+                <Dropdown
+                    label="Route"
+                    options={[
+                        { key: "", text: "(default)" },
+                        { key: "TER", text: "TER" },
+                        { key: "SAT", text: "SAT" },
+                        { key: "CATV", text: "CATV" },
+                        { key: "HIKARI", text: "HIKARI" }
+                    ]}
+                    selectedKey={ch.route ?? ""}
+                    onChange={(ev, option) => {
+                        const v = option.key as string;
+                        if (v === "") {
+                            delete ch.route;
+                        } else {
+                            ch.route = v as ChannelRoute;
+                        }
                         setEditing([...editing]);
                     }}
                 />

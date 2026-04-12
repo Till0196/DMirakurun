@@ -17,7 +17,6 @@ import * as stream from "stream";
 import * as apid from "../../api";
 import * as common from "./common";
 import * as log from "./log";
-import * as db from "./db";
 import _ from "./_";
 import ChannelItem from "./ChannelItem";
 import TSFilter from "./TSFilter";
@@ -36,154 +35,12 @@ const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
 
 // =============================================================================
-// Persisted TSMF metadata (tsmf.json)
-// =============================================================================
-
-/**
- * Auto-detected TSMF state for one channel. Persisted in tsmf.json (sibling of
- * services.json) so multi-carrier groupId / per-service relTs mappings survive
- * restarts. The user-config tsmfRelTs / tsmfGroupId values from channels.yml
- * are NOT persisted here — they live in config and are applied at ChannelItem
- * construction time.
- */
-/**
- * TSMF stream entry. Exactly one of `relTs` (TS stream) or `relTlv` (TLV stream) is set.
- */
-export interface TsmfStreamEntry {
-    relTs?: number;
-    relTlv?: number;
-    streamId: number;
-    onId: number;
-    serviceIds?: number[];
-}
-
-export interface TsmfRecord {
-    type: apid.ChannelType;
-    channel: string;
-    groupId?: number;
-    streams?: TsmfStreamEntry[];
-}
-
-/**
- * TSMF persistence singleton. Snapshots ChannelItem auto-detected state to
- * `tsmf.json` via `db.loadTsmf` / `db.saveTsmf`, gated by an integrity hash of
- * `_.config.channels` so a `channels.yml` edit auto-clears the cache the same
- * way `services.json` does.
- *
- * Saves are debounced (~500 ms) so a burst of detector updates during a scan
- * collapses into a single disk write.
- */
-export default class Tsmf {
-
-    private _saveTimer: NodeJS.Timeout | null = null;
-
-    /** Load tsmf.json and apply records to existing ChannelItems. */
-    async load(): Promise<void> {
-        const records = await db.loadTsmf(_.configIntegrity.channels);
-        for (const record of records) {
-            const channel = _.channel?.get(record.type, record.channel);
-            if (!channel) {
-                continue;
-            }
-            if (record.groupId !== undefined && record.groupId !== null) {
-                channel.setTsmfGroupId(record.groupId);
-            }
-            let firstRelTs: number | undefined;
-            if (record.streams) {
-                for (const entry of record.streams) {
-                    if ("relTs" in entry) {
-                        channel.setTsmfStream(entry.relTs, entry.streamId, entry.onId, false);
-                        if (entry.serviceIds) {
-                            for (const sid of entry.serviceIds) {
-                                channel.addTsmfServiceId(sid, entry.relTs);
-                            }
-                        }
-                        if (firstRelTs === undefined) {
-                            firstRelTs = entry.relTs;
-                        }
-                    } else {
-                        channel.setTsmfStream(entry.relTlv, entry.streamId, entry.onId, true);
-                        if (firstRelTs === undefined) {
-                            firstRelTs = entry.relTlv;
-                        }
-                    }
-                }
-            }
-            if (firstRelTs !== undefined) {
-                channel.setTsmfRelTs(firstRelTs);
-            }
-        }
-        log.info("loaded tsmf db (%d records)", records.length);
-    }
-
-    /**
-     * Schedule a save. Subsequent calls within the debounce window collapse
-     * into a single disk write.
-     */
-    schedule(): void {
-        if (this._saveTimer) {
-            return;
-        }
-        this._saveTimer = setTimeout(() => {
-            this._saveTimer = null;
-            this.save().catch(e => log.error("tsmf save failed: %s", (e as Error).message));
-        }, 500);
-    }
-
-    /** Snapshot current ChannelItem state and write tsmf.json. */
-    async save(): Promise<void> {
-        if (!_.channel) {
-            return;
-        }
-        const records: TsmfRecord[] = [];
-        for (const channel of _.channel.items) {
-            const record: TsmfRecord = { type: channel.type, channel: channel.channel };
-            let hasData = false;
-
-            // Only persist auto-detected values; user-config values come from channels.yml.
-            if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined &&
-                channel.tsmfGroupId !== 255 && !channel.hasConfigTsmfGroupId) {
-                record.groupId = channel.tsmfGroupId;
-                hasData = true;
-            }
-
-            // Build unified streams array from TSMF stream info + per-service mappings.
-            const tsmfStreams = channel.getTsmfStreams();
-            if (tsmfStreams.size > 0) {
-                record.streams = [];
-                for (const [relTs, info] of tsmfStreams) {
-                    const entry: TsmfStreamEntry = {
-                        ...(info.isTlv ? { relTlv: relTs } : { relTs }),
-                        streamId: info.streamId,
-                        onId: info.onId
-                    };
-                    if (info.serviceIds.size > 0) {
-                        entry.serviceIds = [...info.serviceIds];
-                    }
-                    record.streams.push(entry);
-                }
-                hasData = true;
-            }
-
-            if (hasData) {
-                records.push(record);
-            }
-        }
-        await db.saveTsmf(records, _.configIntegrity.channels);
-    }
-}
-
-// =============================================================================
 // TSMFSlotFilter — single-relTs Transform stream for TSMF→TS pipelines
 // =============================================================================
 
 /**
- * Lightweight TSMF slot filter as a Transform stream.
- * Extracts packets belonging to a specific relative stream number from TSMF frames.
- * Used for single-carrier TSMF splitting (non-TLV, e.g. BS/CS over CATV).
- *
- * Detection (PAT parsing, service map building) is delegated to listeners
- * via the `slotMap` and `patPacket` events — see StreamFilter._initTsmf.
+ * Single-relTs TSMF slot filter (non-TLV, e.g. BS/CS over CATV).
+ * Extracts packets for a specific relative stream number from TSMF frames.
  */
 export class TSMFSlotFilter extends stream.Transform {
 
@@ -193,11 +50,6 @@ export class TSMFSlotFilter extends stream.Transform {
         return filter;
     }
 
-    /**
-     * Create a probe that emits only `slotMap` / `patPacket` events without
-     * pushing any payload downstream. Used by StreamFilter to discover the
-     * set of active relative TSes before fanning out per-relTs TSFilters.
-     */
     static createSlotMapProbe(): TSMFSlotFilter {
         const filter = new TSMFSlotFilter(0, false);
         filter._detectMode = true;
@@ -220,7 +72,6 @@ export class TSMFSlotFilter extends stream.Transform {
         this._detectMode = false;
     }
 
-    /** Switch from detect mode to filtering a specific stream. */
     selectStream(relTs: number): void {
         this._detectMode = false;
         this._targetStream = relTs;
@@ -287,13 +138,10 @@ export class TSMFSlotFilter extends stream.Transform {
                 this._slotCounter = 0;
 
                 if (this._detectMode) {
-                    // Extract group_id only from Extended TSMF (frame_type=0x2)
-                    // frame_type is payload byte 2 lower nibble = TS packet byte 6
+                    // group_id meaningful only for Extended TSMF (frame_type=0x2)
                     const frameType = packet[6] & 0x0f;
                     const groupId = frameType === 0x02 ? packet[127] : null;
-                    // streamTypeBits: 15-bit field at payload[121..122] = TS
-                    // packet bytes 125..126 (ARIB STD-B32 6.3.4.2). Bit (15-n)
-                    // corresponds to relative stream n; 0=TLV, 1=TS or unused.
+                    // streamTypeBits: 15 bits at TS packet 125..126 (ARIB STD-B32 6.3.4.2)
                     const streamTypeBits = (packet[125] << 7) | (packet[126] >> 1);
                     this.emit("slotMap", this._slotMap.slice(), groupId, streamTypeBits);
                 }
@@ -314,13 +162,11 @@ export class TSMFSlotFilter extends stream.Transform {
         const slot = this._slotCounter++;
         const relTs = this._slotMap[slot];
 
-        // Detection: correlate PAT with relative stream number
         if (this._detectMode && relTs > 0 && pid === 0x0000) {
             this.emit("patPacket", relTs, packet);
         }
 
         if (this._slotMapOnly) {
-            // probe mode: drop all payload packets
             return;
         }
 
@@ -336,11 +182,6 @@ export class TSMFSlotFilter extends stream.Transform {
 // TSMFCarrierBonding — multi-carrier orchestration on top of a TSMFFilter demuxer
 // =============================================================================
 
-/**
- * One additional carrier feeding bytes into a `TSMFFilter` demuxer instance.
- * The bonding orchestrator owns the lifetime of these links and tears them
- * down when the demuxer closes or carriers are released.
- */
 interface CarrierLink {
     device: TunerDevice;
     user: common.User & { _stream?: TSFilter };
@@ -350,13 +191,9 @@ interface CarrierLink {
 }
 
 /**
- * Multi-carrier bonding orchestrator. Wraps a `TSMFFilter` demuxer with the
- * runtime IO needed to acquire additional tuners when the demuxer signals
- * `needCarriers`, pipe their bytes into demuxer.createInput(), and tear the
- * links down on close.
- *
- * Lives in TSMF.ts (orchestrator layer) so TSMFFilter.ts stays a pure parser
- * + demuxer with no `_.tuner` / `child_process` dependency.
+ * Multi-carrier bonding orchestrator on top of a `TSMFFilter` demuxer.
+ * Acquires additional tuners on `needCarriers`, feeds bytes into
+ * `demuxer.createInput()`, and tears the links down on close.
  */
 export class TSMFCarrierBonding {
 
@@ -368,7 +205,6 @@ export class TSMFCarrierBonding {
     constructor(demuxer: TSMFFilter, tunerIndex: number) {
         this._demuxer = demuxer;
         this._tunerIndex = tunerIndex;
-        // Auto-cleanup when the demuxer dies for any reason.
         this._demuxer.once("close", () => this.releaseCarriers());
     }
 
@@ -376,13 +212,7 @@ export class TSMFCarrierBonding {
         return this._carrierLinks.length > 0;
     }
 
-    /**
-     * Subscribe to demuxer events for the given channel. Persists groupId on
-     * first detection and starts additional carriers when the demuxer signals
-     * `needCarriers`.
-     */
     setupCarriers(ch: ChannelItem): void {
-        // Persist groupId to services DB as soon as detected (fires once).
         this._demuxer.once("groupId", (groupId: number, numberOfCarriers: number) => {
             ch.setTsmfGroupId(groupId);
             log.debug("TunerDevice#%d TSMF detected groupId=%d numberOfCarriers=%d on %s",
@@ -409,8 +239,6 @@ export class TSMFCarrierBonding {
         this._detachCarrierLinks();
     }
 
-    // --- Private ---
-
     private _detachCarrierLinks(): void {
         for (const link of this._carrierLinks) {
             link.sourceStream.removeAllListeners();
@@ -423,11 +251,6 @@ export class TSMFCarrierBonding {
         this._carrierInitPending = false;
     }
 
-    /**
-     * Start additional carriers for multi-carrier bonding.
-     * Tuner availability is guaranteed by the job system's readyFn;
-     * groupId discovery is handled by the reactive scan flow.
-     */
     private _waitAndStartCarriers(ch: ChannelItem, count: number): void {
         if (this._demuxer.closed) {
             return;
@@ -437,10 +260,8 @@ export class TSMFCarrierBonding {
             this._demuxer.close();
             return;
         }
-        // Only the first channel in the group (by config order) should manage bonding.
-        // Others abort immediately to free their tuners.
         const groupChannels = _.channel.items.filter(item =>
-            item.tsmfGroupId === ch.tsmfGroupId
+            item.type === ch.type && ch.isSameTsmfGroup(item)
         );
         const isFirstInGroup = groupChannels.length === 0 || groupChannels[0].channel === ch.channel;
 
@@ -478,31 +299,53 @@ export class TSMFCarrierBonding {
                 return;
             }
 
-            const selected = this._selectDevices(required, ch.type);
-            if (selected.length < required) {
-                log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
-                    this._tunerIndex, required, selected.length);
-                this._demuxer.close();
-                return;
+            // Mirrors `Tuner._initTS` retry loop (50 × 250ms) so tuners in
+            // the kill→release transition window become visible.
+            let selected: TunerDevice[] = [];
+            let tryCount = 50;
+            while (tryCount > 0) {
+                if (this._demuxer.closed) { return; }
+                selected = this._selectDevices(required, ch.type, ch.route);
+                if (selected.length >= required) {
+                    break;
+                }
+                tryCount--;
+                if (tryCount <= 0) {
+                    log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
+                        this._tunerIndex, required, selected.length);
+                    this._demuxer.close();
+                    return;
+                }
+                await new Promise(resolve => setTimeout(resolve, 250));
             }
 
             log.info("TunerDevice#%d starting %d additional carriers on tuners %s",
                 this._tunerIndex, selected.length, selected.map(d => `#${d.index}`).join(", "));
 
-            // Start all additional carriers in parallel to minimize tuning latency.
-            // Each startStream may need to kill/release an existing process (~1s each),
-            // so parallel startup saves N seconds vs serial.
+            // Parallel startup so kill/release of existing processes overlap.
             const carrierPriority = _.tuner.get(this._tunerIndex)?.getPriority() ?? -1;
             const attempts = selected.map((device, i) => {
                 const channel = groupChannels[i];
                 const demuxerInput = this._demuxer.createInput();
                 const sourceStream = new stream.PassThrough();
                 const tsFilter = sourceStream as unknown as TSFilter;
+                const streamSetting: { channel: typeof channel; tsmfRelTs?: number; tsmfRelTlv?: number } = { channel };
+                let carrierEntry: { relTs?: number; isTlv: boolean } | undefined;
+                for (const e of channel.getStreams().values()) {
+                    if (e.relTs !== undefined) { carrierEntry = e; break; }
+                }
+                if (carrierEntry?.relTs !== undefined) {
+                    if (carrierEntry.isTlv) {
+                        streamSetting.tsmfRelTlv = carrierEntry.relTs;
+                    } else {
+                        streamSetting.tsmfRelTs = carrierEntry.relTs;
+                    }
+                }
                 const user: common.User & { _stream?: TSFilter } = {
                     id: "Mirakurun:addCarrier()",
                     priority: carrierPriority,
                     disableDecoder: true,
-                    streamSetting: { channel }
+                    streamSetting
                 };
                 return { device, channel, demuxerInput, sourceStream, tsFilter, user };
             });
@@ -560,25 +403,40 @@ export class TSMFCarrierBonding {
         }
     }
 
-    private _selectDevices(required: number, channelType: apid.ChannelType): TunerDevice[] {
+    private _selectDevices(
+        required: number,
+        channelType: apid.ChannelType,
+        channelRoute: apid.ChannelRoute
+    ): TunerDevice[] {
         if (this._demuxer.closed) {
             return [];
         }
 
+        // Includes remote tuners; bonding correctness is post-verified by
+        // TSMFFilter.streamIds[]. Tuners without `routes` accept any route.
         const all = _.tuner.devices
             .map(d => _.tuner.get(d.index))
-            .filter((d): d is TunerDevice =>
-                !!d && d.index !== this._tunerIndex && !d.isRemote &&
-                d.config.types.includes(channelType)
-            );
+            .filter((d): d is TunerDevice => {
+                if (!d || d.index === this._tunerIndex) {
+                    return false;
+                }
+                if (!d.config.types.includes(channelType)) {
+                    return false;
+                }
+                if (d.config.routes !== undefined &&
+                    d.config.routes.length > 0 &&
+                    !d.config.routes.includes(channelRoute)) {
+                    return false;
+                }
+                return true;
+            });
 
-        // 1. Prefer free devices.
         const free = all.filter(d => d.isFree);
         if (free.length >= required) {
             return free.slice(0, required);
         }
 
-        // 2. Not enough — take over lower-priority devices, lowest priority first.
+        // Take over lower-priority devices, lowest priority first.
         const selected = [...free];
         const carrierPriority = _.tuner.get(this._tunerIndex)?.getPriority() ?? -1;
         if (carrierPriority >= 0) {

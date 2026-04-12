@@ -45,12 +45,15 @@ interface User extends common.User {
 
 interface StartStreamOptions {
     suppressGroupCombine?: boolean;
+    /** Discard the first N bytes of cat/process stdout (kernel DVR ring drain). */
+    drainBytes?: number;
 }
 
 export interface TunerDeviceStatus {
     readonly index: number;
     readonly name: string;
     readonly types: apid.ChannelType[];
+    readonly routes?: apid.ChannelRoute[];
     readonly command: string;
     readonly pid: number;
     readonly users: common.User[];
@@ -70,6 +73,7 @@ export default class TunerDevice extends EventEmitter {
     private _tsmfBonding: TSMFCarrierBonding = null;
 
     private _users = new Set<User>();
+    private _drainRemaining = 0;
 
     private _isAvailable = true;
     private _isRemote = false;
@@ -106,9 +110,8 @@ export default class TunerDevice extends EventEmitter {
     }
 
     get users(): common.User[] {
-        // Serialize streamSetting.channel to a plain object because
-        // yieldable-json (used by responseJSON) does not call toJSON()
-        // on class instances — ChannelItem would become "[object Object]".
+        // ChannelItem must be flattened to a plain object — yieldable-json
+        // does not call toJSON() on class instances.
         return [...this._users].map(user => {
             const ss = user.streamSetting;
             return {
@@ -118,13 +121,21 @@ export default class TunerDevice extends EventEmitter {
                 url: user.url,
                 disableDecoder: user.disableDecoder,
                 streamSetting: ss ? {
-                    channel: ss.channel ? { type: ss.channel.type, channel: ss.channel.channel } : undefined,
+                    channel: ss.channel ? {
+                        type: ss.channel.type,
+                        channel: ss.channel.channel,
+                        route: ss.channel.route,
+                        ...(ss.channel.tsmfGroupId !== null && ss.channel.tsmfGroupId !== undefined &&
+                            ss.channel.tsmfGroupId !== 255 && { tsmfGroupId: ss.channel.tsmfGroupId })
+                    } : undefined,
                     networkId: ss.networkId,
                     serviceId: ss.serviceId,
                     eventId: ss.eventId,
                     parseNIT: ss.parseNIT,
                     parseSDT: ss.parseSDT,
-                    parseEIT: ss.parseEIT
+                    parseEIT: ss.parseEIT,
+                    ...(ss.tsmfRelTs !== undefined && { tsmfRelTs: ss.tsmfRelTs }),
+                    ...(ss.tsmfRelTlv !== undefined && { tsmfRelTlv: ss.tsmfRelTlv })
                 } : undefined,
                 streamInfo: user.streamInfo
             };
@@ -193,6 +204,7 @@ export default class TunerDevice extends EventEmitter {
             index: this._index,
             name: this._config.name,
             types: this._config.types,
+            ...(this._config.routes !== undefined && { routes: this._config.routes }),
             command: this._command,
             pid: this.pid,
             users: this.users,
@@ -318,9 +330,8 @@ export default class TunerDevice extends EventEmitter {
             cmd = this._config.command;
         }
 
-        // For multi-carrier groups, always tune to the primary channel
-        // (first channel in group by config order). Other carriers are added
-        // by TSMFFilter.setupCarriers().
+        // Multi-carrier groups always tune the primary channel; other
+        // carriers are added by TSMFCarrierBonding.setupCarriers.
         let tuneCh = ch;
         if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && !options?.suppressGroupCombine) {
             const groupChannels = _.channel.items.filter(item =>
@@ -346,7 +357,6 @@ export default class TunerDevice extends EventEmitter {
         this._command = cmd;
         this._channel = tuneCh;
 
-        // Determine input stream source
         let inputStream: stream.Readable;
         if (this._config.dvbDevicePath) {
             const cat = child_process.spawn("cat", [this._config.dvbDevicePath]);
@@ -372,18 +382,14 @@ export default class TunerDevice extends EventEmitter {
             inputStream = this._process.stdout;
         }
 
-        // TSMF-TLV bonding pipeline for channels with a known groupId.
-        // Demuxes a single relTs from the bonded carriers in TunerDevice and
-        // broadcasts the decoded TLV to every user of this tuner, instead of
-        // letting each user run its own StreamFilter demuxer.
-        //
-        // We only enter it when we already know the target relTs. Carrier-only
-        // channels (no services of their own) only persist groupId, so fall
-        // back to a sibling channel in the same bonded group whose tsmfRelTs
-        // was set during the initial scan. If neither is available we let
-        // StreamFilter run its own `_initTsmfTlv` probe on the raw data —
-        // notably, the bonded scan itself is the very operation that
-        // discovers tsmfRelTs, so it must be allowed to run without it.
+        // Drain stale DVR ring bytes from the head of the input stream.
+        // Counter-based (consumed in `_streamOnData`) instead of a Transform:
+        // piping a Transform before the consumer is wired causes cat to EPIPE.
+        this._drainRemaining = options?.drainBytes ?? 0;
+
+        // TSMF-TLV bonding pipeline (only when target relTs is already known).
+        // Bonded scans run without this — they're the operation that
+        // discovers relTs in the first place.
         let targetRelTs: number | undefined =
             tuneCh.tsmfRelTs !== null && tuneCh.tsmfRelTs !== undefined ? tuneCh.tsmfRelTs : undefined;
         if (targetRelTs === undefined &&
@@ -487,6 +493,14 @@ export default class TunerDevice extends EventEmitter {
     }
 
     private _streamOnData(chunk: Buffer): void {
+        if (this._drainRemaining > 0) {
+            if (chunk.length <= this._drainRemaining) {
+                this._drainRemaining -= chunk.length;
+                return;
+            }
+            chunk = chunk.subarray(this._drainRemaining);
+            this._drainRemaining = 0;
+        }
         for (const user of this._users) {
             user._stream.write(chunk);
         }

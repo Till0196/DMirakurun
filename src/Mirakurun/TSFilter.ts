@@ -133,6 +133,12 @@ export default class TSFilter extends EventEmitter {
     private _providePids: Set<number> = null; // `null` to provides all
     private _parsePids = new Set<number>();
     private _tsid = -1;
+    /**
+     * Set once the first SDT for the current PAT-confirmed `_tsid` has been
+     * processed, signalling that we have emitted the `streamInfo` event with
+     * `{tsid, networkId}`. Subsequent SDTs do not re-emit.
+     */
+    private _streamInfoEmitted = false;
     private _serviceIds = new Set<number>();
     private _parseServiceIds = new Set<number>();
     private _pmtPid = -1;
@@ -622,6 +628,23 @@ export default class TSFilter extends EventEmitter {
                     logoId: logoId
                 });
             }
+        }
+
+        // Emit a one-shot streamInfo event BEFORE the services event so the
+        // StreamFilter listener has time to write the (streamId, networkId)
+        // entry into ChannelItem._streams[0]. Downstream code (Service
+        // ._applyScannedServices) reads `channel.getStreamForService(serviceId)
+        // ?.streamId` to derive the persisted streamId for the new schema —
+        // if streamInfo emitted AFTER services, that lookup would race with
+        // the listener and return 0. The TSID comes from PAT (`_tsid`); the
+        // networkId comes from this SDT (`original_network_id`). Both must
+        // be valid before we emit.
+        if (!this._streamInfoEmitted && this._tsid !== -1) {
+            this._streamInfoEmitted = true;
+            this.emit("streamInfo", {
+                tsid: this._tsid,
+                networkId: data.original_network_id
+            });
         }
 
         this.emit("services", _services);

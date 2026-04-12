@@ -312,10 +312,15 @@ export default class TSMFFilter extends EventEmitter {
      *
      * Routing rules:
      *   1. `requestedRelTs` set → use it; pick TS or TLV by stream_type bit.
-     *   2. otherwise: prefer the smallest TLV-bearing relTs (mixed/pure TLV).
+     *   2. otherwise: prefer the smallest TLV-bearing relTs and route to
+     *      `tsmf-tlv`. The TLV pipeline (`_initTsmfTlv`) is the only path
+     *      that correctly demuxes TLV bytes from TSMF — the multi-relTs
+     *      `tsmf-scan` path fans TS packets directly into TLVFilter and
+     *      cannot extract MMT control tables (NIT/SDT) for TLV slots, so we
+     *      avoid it for TLV multiplexes regardless of `parseSDT`.
      *   3. otherwise (pure TS multiplex):
-     *      - parseSDT=true (Tuner.getServices scan): "tsmf-ts-scan" so the
-     *        caller can fan out per-relTs.
+     *      - parseSDT=true (Tuner.getServices scan): "tsmf-scan" so the
+     *        caller can fan out per-relTs TSFilters.
      *      - parseSDT=false (streaming/EPG): "tsmf-ts" with the smallest
      *        active relTs.
      */
@@ -344,16 +349,21 @@ export default class TSMFFilter extends EventEmitter {
             };
         }
 
-        // Scan mode: discover services across all active relTs (both TLV and TS).
-        if (parseSDT) {
-            return { kind: "tsmf-scan", activeStreams, streamTypeBits: header.streamTypeBits };
-        }
-
-        // Streaming without explicit relTs: prefer TLV, then smallest TS.
+        // Prefer TLV regardless of mode. The TLV pipeline (TSMFFilter →
+        // TLVFilter) is required to demux TLV bytes from TSMF correctly;
+        // routing TLV slots through `tsmf-scan` (TSMFSlotFilter → TLVFilter)
+        // hands raw TS packets to TLVFilter which only catches occasional
+        // PLT fragments and never gets a clean NIT/SDT.
         for (let n = 1; n <= 15; n++) {
             if (activeStreams.has(n) && TSMFFilter.isTLVStream(header.streamTypeBits, n)) {
                 return { kind: "tsmf-tlv", relTs: n, pinned: false, activeStreams };
             }
+        }
+
+        // Pure TS multiplex: scan mode fans out per-relTs TSFilters; streaming
+        // picks the smallest active relTs.
+        if (parseSDT) {
+            return { kind: "tsmf-scan", activeStreams, streamTypeBits: header.streamTypeBits };
         }
         return {
             kind: "tsmf-ts",
@@ -387,6 +397,16 @@ export default class TSMFFilter extends EventEmitter {
     private _targetRelStream: number;
     private _expectedGroupId: number | null;
     private _detectedGroupId: number | null = null;
+    /**
+     * streamIds[] from the first valid Extended TSMF header seen by this
+     * demuxer. Subsequent frames (including those from additional bonding
+     * carriers) are rejected if their streamIds array doesn't match — this
+     * is the definitive guard against accidentally bonding carriers from
+     * two different CATV systems that happen to share the same 8-bit
+     * groupId (e.g. when multiple Mirakurun instances are aggregated).
+     */
+    private _detectedStreamIds: number[] | null = null;
+    private _streamIdMismatchLogged = false;
 
     private _closed = false;
     private _closing = false;
@@ -589,6 +609,31 @@ export default class TSMFFilter extends EventEmitter {
             this.emit("groupId", frameInfo.groupId, frameInfo.carriers.numberOfCarriers);
         }
 
+        // Record / verify streamIds[] from the Extended TSMF header.
+        // The first frame seen (typically from the primary carrier) sets the
+        // expected streamIds; any later frame — from the primary itself OR
+        // from an additional bonding carrier — whose streamIds differ is
+        // dropped and logged once. This catches the case where two CATV
+        // systems reuse the same groupId for different bonding groups.
+        if (this._detectedStreamIds === null) {
+            this._detectedStreamIds = frameInfo.streamIds.slice();
+        } else {
+            for (let i = 0; i < 15; i++) {
+                if (frameInfo.streamIds[i] !== this._detectedStreamIds[i]) {
+                    if (!this._streamIdMismatchLogged) {
+                        log.warn(
+                            "TunerDevice#%d source#%d TSMF stream_id mismatch: expected [%s], got [%s] — rejecting carrier (likely a groupId collision between different CATV systems)",
+                            this._tunerIndex, source.sourceId,
+                            this._detectedStreamIds.join(","),
+                            frameInfo.streamIds.join(",")
+                        );
+                        this._streamIdMismatchLogged = true;
+                    }
+                    return;
+                }
+            }
+        }
+
         const carrierState = this._resolveCarrier(source, frameInfo);
         if (!carrierState) {
             return;
@@ -713,6 +758,8 @@ export default class TSMFFilter extends EventEmitter {
         groupId: number;
         slotMap: number[];
         streamTypeBits: number;
+        streamIds: number[];
+        originalNetworkIds: number[];
     } | null {
         const info = TSMFFilter.parseTSMFHeader(packet);
         if (!info) {
@@ -729,7 +776,9 @@ export default class TSMFFilter extends EventEmitter {
             },
             groupId: info.groupId,
             slotMap: info.slotMap,
-            streamTypeBits: info.streamTypeBits
+            streamTypeBits: info.streamTypeBits,
+            streamIds: info.streamIds,
+            originalNetworkIds: info.originalNetworkIds
         };
     }
 

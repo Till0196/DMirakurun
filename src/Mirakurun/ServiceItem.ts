@@ -30,7 +30,7 @@ export default class ServiceItem {
     private _id: number;
 
     constructor(
-        private _channel: ChannelItem,
+        private _streamId: number,
         private _networkId: number,
         private _serviceId: number,
         private _name?: string,
@@ -53,6 +53,10 @@ export default class ServiceItem {
 
     get serviceId(): number {
         return this._serviceId;
+    }
+
+    get streamId(): number {
+        return this._streamId;
     }
 
     get name(): string {
@@ -133,30 +137,55 @@ export default class ServiceItem {
         }
     }
 
-    get channel(): ChannelItem {
-        return this._channel;
+    get channel(): ChannelItem | undefined {
+        return _.channel?.findByStreamId(this._networkId, this._streamId)[0];
+    }
+
+    get channels(): ChannelItem[] {
+        return _.channel?.findByStreamId(this._networkId, this._streamId) ?? [];
     }
 
     export(): apid.Service {
-        const relTs = this._channel.getTsmfRelTs(this._serviceId);
         const ret: apid.Service = {
             id: this._id,
             serviceId: this._serviceId,
             networkId: this._networkId,
+            streamId: this._streamId,
             name: this._name || "",
             type: this._type,
             logoId: this._logoId,
             remoteControlKeyId: this._remoteControlKeyId,
             epgReady: this._epgReady,
-            epgUpdatedAt: this._epgUpdatedAt,
-            channel: {
-                type: this._channel.type,
-                channel: this._channel.channel,
-                ...(relTs !== undefined && relTs !== null && { tsmfRelTs: relTs }),
-                ...(this._channel.tsmfGroupId !== null && this._channel.tsmfGroupId !== undefined &&
-                    this._channel.tsmfGroupId !== 255 && { tsmfGroupId: this._channel.tsmfGroupId })
-            }
+            epgUpdatedAt: this._epgUpdatedAt
         };
+
+        ret.channels = this.channels.map(ch => {
+            // Look up StreamEntry by (streamId, networkId): bonded sub-carriers
+            // share the same streamId but have empty serviceIds.
+            let entry: import("./ChannelItem").StreamEntry | undefined;
+            for (const e of ch.getStreams().values()) {
+                if (e.streamId === this._streamId && e.networkId === this._networkId) {
+                    entry = e;
+                    break;
+                }
+            }
+            const c: apid.Channel = {
+                type: ch.type,
+                channel: ch.channel,
+                route: ch.route
+            };
+            if (entry?.relTs !== undefined) {
+                if (entry.isTlv) {
+                    c.tsmfRelTlv = entry.relTs;
+                } else {
+                    c.tsmfRelTs = entry.relTs;
+                }
+            }
+            if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && ch.tsmfGroupId !== 255) {
+                c.tsmfGroupId = ch.tsmfGroupId;
+            }
+            return c;
+        });
 
         return ret;
     }
@@ -166,9 +195,10 @@ export default class ServiceItem {
     }
 
     getOrder(): number {
+        const channel = this.channel;
         let order: string;
 
-        switch (this._channel.type) {
+        switch (channel?.type) {
             case "GR":
                 order = "1";
                 break;
@@ -183,6 +213,9 @@ export default class ServiceItem {
                 break;
             case "BS4K":
                 order = "5";
+                break;
+            default:
+                order = "9";
                 break;
         }
 

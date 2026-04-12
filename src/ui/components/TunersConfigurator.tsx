@@ -37,7 +37,7 @@ import {
     ActionButton
 } from "@fluentui/react";
 import { UIState } from "../index";
-import { ConfigTuners, ChannelType } from "../../../api";
+import { ConfigTuners, ChannelType, ChannelRoute } from "../../../api";
 
 const configAPI = "/api/config/tuners";
 
@@ -46,6 +46,7 @@ interface Item {
     enable: JSX.Element;
     name: JSX.Element;
     types: JSX.Element;
+    routes: JSX.Element;
     options: JSX.Element;
     controls: JSX.Element;
 }
@@ -69,8 +70,15 @@ const columns: IColumn[] = [
         key: "col-types",
         name: "Types",
         fieldName: "types",
-        minWidth: 60,
-        maxWidth: 170
+        minWidth: 130,
+        maxWidth: 200
+    },
+    {
+        key: "col-routes",
+        name: "Routes",
+        fieldName: "routes",
+        minWidth: 150,
+        maxWidth: 220
     },
     {
         key: "col-options",
@@ -93,6 +101,11 @@ const dummySelection = new Selection(); // dummy
 const typesIndex = ["GR", "BS", "CS", "SKY", "BS4K"];
 function sortTypes(types: ChannelType[]): ChannelType[] {
     return types.sort((a, b) => typesIndex.indexOf(a) - typesIndex.indexOf(b));
+}
+
+const routesIndex = ["TER", "SAT", "CATV", "HIKARI"];
+function sortRoutes(routes: ChannelRoute[]): ChannelRoute[] {
+    return routes.sort((a, b) => routesIndex.indexOf(a) - routesIndex.indexOf(b));
 }
 
 const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> = ({ uiState, uiStateEvents }) => {
@@ -147,7 +160,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
             ),
             types: (
                 <Dropdown
-                    styles={{ root: { display: "inline-block", minWidth: 70 } }}
+                    styles={{ root: { display: "inline-block", minWidth: 130 } }}
                     multiSelect
                     options={[
                         { key: "GR", text: "GR" },
@@ -163,6 +176,31 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                             tuner.types = sortTypes(tuner.types);
                         } else {
                             tuner.types = tuner.types.filter(type => type !== option.key);
+                        }
+                        setEditing([...editing]);
+                    }}
+                />
+            ),
+            routes: (
+                <Dropdown
+                    styles={{ root: { display: "inline-block", minWidth: 150 } }}
+                    multiSelect
+                    options={[
+                        { key: "TER", text: "TER" },
+                        { key: "SAT", text: "SAT" },
+                        { key: "CATV", text: "CATV" },
+                        { key: "HIKARI", text: "HIKARI" }
+                    ]}
+                    selectedKeys={tuner.routes ?? []}
+                    onChange={(ev, option) => {
+                        const current = tuner.routes ?? [];
+                        if (option.selected === true) {
+                            tuner.routes = sortRoutes([...current, option.key as ChannelRoute]);
+                        } else {
+                            tuner.routes = current.filter(route => route !== option.key);
+                            if (tuner.routes.length === 0) {
+                                delete tuner.routes;
+                            }
                         }
                         setEditing([...editing]);
                     }}

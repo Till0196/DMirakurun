@@ -23,7 +23,9 @@ import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
 import StreamFilter, { DiscoveryResult } from "./StreamFilter";
-// TSMFSlotFilter is now used internally by StreamFilter
+// Discard the first N bytes of cat/dvbv5-zap stdout to skip stale DVB DVR
+// ring contents from the previous tune. Empirically ≤ 7 KiB on TBS6205SE.
+const STALE_DVR_DRAIN_BYTES = 32 * 1024;
 
 export class Tuner {
     private _devices: TunerDevice[] = [];
@@ -52,9 +54,9 @@ export class Tuner {
      * readyFn — wait until `requiredCount` tuners are available for the given channel type.
      */
     async readyForJob(channel: ChannelItem, requiredCount: number = 1): Promise<boolean> {
-        const devices = this._getDevicesByType(channel.type);
+        const devices = this._getDevicesByType(channel.type, channel.route);
         if (devices.length === 0) {
-            log.error("readyForJob: no tuners for channel type: %s", channel.type);
+            log.error("readyForJob: no tuners for channel type=%s route=%s", channel.type, channel.route);
             return false;
         }
 
@@ -165,7 +167,8 @@ export class Tuner {
             streamSetting: {
                 channel,
                 networkId,
-                parseEIT: true
+                parseEIT: true,
+                drainBytes: STALE_DVR_DRAIN_BYTES
             }
         });
 
@@ -214,7 +217,7 @@ export class Tuner {
     ): Promise<apid.Service[] | DiscoveryResult> {
         const { serviceId, tsmfRelTs: explicitRelTs, tsmfDiscovery = true, ...user } = options;
         const tsmfRelTs = explicitRelTs ?? (serviceId !== undefined && serviceId !== null
-            ? channel.getTsmfRelTs(serviceId)
+            ? channel.getRelTs(serviceId)
             : undefined);
 
         const tsFilter = await this._initTS({
@@ -226,7 +229,8 @@ export class Tuner {
                 parseNIT: true,
                 parseSDT: true,
                 tsmfRelTs,
-                tsmfDiscovery
+                tsmfDiscovery,
+                drainBytes: STALE_DVR_DRAIN_BYTES
             },
             ...user
         });
@@ -239,15 +243,16 @@ export class Tuner {
             let services: apid.Service[] = null;
             let discoveryResult: DiscoveryResult = null;
 
-            setTimeout(() => tsFilter.close(), 20000);
+            // discovery: bails on Extended header (~ms). bonded scan: needs
+            // carrier bonding + TLV-NIT/SDT (~25-35s).
+            const timeoutMs = tsmfDiscovery ? 20000 : 45000;
+            setTimeout(() => tsFilter.close(), timeoutMs);
 
-            // Discovery path: multi-carrier TSMF bails early with groupId info
             tsFilter.once("discovery", (result: DiscoveryResult) => {
                 discoveryResult = result;
                 tsFilter.close();
             });
 
-            // Normal path: wait for NIT + SDT
             Promise.all<void>([
                 new Promise((resolve, reject) => {
                     tsFilter.once("network", _network => {
@@ -355,7 +360,32 @@ export class Tuner {
             setting.parseEIT = false;
         }
 
-        const devices = this._getDevicesByType(setting.channel.type);
+        // Resolve the per-service TSMF slot and store it on `setting` so
+        // `TunerDevice.users` can expose which slot is being viewed.
+        if (setting.tsmfRelTs === undefined && setting.tsmfRelTlv === undefined && setting.channel) {
+            let entry = setting.serviceId !== undefined && setting.serviceId !== null
+                ? setting.channel.getStreamForService(setting.serviceId)
+                : undefined;
+            if (!entry && setting.channel.tsmfRelTs !== undefined && setting.channel.tsmfRelTs !== null) {
+                entry = setting.channel.getStreams().get(setting.channel.tsmfRelTs);
+            }
+            if (entry?.relTs !== undefined) {
+                if (entry.isTlv) {
+                    setting.tsmfRelTlv = entry.relTs;
+                } else {
+                    setting.tsmfRelTs = entry.relTs;
+                }
+            }
+        }
+
+        // TSMF carriers must drain stale DVR data; TSMFFilter would otherwise
+        // lock onto the previous tune's streamIds and reject fresh frames.
+        if (setting.drainBytes === undefined &&
+            (setting.tsmfRelTs !== undefined || setting.tsmfRelTlv !== undefined)) {
+            setting.drainBytes = STALE_DVR_DRAIN_BYTES;
+        }
+
+        const devices = this._getDevicesByType(setting.channel.type, setting.channel.route);
         let tryCount = 50;
 
         if (!dest) {
@@ -391,7 +421,7 @@ export class Tuner {
                     parseNIT: setting.parseNIT,
                     parseSDT: setting.parseSDT,
                     parseEIT: setting.parseEIT,
-                    tsmfRelTs: setting.tsmfRelTs ?? setting.channel.getTsmfRelTs(setting.serviceId),
+                    tsmfRelTs: setting.tsmfRelTs ?? setting.channel.getRelTs(setting.serviceId),
                     channel: setting.channel,
                     tunerIndex: device.index,
                     tsmfDiscovery: setting.tsmfDiscovery
@@ -402,7 +432,9 @@ export class Tuner {
                 });
 
                 try {
-                    await device.startStream(user, streamFilter, setting.channel);
+                    await device.startStream(user, streamFilter, setting.channel, {
+                        drainBytes: setting.drainBytes
+                    });
                     return streamFilter;
                 } catch (err) {
                     streamFilter.end();
@@ -500,14 +532,32 @@ export class Tuner {
         return null;
     }
 
-    private _getDevicesByType(type: apid.ChannelType): TunerDevice[] {
+    /**
+     * Filter tuner devices that can handle a given (type, route) pair.
+     *
+     * - Tuners with no `routes` config accept every route (backward
+     *   compatibility — existing tuners.yml files continue to work).
+     * - Tuners with `routes` set are matched only when `route` is in the
+     *   array.
+     *
+     * `route` is optional: when omitted, only the `types` filter applies
+     * (used by code paths that pre-date the route concept).
+     */
+    private _getDevicesByType(type: apid.ChannelType, route?: apid.ChannelRoute): TunerDevice[] {
         const devices = [];
 
         const l = this._devices.length;
         for (let i = 0; i < l; i++) {
-            if (this._devices[i].config.types.includes(type) === true) {
-                devices.push(this._devices[i]);
+            const device = this._devices[i];
+            if (device.config.types.includes(type) === false) {
+                continue;
             }
+            if (route !== undefined && device.config.routes !== undefined &&
+                device.config.routes.length > 0 &&
+                device.config.routes.includes(route) === false) {
+                continue;
+            }
+            devices.push(device);
         }
 
         return devices;

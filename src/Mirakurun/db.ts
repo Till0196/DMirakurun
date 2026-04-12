@@ -23,11 +23,20 @@ const stringifyAsync = promisify(yieldableJSON.stringifyAsync);
 import Queue from "promise-queue";
 import * as apid from "../../api";
 import * as log from "./log";
-import type { TsmfRecord } from "./TSMF";
 
-interface Service extends apid.Service {
-    /** @deprecated */
-    logoData?: string; // base64
+// On-disk shape for `services.json`. Channel is resolved at load time from
+// the `(networkId, streamId)` pair via `Channel.findByStreamId`.
+interface Service {
+    id: number;
+    serviceId: number;
+    networkId: number;
+    streamId: number;
+    name: string;
+    type: number;
+    logoId?: number;
+    remoteControlKeyId?: number;
+    epgReady?: boolean;
+    epgUpdatedAt?: number;
 }
 
 export interface Program extends apid.Program {
@@ -35,6 +44,26 @@ export interface Program extends apid.Program {
     _pf?: true; // for compatibility
     _isPresent?: true;
     _isFollowing?: true;
+}
+
+// channels.json — auto-detected per-ChannelItem stream metadata.
+// `relTs` and `relTlv` are mutually exclusive (TS slot vs TLV slot);
+// neither set = non-TSMF TS or direct TLV (re-detected on first stream).
+export interface ChannelStreamEntry {
+    streamId: number;
+    networkId: number;
+    relTs?: number;
+    relTlv?: number;
+    serviceIds?: number[];
+}
+
+export interface ChannelRecord {
+    type: apid.ChannelType;
+    channel: string;
+    // Restored from channels.yml at startup; informational on disk only.
+    route?: apid.ChannelRoute;
+    groupId?: number;
+    streams?: ChannelStreamEntry[];
 }
 
 export async function loadServices(integrity: string, sync = false): Promise<Service[]> {
@@ -53,13 +82,17 @@ export async function savePrograms(data: Program[], integrity: string): Promise<
     return save(process.env.PROGRAMS_DB_PATH, data, integrity);
 }
 
-export async function loadTsmf(integrity: string, sync = false): Promise<TsmfRecord[]> {
-    return load(process.env.TSMF_DB_PATH, integrity, sync);
+export async function loadChannels(integrity: string, sync = false): Promise<ChannelRecord[]> {
+    return load(process.env.CHANNELS_DB_PATH, integrity, sync);
 }
 
-export async function saveTsmf(data: TsmfRecord[], integrity: string): Promise<void> {
-    return save(process.env.TSMF_DB_PATH, data, integrity);
+export async function saveChannels(data: ChannelRecord[], integrity: string): Promise<void> {
+    return save(process.env.CHANNELS_DB_PATH, data, integrity);
 }
+
+// =============================================================================
+// shared raw I/O
+// =============================================================================
 
 // use queue because async fs ops is not thread safe
 const dbIOQueue = new Queue(1, Infinity);

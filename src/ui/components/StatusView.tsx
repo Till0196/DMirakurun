@@ -130,6 +130,24 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
         );
     }
 
+    // Channel types with more than one route configured. Single-route
+    // types omit the route from tooltips and tuner labels.
+    const multiRouteTypes = (() => {
+        const map = new Map<string, Set<string>>();
+        for (const svc of services) {
+            for (const ch of (svc.channels ?? [])) {
+                if (!ch.type) continue;
+                if (!map.has(ch.type)) map.set(ch.type, new Set());
+                map.get(ch.type).add(ch.route ?? "");
+            }
+        }
+        const out = new Set<string>();
+        for (const [type, routes] of map) {
+            if (routes.size > 1) out.add(type);
+        }
+        return out;
+    })();
+
     // フィルタリングされたサービスリストを作成
     const filteredServices = services.filter(service => {
         if (service.type === 0x01 || service.type === 0xAD) {
@@ -151,15 +169,44 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
                     calloutProps={calloutProps}
                     styles={tooltipHostStyles}
                     tooltipProps={tooltipProps}
-                    content={(
-                        `#${service.id}\n` +
-                        `SID: 0x${service.serviceId.toString(16).toUpperCase()} (${service.serviceId})\n` +
-                        `NID: 0x${service.networkId.toString(16).toUpperCase()} (${service.networkId})\n` +
-                        `Type: 0x${service.type.toString(16).toUpperCase()} (${service.type})\n` +
-                        `Channel: ${service.channel.type} / ${service.channel.channel}` +
-                        (service.channel.tsmfRelTs != null ? `\nTSMF RelTs: ${service.channel.tsmfRelTs}` : "") +
-                        (service.channel.tsmfGroupId != null ? `\nTSMF GroupId: ${service.channel.tsmfGroupId}` : "")
-                    )}
+                    content={(() => {
+                        const channels = service.channels ?? [];
+                        // Group bonded carriers (same route/type/rel/groupId) into one line.
+                        const groups = new Map<string, { route: string; type: string; channels: string[]; rel?: number; groupId?: number }>();
+                        for (const ch of channels) {
+                            const route = ch.route ?? ch.type;
+                            const rel = ch.tsmfRelTs ?? ch.tsmfRelTlv;
+                            const key = `${route}|${ch.type}|${rel ?? ""}|${ch.tsmfGroupId ?? ""}`;
+                            const g = groups.get(key);
+                            if (g) {
+                                g.channels.push(ch.channel);
+                            } else {
+                                groups.set(key, { route, type: ch.type, channels: [ch.channel], rel, groupId: ch.tsmfGroupId });
+                            }
+                        }
+                        const uniqueRoutes = Array.from(new Set(Array.from(groups.values()).map(g => g.route)));
+                        const showRoute = multiRouteTypes.has(service.channels?.[0]?.type ?? "");
+                        const lines: string[] = [
+                            `#${service.id}`,
+                            ...(service.streamId ? [`StreamID: ${service.streamId}`] : []),
+                            `SID: 0x${service.serviceId.toString(16).toUpperCase()} (${service.serviceId})`,
+                            `NID: 0x${service.networkId.toString(16).toUpperCase()} (${service.networkId})`,
+                            `Type: 0x${service.type.toString(16).toUpperCase()} (${service.type})`,
+                            ...Array.from(groups.values()).map(g => {
+                                const parts = [g.type, g.channels.join(",")];
+                                const tail: string[] = [];
+                                if (g.rel != null) tail.push(String(g.rel));
+                                if (g.groupId != null) tail.push(String(g.groupId));
+                                if (tail.length > 0) parts.push(tail.join(","));
+                                const label = showRoute ? `Channel (${g.route})` : "Channel";
+                                return `${label}: ${parts.join(" / ")}`;
+                            })
+                        ];
+                        if (showRoute) {
+                            lines.push(`Route: ${uniqueRoutes.join(", ")}`);
+                        }
+                        return lines.join("\n");
+                    })()}
                 >
                     <div className="ms-Grid" area-describeby={tooltipId} style={{ margin: 4 }}>
                         <div className="ms-Grid-row" style={{
@@ -239,7 +286,7 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
             </Stack>
             <Stack>
                 <Separator alignContent="start">Tuners</Separator>
-                <TunersManager tuners={tuners} rpc={rpc} />
+                <TunersManager tuners={tuners} rpc={rpc} multiRouteTypes={multiRouteTypes} />
             </Stack>
         </Stack>
     );

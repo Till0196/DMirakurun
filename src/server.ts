@@ -53,7 +53,7 @@ setEnv("TUNERS_CONFIG_PATH", "/usr/local/etc/mirakurun/tuners.yml");
 setEnv("CHANNELS_CONFIG_PATH", "/usr/local/etc/mirakurun/channels.yml");
 setEnv("SERVICES_DB_PATH", "/usr/local/var/db/mirakurun/services.json");
 setEnv("PROGRAMS_DB_PATH", "/usr/local/var/db/mirakurun/programs.json");
-setEnv("TSMF_DB_PATH", "/usr/local/var/db/mirakurun/tsmf.json");
+setEnv("CHANNELS_DB_PATH", "/usr/local/var/db/mirakurun/channels.json");
 setEnv("LOGO_DATA_DIR_PATH", "/usr/local/var/db/mirakurun/logo-data");
 
 import _ from "./Mirakurun/_";
@@ -65,7 +65,6 @@ import Channel from "./Mirakurun/Channel";
 import Service from "./Mirakurun/Service";
 import Program from "./Mirakurun/Program";
 import Server from "./Mirakurun/Server";
-import Tsmf from "./Mirakurun/TSMF";
 import * as config from "./Mirakurun/config";
 import * as log from "./Mirakurun/log";
 
@@ -89,11 +88,9 @@ import * as log from "./Mirakurun/log";
     _.service = new Service();
     _.program = new Program();
     _.server = new Server();
-    _.tsmf = new Tsmf();
-
-    // Load auto-detected TSMF state before services so multi-carrier groupId
-    // and per-service relTs mappings are in place when services boot.
-    await _.tsmf.load();
+    // Load auto-detected channel stream state before services so multi-carrier
+    // groupId and per-service relTs mappings are in place when services boot.
+    await _.channel.load();
     await _.service.load();
     await _.program.load();
 

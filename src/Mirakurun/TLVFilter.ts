@@ -106,6 +106,12 @@ export default class TLVFilter extends EventEmitter {
     private _serviceIds = new Set<number>();
     private _parseServiceIds = new Set<number>();
     private _mptPid = -1;
+    /**
+     * One-shot guard for the `streamInfo` event so the channels.json
+     * persistence layer only records the primary TLV stream once. Set true
+     * after the first valid TLV-NIT containing at least one tlvStream entry.
+     */
+    private _streamInfoEmitted = false;
     private _pmtTimer: NodeJS.Timeout;
     private _streamTime: number = null;
     private _provideEventLastDetectedAt = -1;
@@ -325,6 +331,18 @@ export default class TLVFilter extends EventEmitter {
             channel: `${s}`
         }));
         this.emit("networkStreams", channels);
+
+        // One-shot stream metadata for channels.json persistence (direct TLV
+        // path only — TSMF-bonded TLV gets its streamId from the Extended TSMF
+        // header in StreamFilter._initTsmf). Use tlvStreams[0] as the primary
+        // stream; for ISDB-S3 single-carrier this is the only entry.
+        if (!this._streamInfoEmitted && nit.tlvStreams.length > 0) {
+            this._streamInfoEmitted = true;
+            this.emit("streamInfo", {
+                streamId: nit.tlvStreams[0].tlvStreamId,
+                networkId: nit.networkId
+            });
+        }
 
         // Extract carrier bonding info (groupId per frequency/channel)
         for (const tlvStream of nit.tlvStreams) {
