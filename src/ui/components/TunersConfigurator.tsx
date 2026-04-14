@@ -70,15 +70,15 @@ const columns: IColumn[] = [
         key: "col-types",
         name: "Types",
         fieldName: "types",
-        minWidth: 130,
-        maxWidth: 200
+        minWidth: 60,
+        maxWidth: 120
     },
     {
         key: "col-routes",
         name: "Routes",
         fieldName: "routes",
-        minWidth: 150,
-        maxWidth: 220
+        minWidth: 70,
+        maxWidth: 120
     },
     {
         key: "col-options",
@@ -160,7 +160,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
             ),
             types: (
                 <Dropdown
-                    styles={{ root: { display: "inline-block", minWidth: 130 } }}
+                    styles={{ root: { display: "block", width: "100%" } }}
                     multiSelect
                     options={[
                         { key: "GR", text: "GR" },
@@ -183,7 +183,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
             ),
             routes: (
                 <Dropdown
-                    styles={{ root: { display: "inline-block", minWidth: 150 } }}
+                    styles={{ root: { display: "block", width: "100%" } }}
                     multiSelect
                     options={[
                         { key: "TER", text: "TER" },
