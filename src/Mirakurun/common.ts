@@ -34,6 +34,7 @@ export type UserRequest = Omit<User, "streamSetting">;
 
 interface StreamSetting {
     channel: ChannelItem;
+    channels?: ChannelItem[];
     networkId?: number;
     serviceId?: number;
     eventId?: number;

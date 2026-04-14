@@ -75,8 +75,9 @@ export class Tuner {
 
             if (available >= requiredCount) {
                 // Pick one device to reserve
-                const device = this._pickTunerDevice(devices, channel, -1);
-                if (device && !this._readyForJobPickedDeviceSet.has(device)) {
+                const picked = this._pickTunerDevice(devices, channel, -1);
+                if (picked && !this._readyForJobPickedDeviceSet.has(picked.device)) {
+                    const device = picked.device;
                     this._readyForJobPickedDeviceSet.add(device);
                     log.debug("readyForJob: picked device: #%d (%s)", device.index, device.config.name);
                     setTimeout(() => {
@@ -121,10 +122,12 @@ export class Tuner {
     }
 
     initServiceStream(service: ServiceItem, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
+        const channels = service.channels;
         return this._initTS({
             ...userReq,
             streamSetting: {
-                channel: service.channel,
+                channel: channels[0] ?? service.channel,
+                channels,
                 serviceId: service.serviceId,
                 networkId: service.networkId,
                 parseEIT: true
@@ -133,10 +136,13 @@ export class Tuner {
     }
 
     initProgramStream(program: apid.Program, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
+        const service = _.service.get(program.networkId, program.serviceId);
+        const channels = service.channels;
         return this._initTS({
             ...userReq,
             streamSetting: {
-                channel: _.service.get(program.networkId, program.serviceId).channel,
+                channel: channels[0] ?? service.channel,
+                channels,
                 serviceId: program.serviceId,
                 eventId: program.eventId,
                 networkId: program.networkId,
@@ -360,32 +366,31 @@ export class Tuner {
             setting.parseEIT = false;
         }
 
-        // Resolve the per-service TSMF slot and store it on `setting` so
-        // `TunerDevice.users` can expose which slot is being viewed.
-        if (setting.tsmfRelTs === undefined && setting.tsmfRelTlv === undefined && setting.channel) {
-            let entry = setting.serviceId !== undefined && setting.serviceId !== null
-                ? setting.channel.getStreamForService(setting.serviceId)
-                : undefined;
-            if (!entry && setting.channel.tsmfRelTs !== undefined && setting.channel.tsmfRelTs !== null) {
-                entry = setting.channel.getStreams().get(setting.channel.tsmfRelTs);
+        // Build candidate channels across all routes where this service is
+        // available. Filters out routes where the service hasn't been learnt
+        // yet (getStreamForService returns undefined on a channel that has
+        // non-empty streams map) to avoid tuning to a route with unknown slot.
+        const rawCandidates = setting.channels && setting.channels.length > 0
+            ? setting.channels
+            : [setting.channel];
+        let candidateChannels = rawCandidates.filter(ch => {
+            if (!ch) {
+                return false;
             }
-            if (entry?.relTs !== undefined) {
-                if (entry.isTlv) {
-                    setting.tsmfRelTlv = entry.relTs;
-                } else {
-                    setting.tsmfRelTs = entry.relTs;
-                }
+            if (setting.serviceId === undefined || setting.serviceId === null) {
+                return true;
             }
+            if (ch.getStreams().size === 0) {
+                // Channel not yet scanned — allow through for backward compat.
+                return true;
+            }
+            return ch.getStreamForService(setting.serviceId) !== undefined;
+        });
+        if (candidateChannels.length === 0) {
+            candidateChannels = [setting.channel];
         }
 
-        // TSMF carriers must drain stale DVR data; TSMFFilter would otherwise
-        // lock onto the previous tune's streamIds and reject fresh frames.
-        if (setting.drainBytes === undefined &&
-            (setting.tsmfRelTs !== undefined || setting.tsmfRelTlv !== undefined)) {
-            setting.drainBytes = STALE_DVR_DRAIN_BYTES;
-        }
-
-        const devices = this._getDevicesByType(setting.channel.type, setting.channel.route);
+        const devices = this._getDevicesByRoutes(setting.channel.type, candidateChannels);
         let tryCount = 50;
 
         if (!dest) {
@@ -396,9 +401,9 @@ export class Tuner {
         }
 
         while (tryCount > 0) {
-            const device = this._pickTunerDevice(devices, setting.channel, user.priority);
+            const picked = this._pickTunerDevice(devices, candidateChannels, user.priority);
 
-            if (device === null) {
+            if (picked === null) {
                 // retry
                 tryCount--;
                 if (tryCount <= 0) {
@@ -406,6 +411,38 @@ export class Tuner {
                 }
                 await new Promise(resolve => setTimeout(resolve, 250));
             } else {
+                const { device, channel: pickedChannel } = picked;
+
+                // Commit the picked channel so downstream code (StreamFilter,
+                // TunerDevice command template) uses the correct route.
+                setting.channel = pickedChannel;
+
+                // Resolve route-dependent TSMF slot now that the channel is
+                // committed.
+                if (setting.tsmfRelTs === undefined && setting.tsmfRelTlv === undefined) {
+                    let entry = setting.serviceId !== undefined && setting.serviceId !== null
+                        ? pickedChannel.getStreamForService(setting.serviceId)
+                        : undefined;
+                    if (!entry && pickedChannel.tsmfRelTs !== undefined && pickedChannel.tsmfRelTs !== null) {
+                        entry = pickedChannel.getStreams().get(pickedChannel.tsmfRelTs);
+                    }
+                    if (entry?.relTs !== undefined) {
+                        if (entry.isTlv) {
+                            setting.tsmfRelTlv = entry.relTs;
+                        } else {
+                            setting.tsmfRelTs = entry.relTs;
+                        }
+                    }
+                }
+
+                // TSMF carriers must drain stale DVR data; TSMFFilter would
+                // otherwise lock onto the previous tune's streamIds and reject
+                // fresh frames.
+                if (setting.drainBytes === undefined &&
+                    (setting.tsmfRelTs !== undefined || setting.tsmfRelTlv !== undefined)) {
+                    setting.drainBytes = STALE_DVR_DRAIN_BYTES;
+                }
+
                 // Create StreamFilter — handles format detection (TS/TLV) and
                 // routes to TSFilter or TLVFilter automatically
                 const streamFilter = new StreamFilter({
@@ -421,8 +458,8 @@ export class Tuner {
                     parseNIT: setting.parseNIT,
                     parseSDT: setting.parseSDT,
                     parseEIT: setting.parseEIT,
-                    tsmfRelTs: setting.tsmfRelTs ?? setting.channel.getRelTs(setting.serviceId),
-                    channel: setting.channel,
+                    tsmfRelTs: setting.tsmfRelTs ?? pickedChannel.getRelTs(setting.serviceId),
+                    channel: pickedChannel,
                     tunerIndex: device.index,
                     tsmfDiscovery: setting.tsmfDiscovery
                 });
@@ -432,7 +469,7 @@ export class Tuner {
                 });
 
                 try {
-                    await device.startStream(user, streamFilter, setting.channel, {
+                    await device.startStream(user, streamFilter, pickedChannel, {
                         drainBytes: setting.drainBytes
                     });
                     return streamFilter;
@@ -474,13 +511,37 @@ export class Tuner {
 
     /**
      * チューナーデバイス探索
+     *
+     * Accepts multiple candidate `ChannelItem`s (one per route) when a service
+     * can be tuned via more than one route. Returns both the picked device and
+     * the `ChannelItem` matching that device's route so the caller knows which
+     * route-specific metadata to use for tuning / TSMF slot lookup.
      */
     private _pickTunerDevice(
         devices: TunerDevice[],
-        channel: ChannelItem,
+        channels: ChannelItem[] | ChannelItem,
         priority: number
-    ): TunerDevice | null {
-        // 1. join to existing
+    ): { device: TunerDevice; channel: ChannelItem } | null {
+        const candidateChannels = Array.isArray(channels) ? channels : [channels];
+        if (candidateChannels.length === 0) {
+            return null;
+        }
+
+        const channelForDevice = (device: TunerDevice): ChannelItem => {
+            const deviceRoutes = device.config.routes;
+            if (!deviceRoutes || deviceRoutes.length === 0) {
+                // No route constraint on the tuner — first candidate wins.
+                return candidateChannels[0];
+            }
+            for (const ch of candidateChannels) {
+                if (deviceRoutes.includes(ch.route)) {
+                    return ch;
+                }
+            }
+            return candidateChannels[0];
+        };
+
+        // 1. join to existing (cross-route aware: TSMF group / same-channel)
         for (const device of devices) {
             if (device.isAvailable !== true || !device.channel) {
                 continue;
@@ -489,22 +550,24 @@ export class Tuner {
             if (device.isAdditionalCarrier) {
                 continue;
             }
-            if (device.channel === channel || device.channel.isSameTsmfGroup(channel)) {
-                return device;
+            for (const ch of candidateChannels) {
+                if (device.channel === ch || device.channel.isSameTsmfGroup(ch)) {
+                    return { device, channel: ch };
+                }
             }
         }
 
         // 2. start as new
         for (const device of devices) {
             if (device.isFree === true) {
-                return device;
+                return { device, channel: channelForDevice(device) };
             }
         }
 
         // 3. replace existing
         for (const device of devices) {
             if (device.isAvailable === true && device.users.length === 0) {
-                return device;
+                return { device, channel: channelForDevice(device) };
             }
         }
 
@@ -525,7 +588,8 @@ export class Tuner {
             });
 
             if (candidates.length > 0) {
-                return candidates[0];
+                const device = candidates[0];
+                return { device, channel: channelForDevice(device) };
             }
         }
 
@@ -543,6 +607,32 @@ export class Tuner {
      * `route` is optional: when omitted, only the `types` filter applies
      * (used by code paths that pre-date the route concept).
      */
+    /**
+     * Collect tuner devices that can handle the given type across every route
+     * present in `channels`. Preserves the order implied by `channels` so the
+     * first-route candidate is attempted before falling through to later
+     * routes.
+     */
+    private _getDevicesByRoutes(type: apid.ChannelType, channels: ChannelItem[]): TunerDevice[] {
+        const seen = new Set<TunerDevice>();
+        const result: TunerDevice[] = [];
+        const seenRoutes = new Set<apid.ChannelRoute>();
+        for (const ch of channels) {
+            if (seenRoutes.has(ch.route)) {
+                continue;
+            }
+            seenRoutes.add(ch.route);
+            for (const device of this._getDevicesByType(type, ch.route)) {
+                if (seen.has(device)) {
+                    continue;
+                }
+                seen.add(device);
+                result.push(device);
+            }
+        }
+        return result;
+    }
+
     private _getDevicesByType(type: apid.ChannelType, route?: apid.ChannelRoute): TunerDevice[] {
         const devices = [];
 
