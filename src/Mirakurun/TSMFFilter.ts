@@ -271,6 +271,19 @@ export default class TSMFFilter extends EventEmitter {
     }
 
     /**
+     * Extract the set of active relative streams (1..15) from a TSMF slot map.
+     */
+    static getActiveRelTs(header: TSMFHeaderInfo): Set<number> {
+        const activeStreams = new Set<number>();
+        for (const r of header.slotMap) {
+            if (r >= 1 && r <= 15) {
+                activeStreams.add(r);
+            }
+        }
+        return activeStreams;
+    }
+
+    /**
      * Scan a TS-aligned buffer for the first CC-synced TSMF Extended frame
      * and return its parsed header. Returns null if no valid TSMF packet is
      * found within the buffer.
@@ -329,12 +342,7 @@ export default class TSMFFilter extends EventEmitter {
         requestedRelTs: number | null | undefined,
         parseSDT: boolean
     ): TSMFRouteDecision {
-        const activeStreams = new Set<number>();
-        for (const r of header.slotMap) {
-            if (r >= 1 && r <= 15) {
-                activeStreams.add(r);
-            }
-        }
+        const activeStreams = TSMFFilter.getActiveRelTs(header);
         if (activeStreams.size === 0) {
             return { kind: "empty" };
         }

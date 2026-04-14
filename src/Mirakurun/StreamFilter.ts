@@ -14,18 +14,17 @@
    limitations under the License.
 */
 import * as stream from "stream";
-import { Writable } from "stream";
 import EventEmitter = require("eventemitter3");
-import { StreamInfo, OutputFormat } from "./common";
 import * as log from "./log";
 import _ from "./_";
-import TSFilter from "./TSFilter";
+import { OutputFormat, StreamInfo } from "./common";
+import ChannelItem from "./ChannelItem";
+import TLVDecoder from "./TLVDecoder";
 import TLVFilter from "./TLVFilter";
 import TSDecoder from "./TSDecoder";
-import TLVDecoder from "./TLVDecoder";
+import TSFilter from "./TSFilter";
+import { TSMFCarrierBonding, TSMFSlotFilter } from "./TSMF";
 import TSMFFilter, { TSMFHeaderInfo } from "./TSMFFilter";
-import { TSMFSlotFilter, TSMFCarrierBonding } from "./TSMF";
-import ChannelItem from "./ChannelItem";
 
 // Stream format detection constants
 const TS_SYNC = 0x47;
@@ -50,7 +49,7 @@ interface DetectionResult {
 }
 
 export interface StreamFilterOptions {
-    readonly output?: Writable;
+    readonly output?: stream.Writable;
     readonly decoder?: string;         // TS→TS decoder (arib-b25-stream-test)
     readonly tlvToTsDecoder?: string;  // TLV→TS decoder (dantto4k)
     readonly tlvDecoder?: string;      // TLV→TLV decoder
@@ -79,7 +78,7 @@ export default class StreamFilter extends EventEmitter {
     private _innerFilter: TSFilter | TLVFilter = null;
     private _tsmfFilter: TSMFFilter = null;
     private _tsmfBonding: TSMFCarrierBonding = null;
-    private _activePipeline: TSFilter | TLVFilter | Writable | { write(chunk: Buffer): void } = null;
+    private _activePipeline: TSFilter | TLVFilter | stream.Writable | { write(chunk: Buffer): void } = null;
     private _detectChunks: Buffer[] = [];
     private _detectLen = 0;
 
@@ -219,7 +218,7 @@ export default class StreamFilter extends EventEmitter {
 
     private _createTsFilter(): TSFilter {
         const opts = this._options;
-        let output: Writable;
+        let output: stream.Writable;
         if (opts.disableDecoder || !opts.decoder) {
             output = opts.output;
         } else {
@@ -266,12 +265,13 @@ export default class StreamFilter extends EventEmitter {
 
         if (!slot) {
             const ch = this._options.channel;
+            const streamKey = 0;
             tsFilter.once("streamInfo", ({ tsid, networkId }: { tsid: number; networkId: number }) => {
-                ch.setStream(0, tsid, networkId, false);
+                ch.setStream(streamKey, tsid, networkId, false);
             });
             tsFilter.on("services", (services: { serviceId: number }[]) => {
                 for (const svc of services) {
-                    ch.addServiceId(svc.serviceId, 0);
+                    ch.addServiceId(svc.serviceId, streamKey);
                 }
             });
         }
@@ -293,12 +293,10 @@ export default class StreamFilter extends EventEmitter {
         this._proxyEvents(tlvFilter);
 
         const ch = this._options.channel;
-        // For TSMF-bonded channels, write to the existing relTs-keyed entry
-        // instead of slotKey=0 so we don't create a parallel entry that
-        // would make `findByChannel` return duplicate services. When the
-        // channel has no tsmfRelTs yet (pre-discovery), fall back to 0.
-        const isBondedOutput = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
-        const streamKey = isBondedOutput && ch.tsmfRelTs !== undefined && ch.tsmfRelTs !== null
+        // Write to the tsmfRelTs-keyed entry on bonded channels so we don't
+        // create a parallel slot 0 entry that would duplicate services.
+        const streamKey = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined &&
+            ch.tsmfRelTs !== undefined && ch.tsmfRelTs !== null
             ? ch.tsmfRelTs
             : 0;
         tlvFilter.once("streamInfo", ({ streamId, networkId }: { streamId: number; networkId: number }) => {
@@ -321,11 +319,7 @@ export default class StreamFilter extends EventEmitter {
             ch.setTsmfGroupId(header.groupId);
         }
 
-        const activeStreams = new Set<number>();
-        for (const r of header.slotMap) {
-            if (r >= 1 && r <= 15) { activeStreams.add(r); }
-        }
-        for (const relTs of activeStreams) {
+        for (const relTs of TSMFFilter.getActiveRelTs(header)) {
             const isTlv = TSMFFilter.isTLVStream(header.streamTypeBits, relTs);
             ch.setStream(relTs, header.streamIds[relTs - 1], header.originalNetworkIds[relTs - 1], isTlv, relTs);
         }
