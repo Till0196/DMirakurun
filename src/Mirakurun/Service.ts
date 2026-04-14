@@ -153,6 +153,9 @@ export class Service {
         return this.get(id, serviceId) !== null;
     }
 
+    // Match on `(networkId, streamId)` via the channel's stream entries so
+    // that services reachable via multiple routes (e.g. SAT + CATV) are
+    // found regardless of which route was registered first.
     findByChannel(channel: ChannelItem): ServiceItem[] {
         const items: ServiceItem[] = [];
         for (const entry of channel.getStreams().values()) {
