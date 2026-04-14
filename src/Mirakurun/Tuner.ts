@@ -396,49 +396,46 @@ export class Tuner {
                     throw new Error("no available tuners");
                 }
                 await new Promise(resolve => setTimeout(resolve, 250));
-                continue;
-            }
+            } else {
+                const { device, channel: pickedChannel } = picked;
 
-            const { device, channel: pickedChannel } = picked;
+                // Commit the picked channel so downstream code (StreamFilter,
+                // TunerDevice command template) uses the correct route.
+                setting.channel = pickedChannel;
+                this._resolveTsmfSlot(setting, pickedChannel);
 
-            // Commit the picked channel so downstream code (StreamFilter,
-            // TunerDevice command template) uses the correct route.
-            setting.channel = pickedChannel;
-            this._resolveTsmfSlot(setting, pickedChannel);
-
-            // Create StreamFilter — handles format detection (TS/TLV) and
-            // routes to TSFilter or TLVFilter automatically
-            const streamFilter = new StreamFilter({
-                output: dest,
-                decoder: device.decoder,
-                tlvToTsDecoder: device.tlvToTsDecoder,
-                tlvDecoder: device.tlvDecoder,
-                disableDecoder: user.disableDecoder,
-                outputFormat: user.outputFormat,
-                networkId: setting.networkId,
-                serviceId: setting.serviceId,
-                eventId: setting.eventId,
-                parseNIT: setting.parseNIT,
-                parseSDT: setting.parseSDT,
-                parseEIT: setting.parseEIT,
-                tsmfRelTs: setting.tsmfRelTs ?? pickedChannel.getRelTs(setting.serviceId),
-                channel: pickedChannel,
-                tunerIndex: device.index,
-                tsmfDiscovery: setting.tsmfDiscovery
-            });
-
-            Object.defineProperty(user, "streamInfo", {
-                get: () => streamFilter.streamInfo
-            });
-
-            try {
-                await device.startStream(user, streamFilter, pickedChannel, {
-                    drainBytes: setting.drainBytes
+                const streamFilter = new StreamFilter({
+                    output: dest,
+                    decoder: device.decoder,
+                    tlvToTsDecoder: device.tlvToTsDecoder,
+                    tlvDecoder: device.tlvDecoder,
+                    disableDecoder: user.disableDecoder,
+                    outputFormat: user.outputFormat,
+                    networkId: setting.networkId,
+                    serviceId: setting.serviceId,
+                    eventId: setting.eventId,
+                    parseNIT: setting.parseNIT,
+                    parseSDT: setting.parseSDT,
+                    parseEIT: setting.parseEIT,
+                    tsmfRelTs: setting.tsmfRelTs ?? pickedChannel.getRelTs(setting.serviceId),
+                    channel: pickedChannel,
+                    tunerIndex: device.index,
+                    tsmfDiscovery: setting.tsmfDiscovery
                 });
-                return streamFilter;
-            } catch (err) {
-                streamFilter.end();
-                throw err;
+
+                Object.defineProperty(user, "streamInfo", {
+                    get: () => streamFilter.streamInfo
+                });
+
+                try {
+                    await device.startStream(user, streamFilter, pickedChannel, {
+                        drainBytes: setting.drainBytes
+                    });
+                    return streamFilter;
+                } catch (err) {
+                    streamFilter.end();
+                    throw err;
+                }
             }
         }
     }
@@ -513,12 +510,11 @@ export class Tuner {
     }
 
     /**
-     * Pick a tuner device for one of the candidate channels.
+     * チューナーデバイス探索
      *
-     * Accepts multiple candidates (one per route) when a service can be
-     * tuned via more than one route. The returned `channel` is committed to
-     * the picked device's route so the caller hands it straight to
-     * `StreamFilter` / `TunerDevice.startStream` without re-resolving.
+     * 複数ルート候補 (`ChannelItem[]`) を受け、picked device の route に
+     * 一致する candidate を `channel` として返す。呼び出し側は `StreamFilter`
+     * / `TunerDevice.startStream` にそのまま渡すだけでよい。
      */
     private _pickTunerDevice(
         devices: TunerDevice[],
@@ -600,66 +596,49 @@ export class Tuner {
     }
 
     /**
-     * Filter tuner devices that can handle a given type + route(s).
+     * 対応チューナーデバイス一覧
      *
-     * - Tuners with no `routes` config accept every route (backward
-     *   compatibility — existing tuners.yml files continue to work).
-     * - Tuners with `routes` set are matched only when their route list
-     *   intersects the requested `routes`.
-     *
-     * `routes` accepts a single route, an array of routes (preserves input
-     * order, dedupes devices), or `undefined` to skip the route filter.
+     * `routes` が単一 route なら単純 filter、配列なら指定順に追加 (重複除去)。
+     * `undefined` の場合は route 非絞り込み。`routes` を持たない tuner 設定は
+     * 全 route にマッチする (旧 tuners.yml 互換)。
      */
     private _getDevicesByType(
         type: apid.ChannelType,
         routes?: apid.ChannelRoute | apid.ChannelRoute[]
     ): TunerDevice[] {
+        const devices: TunerDevice[] = [];
         const routeList = routes === undefined
-            ? undefined
+            ? [undefined]
             : Array.isArray(routes) ? routes : [routes];
 
         const seen = new Set<TunerDevice>();
-        const result: TunerDevice[] = [];
-
-        const matchesRoute = (device: TunerDevice, route?: apid.ChannelRoute) => {
-            if (route === undefined) {
-                return true;
-            }
-            if (device.config.routes === undefined || device.config.routes.length === 0) {
-                return true;
-            }
-            return device.config.routes.includes(route);
-        };
-
-        if (!routeList) {
-            for (const device of this._devices) {
-                if (device.config.types.includes(type) && !seen.has(device)) {
-                    seen.add(device);
-                    result.push(device);
-                }
-            }
-            return result;
-        }
-
-        // Preserve the order implied by the route list so higher-priority
-        // routes (earlier in `channels.yml`) are tried first.
         const seenRoutes = new Set<apid.ChannelRoute>();
         for (const route of routeList) {
-            if (seenRoutes.has(route)) {
+            if (route !== undefined && seenRoutes.has(route)) {
                 continue;
             }
-            seenRoutes.add(route);
-            for (const device of this._devices) {
-                if (seen.has(device) || !device.config.types.includes(type)) {
+            if (route !== undefined) {
+                seenRoutes.add(route);
+            }
+            const l = this._devices.length;
+            for (let i = 0; i < l; i++) {
+                const device = this._devices[i];
+                if (seen.has(device)) {
                     continue;
                 }
-                if (matchesRoute(device, route)) {
-                    seen.add(device);
-                    result.push(device);
+                if (device.config.types.includes(type) === false) {
+                    continue;
                 }
+                if (route !== undefined && device.config.routes !== undefined &&
+                    device.config.routes.length > 0 &&
+                    device.config.routes.includes(route) === false) {
+                    continue;
+                }
+                seen.add(device);
+                devices.push(device);
             }
         }
-        return result;
+        return devices;
     }
 }
 
