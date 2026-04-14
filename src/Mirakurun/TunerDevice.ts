@@ -403,6 +403,9 @@ export default class TunerDevice extends EventEmitter {
                 targetRelTs = sibling.tsmfRelTs;
                 log.debug("TunerDevice#%d resolved tsmfRelTs=%d from sibling channel %s for %s",
                     this._index, targetRelTs, sibling.channel, tuneCh.channel);
+                // Persist on the channel so StreamFilter._initTlv can route
+                // serviceIds to the right stream entry key.
+                tuneCh.setTsmfRelTs(targetRelTs);
             }
         }
 

@@ -293,21 +293,22 @@ export default class StreamFilter extends EventEmitter {
         this._proxyEvents(tlvFilter);
 
         const ch = this._options.channel;
-        // For TSMF-bonded channels, the slot entry was already populated by
-        // TunerDevice's TSMF demux via `_initTsmf`. Skip the slotKey=0
-        // writes here so we don't create a parallel entry that would make
-        // `findByChannel` return duplicate services.
+        // For TSMF-bonded channels, write to the existing relTs-keyed entry
+        // instead of slotKey=0 so we don't create a parallel entry that
+        // would make `findByChannel` return duplicate services. When the
+        // channel has no tsmfRelTs yet (pre-discovery), fall back to 0.
         const isBondedOutput = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined;
-        if (!isBondedOutput) {
-            tlvFilter.once("streamInfo", ({ streamId, networkId }: { streamId: number; networkId: number }) => {
-                ch.setStream(0, streamId, networkId, true);
-            });
-            tlvFilter.on("services", (services: { serviceId: number }[]) => {
-                for (const svc of services) {
-                    ch.addServiceId(svc.serviceId, 0);
-                }
-            });
-        }
+        const streamKey = isBondedOutput && ch.tsmfRelTs !== undefined && ch.tsmfRelTs !== null
+            ? ch.tsmfRelTs
+            : 0;
+        tlvFilter.once("streamInfo", ({ streamId, networkId }: { streamId: number; networkId: number }) => {
+            ch.setStream(streamKey, streamId, networkId, true, streamKey >= 1 ? streamKey : undefined);
+        });
+        tlvFilter.on("services", (services: { serviceId: number }[]) => {
+            for (const svc of services) {
+                ch.addServiceId(svc.serviceId, streamKey);
+            }
+        });
 
         tlvFilter.write(buffered);
     }
