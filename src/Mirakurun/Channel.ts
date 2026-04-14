@@ -111,6 +111,28 @@ export class Channel {
     }
 
     /**
+     * Resolve the channels that can tune a given service.
+     *
+     * Returns channels whose stream entries include `serviceId` under the
+     * matching `networkId`. Unscanned channels (empty streams map) are
+     * included for backward compatibility with fresh installs.
+     */
+    findByService(networkId: number, serviceId: number): ChannelItem[] {
+        const results: ChannelItem[] = [];
+        for (const channel of this._items) {
+            if (channel.getStreams().size === 0) {
+                results.push(channel);
+                continue;
+            }
+            const entry = channel.getStreamForService(serviceId);
+            if (entry && entry.networkId === networkId) {
+                results.push(channel);
+            }
+        }
+        return results;
+    }
+
+    /**
      * Debounced save of `channels.json` — the per-ChannelItem auto-detected
      * stream metadata (TSMF / non-TSMF TS / direct-TLV unified). Multiple
      * calls during a scan or detection burst collapse into a single disk
