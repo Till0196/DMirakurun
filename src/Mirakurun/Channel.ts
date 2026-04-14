@@ -474,23 +474,15 @@ export class Channel {
                 seenGroups.add(gid);
             }
             const service = services[0];
-            const isMultiCarrier = gid !== null && gid !== undefined &&
-                _.channel.items.filter(ch => ch.tsmfGroupId === gid).length > 1;
+            const carrierCount = gid !== null && gid !== undefined
+                ? _.channel.items.filter(ch => ch.tsmfGroupId === gid).length
+                : 1;
 
             _.job.add({
                 key: `EPG.Gather.${channel.type}.${channel.channel}`,
                 name: `EPG Gather ${channel.type}/${channel.channel}`,
                 isRerunnable: true,
                 fn: async () => {
-                    if (isMultiCarrier) {
-                        // Multi-carrier: wait for all type-matching tuners to
-                        // be free before claiming them.
-                        const typeDevices = _.tuner.devices.filter(d => d.types.includes(channel.type));
-                        while (typeDevices.some(d => !d.isFree)) {
-                            await common.sleep(3000);
-                        }
-                    }
-
                     log.info("Channel#%s EPG gathering has started", channel.name);
                     try {
                         await _.tuner.getEPG(channel);
@@ -526,7 +518,7 @@ export class Channel {
                         }
                     }
 
-                    return _.tuner.readyForJob(channel);
+                    return _.tuner.readyForJob(channel, carrierCount);
                 }
             });
         }

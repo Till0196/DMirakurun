@@ -349,9 +349,13 @@ export default class StreamFilter extends EventEmitter {
             return;
         }
 
+        // Skip the channel-level fallback in scan mode — it may point at a
+        // non-service slot (e.g. data carousel) left over from an earlier
+        // insertion order and would pin the scan away from the real NIT/SDT
+        // slot. Scan mode (parseSDT=true) resolves via the full fan-out.
         const requestedRelTs = opts.tsmfRelTs
             ?? (opts.serviceId ? ch.getRelTs(opts.serviceId) : undefined)
-            ?? ch.tsmfRelTs;
+            ?? (opts.parseSDT ? undefined : ch.tsmfRelTs);
 
         const decision = TSMFFilter.resolveRoute(header, requestedRelTs, !!opts.parseSDT);
 
