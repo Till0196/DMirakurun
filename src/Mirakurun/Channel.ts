@@ -505,10 +505,10 @@ export class Channel {
                             log.info("Channel#%s EPG gathering is resuming forcibly because reached maximum pause time (12 hours)", channel.name);
                             service.epgReady = false;
                         } else {
-                            const currentPrograms = _.program.findByNetworkIdAndServiceIdAndTime(service.networkId, service.id, now)
+                            const currentPrograms = _.program.findByNetworkIdAndServiceIdAndTime(service.networkId, service.serviceId, now)
                                 .filter(program => !!program.name && program.name !== "放送休止");
                             if (currentPrograms.length === 0) {
-                                const servicePrograms = _.program.findByNetworkIdServiceId(service.networkId, service.id);
+                                const servicePrograms = _.program.findByNetworkIdServiceId(service.networkId, service.serviceId);
                                 if (servicePrograms.length > 0) {
                                     log.info("Channel#%s EPG gathering has skipped because broadcast is off", channel.name);
                                     return false;
