@@ -10,17 +10,24 @@ const TS_SYNC_BYTE = 0x47;
 // TLV packet constants (ARIB STD-B32)
 const TLV_SYNC_BYTE = 0x7f;
 const TLV_HEADER_SIZE = 4; // sync(1) + type(1) + length(2)
+const TLV_TYPE_IPV4 = 0x01;
+const TLV_TYPE_IPV6 = 0x02;
 const TLV_TYPE_HEADER_COMPRESSED_IP = 0x03;
+const TLV_TYPE_SIGNALLING = 0xfe;
+const TLV_TYPE_NULL = 0xff;
 
-// Compressed IP header sizes
-const CID_HEADER_BASE = 3;
-const CID_HEADER_0x60_EXTRA = 42;
+// Compressed IP header type bytes (ARIB STD-B32 §6, dantto4k/compressedIPPacket.h)
+const CID_TYPE_PARTIAL_IPV4_UDP = 0x20;
+const CID_TYPE_IPV4_IDENTIFIER = 0x21;
+const CID_TYPE_PARTIAL_IPV6_UDP = 0x60;
+const CID_TYPE_NO_COMPRESSED_HEADER = 0x61;
 
 // Offset detection parameters
-const OFFSET_MIN_SFS = 30;
-const OFFSET_RETRY_SFS = 30;
-const OFFSET_MMTP_MIN_PACKETS = 16;
-const OFFSET_MAX_DROP_RATIO = 0.05;
+const OFFSET_MIN_SFS = 10;
+const OFFSET_RETRY_SFS = 60;
+const OFFSET_MIN_CID_PACKETS = 16;
+const OFFSET_VALID_RATIO_MIN = 0.999;
+const OFFSET_MAX_PROBE_FAILURES = 3;
 // Upper bound on per-carrier superframes kept while offset detection is still
 // pending. At ~15 frames × 52 × 188B ≈ 146KB/SF × 3 carriers, 600 SFs caps the
 // pending state at ~260MB — enough for retries but prevents OOM if detection
@@ -97,6 +104,7 @@ export default class TLVAssembler extends EventEmitter {
     private _outputSuperframeCount = 0;
     private _probeInProgress = false;
     private _nextProbeThreshold = 0;
+    private _probeFailures = 0;
 
     private _buffer: Buffer[] = [];
     private _pendingOutput: Buffer = Buffer.alloc(0);
@@ -140,6 +148,7 @@ export default class TLVAssembler extends EventEmitter {
         this._numberOfCarriers = 0;
         this._nextProbeThreshold = 0;
         this._outputSuperframeCount = 0;
+        this._probeFailures = 0;
     }
 
     pushSuperframe(carrierSequence: number, sf: CarrierSuperframe): void {
@@ -205,109 +214,174 @@ export default class TLVAssembler extends EventEmitter {
         this._probeInProgress = false;
 
         if (result) {
+            this._probeFailures = 0;
             this._commitOffsets(result);
         } else {
+            this._probeFailures++;
             this._nextProbeThreshold = accumulated + OFFSET_RETRY_SFS;
+            if (this._probeFailures >= OFFSET_MAX_PROBE_FAILURES) {
+                log.error(
+                    "TunerDevice#%d TSMF offset probe failed %d times (likely frame loss or signal issue) — closing",
+                    this._tunerIndex, this._probeFailures
+                );
+                this._close();
+            }
         }
     }
 
     private _commitOffsets(offsets: number[]): void {
         this._offsets = offsets;
         this._offsetsApplied = false;
-        ((this._numberOfCarriers > 1) ? log.info : log.debug)(
-            "TunerDevice#%d TSMF offsets finalized: %s", this._tunerIndex, offsets.join(",")
-        );
+        log.info("TunerDevice#%d TSMF offsets finalized: %s", this._tunerIndex, offsets.join(","));
         if (this._buffer.length) {
             this._buffer.length = 0;
         }
     }
 
-    private _candidates(carriers: CarrierBucket[]): number[][] {
-        const sfCounts = carriers.map(c => c.superframes.length);
-        const minSf = Math.min(...sfCounts);
-        const base = sfCounts.map(sf => sf - minSf);
-
-        const candidates: number[][] = [base];
-        const seen = new Set<string>([base.join(",")]);
-        const add = (offsets: number[]) => {
-            const key = offsets.join(",");
-            if (!seen.has(key)) {
-                seen.add(key);
-                candidates.push(offsets);
-            }
-        };
-
-        // ±1 per axis only (covers 99%+ of real cases)
-        for (let i = 0; i < carriers.length; i++) {
-            const plus = base.slice(); plus[i] += 1; add(plus);
-            if (base[i] > 0) {
-                const minus = base.slice(); minus[i] -= 1; add(minus);
-            }
-        }
-        return candidates;
-    }
-
-    /** Probe offset candidates synchronously. Returns best offsets or null. */
+    /**
+     * Offset probe using TLV structural integrity. For each candidate,
+     * assembles the TLV byte stream and measures how many bytes parse
+     * cleanly as chained TLV packets (validRatio) plus how many compressed
+     * IP headers have a valid type byte. At the correct offset validRatio
+     * ≈ 1.0 and cidOk === cidTotal; at any wrong offset validRatio drops
+     * to ~0.001 (a 1000× gap), so first-match acceptance is sufficient.
+     */
     private _probeOffsets(carriers: CarrierBucket[]): number[] | null {
-        const candidates = this._candidates(carriers);
-        let bestOffsets: number[] | null = null;
-        let bestDrops = Infinity;
-        let bestPackets = 0;
-
-        for (const offsets of candidates) {
+        const candidates = this._buildOffsetCandidates(carriers);
+        for (let i = 0; i < candidates.length; i++) {
             if (this._closed || this._closing) {
                 return null;
             }
-
+            const offsets = candidates[i];
             const packets = this._alignPackets(carriers, offsets, 30);
             if (packets.length === 0) {
                 continue;
             }
-
             const tlv = this._assembleTlv(packets);
             const syncStart = TLVAssembler._findTlvSync(tlv);
             if (syncStart < 0) {
                 continue;
             }
-
-            const stats = this._probeMmtp(tlv, syncStart);
-            if (stats.mmtpPackets < OFFSET_MMTP_MIN_PACKETS) {
+            const stats = this._measureTlvIntegrity(tlv, syncStart);
+            if (stats.validRatio < OFFSET_VALID_RATIO_MIN ||
+                stats.cidTotal < OFFSET_MIN_CID_PACKETS ||
+                stats.cidOk !== stats.cidTotal) {
                 continue;
             }
-
-            // Perfect match — accept immediately
-            if (stats.mmtpDrops === 0) {
-                ((this._numberOfCarriers > 1) ? log.info : log.debug)(
-                    "TunerDevice#%d TSMF offsets=%s (mmtp=%d, drops=0, candidate %d/%d)",
-                    this._tunerIndex, offsets.join(","), stats.mmtpPackets,
-                    candidates.indexOf(offsets) + 1, candidates.length
-                );
-                return offsets;
-            }
-
-            if (stats.mmtpDrops < bestDrops ||
-                (stats.mmtpDrops === bestDrops && stats.mmtpPackets > bestPackets)) {
-                bestOffsets = offsets;
-                bestDrops = stats.mmtpDrops;
-                bestPackets = stats.mmtpPackets;
-            }
-        }
-
-        // Accept best if drop ratio is acceptable
-        if (bestOffsets && bestPackets >= OFFSET_MMTP_MIN_PACKETS &&
-            bestDrops / bestPackets < OFFSET_MAX_DROP_RATIO) {
-            ((this._numberOfCarriers > 1) ? log.info : log.debug)(
-                "TunerDevice#%d TSMF offsets=%s (mmtp=%d, drops=%d, best of %d)",
-                this._tunerIndex, bestOffsets.join(","), bestPackets, bestDrops, candidates.length
+            log.info(
+                "TunerDevice#%d TSMF offsets=%s (valid=%s%%, cid=%d/%d, tried %d/%d)",
+                this._tunerIndex, offsets.join(","),
+                (stats.validRatio * 100).toFixed(1),
+                stats.cidOk, stats.cidTotal,
+                i + 1, candidates.length
             );
-            return bestOffsets;
+            return offsets;
         }
-
         return null;
     }
 
-    /** Iterate over interleaved slots across carrier superframes in TSMF order. */
-    private _iterateSlots(
+    /**
+     * Build the deterministic offset candidate set for brute-force probing.
+     * Covers the naive sfCounts-based base plus ±1 single-axis, ±1 two-axis,
+     * and ±2 single-axis perturbations. Non-negative constraint is enforced
+     * and duplicates are dropped. For N=3 carriers the set caps at ~25.
+     */
+    private _buildOffsetCandidates(carriers: CarrierBucket[]): number[][] {
+        const sfCounts = carriers.map(c => c.superframes.length);
+        const minSf = Math.min(...sfCounts);
+        const base = sfCounts.map(sf => sf - minSf);
+        const seen = new Set<string>();
+        const candidates: number[][] = [];
+
+        const add = (offsets: number[]): void => {
+            if (offsets.some(v => v < 0)) {
+                return;
+            }
+            const key = offsets.join(",");
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            candidates.push(offsets);
+        };
+
+        add(base);
+
+        // ±1 single-axis
+        for (let i = 0; i < carriers.length; i++) {
+            const plus = base.slice(); plus[i] += 1; add(plus);
+            const minus = base.slice(); minus[i] -= 1; add(minus);
+        }
+
+        // ±1 two-axis pairs
+        for (let i = 0; i < carriers.length; i++) {
+            for (let j = i + 1; j < carriers.length; j++) {
+                for (const signI of [-1, 1]) {
+                    for (const signJ of [-1, 1]) {
+                        const offsets = base.slice();
+                        offsets[i] += signI;
+                        offsets[j] += signJ;
+                        add(offsets);
+                    }
+                }
+            }
+        }
+
+        // ±2 single-axis
+        for (let i = 0; i < carriers.length; i++) {
+            const plus = base.slice(); plus[i] += 2; add(plus);
+            const minus = base.slice(); minus[i] -= 2; add(minus);
+        }
+
+        return candidates;
+    }
+
+    /**
+     * Scan the assembled TLV byte buffer from `start` as chained TLV
+     * packets. Reports how many bytes parse cleanly before the sync byte /
+     * type / length chain breaks, and how many type=0x03
+     * (HeaderCompressedIP) payloads carry a valid CID header type byte.
+     */
+    private _measureTlvIntegrity(
+        buffer: Buffer,
+        start: number
+    ): { validBytes: number; totalBytes: number; validRatio: number; cidOk: number; cidTotal: number } {
+        let offset = start;
+        let cidOk = 0;
+        let cidTotal = 0;
+        while (offset + TLV_HEADER_SIZE <= buffer.length) {
+            if (buffer[offset] !== TLV_SYNC_BYTE) {
+                break;
+            }
+            const type = buffer[offset + 1];
+            if (type !== TLV_TYPE_IPV4 && type !== TLV_TYPE_IPV6 &&
+                type !== TLV_TYPE_HEADER_COMPRESSED_IP &&
+                type !== TLV_TYPE_SIGNALLING && type !== TLV_TYPE_NULL) {
+                break;
+            }
+            const length = (buffer[offset + 2] << 8) | buffer[offset + 3];
+            const next = offset + TLV_HEADER_SIZE + length;
+            if (next > buffer.length) {
+                break;
+            }
+            if (type === TLV_TYPE_HEADER_COMPRESSED_IP && length >= 3) {
+                cidTotal++;
+                const cid = buffer[offset + TLV_HEADER_SIZE + 2];
+                if (cid !== CID_TYPE_PARTIAL_IPV4_UDP && cid !== CID_TYPE_IPV4_IDENTIFIER &&
+                    cid !== CID_TYPE_PARTIAL_IPV6_UDP && cid !== CID_TYPE_NO_COMPRESSED_HEADER) {
+                    break;
+                }
+                cidOk++;
+            }
+            offset = next;
+        }
+        const validBytes = offset - start;
+        const totalBytes = Math.max(1, buffer.length - start);
+        return { validBytes, totalBytes, validRatio: validBytes / totalBytes, cidOk, cidTotal };
+    }
+
+    /** Emit interleaved slots across carrier superframes in TSMF order. */
+    private _forEachSlot(
         superframes: CarrierSuperframe[],
         callback: (packet: Buffer) => void
     ): void {
@@ -356,7 +430,7 @@ export default class TLVAssembler extends EventEmitter {
         const outputChunks: Buffer[] = [];
         for (let sf = 0; sf < count; sf++) {
             const sfs = carriers.map((c, i) => c.superframes[(offsets[i] || 0) + sf]);
-            this._iterateSlots(sfs, packet => outputChunks.push(packet));
+            this._forEachSlot(sfs, packet => outputChunks.push(packet));
         }
         return outputChunks;
     }
@@ -371,100 +445,6 @@ export default class TLVAssembler extends EventEmitter {
             }
         }
         return Buffer.concat(chunks);
-    }
-
-    private _probeMmtp(
-        buffer: Buffer,
-        start: number
-    ): { mmtpPackets: number; mmtpDrops: number } {
-        let mmtpPackets = 0;
-        let mmtpDrops = 0;
-        const runs = new Map<number, { lastSeq: number }>();
-
-        this._iterateTlv(buffer, start, (type, payload) => {
-            const mmtp = this._parseMmtpHeader(type, payload);
-            if (!mmtp) {
-                return;
-            }
-            mmtpPackets++;
-            const state = runs.get(mmtp.packetId);
-            if (!state) {
-                runs.set(mmtp.packetId, { lastSeq: mmtp.packetSequenceNumber });
-                return;
-            }
-            if (state.lastSeq + 1 !== mmtp.packetSequenceNumber) {
-                mmtpDrops++;
-            }
-            state.lastSeq = mmtp.packetSequenceNumber;
-        });
-
-        return { mmtpPackets, mmtpDrops };
-    }
-
-    /** Iterate over TLV packets in a buffer, re-syncing on noise bytes. */
-    private _iterateTlv(
-        buffer: Buffer,
-        start: number,
-        callback: (type: number, payload: Buffer) => void
-    ): void {
-        let offset = start;
-        while (offset + TLV_HEADER_SIZE <= buffer.length) {
-            if (buffer[offset] !== TLV_SYNC_BYTE) {
-                const nextSync = buffer.indexOf(TLV_SYNC_BYTE, offset + 1);
-                if (nextSync < 0) {
-                    break;
-                }
-                offset = nextSync;
-                continue;
-            }
-            const type = buffer[offset + 1];
-            const length = (buffer[offset + 2] << 8) | buffer[offset + 3];
-            const next = offset + TLV_HEADER_SIZE + length;
-            if (next > buffer.length) {
-                break;
-            }
-            callback(type, buffer.subarray(offset + TLV_HEADER_SIZE, next));
-            offset = next;
-        }
-    }
-
-    /**
-     * Parse MMTP header from a TLV packet payload.
-     * Only TLV type 0x03 (HeaderCompressedIP) contains MMTP.
-     */
-    private _parseMmtpHeader(
-        tlvType: number,
-        tlvPayload: Buffer
-    ): { packetId: number; packetSequenceNumber: number } | null {
-        if (tlvType !== TLV_TYPE_HEADER_COMPRESSED_IP || tlvPayload.length < 3) {
-            return null;
-        }
-
-        // Skip compressed IP header to reach MMTP payload
-        let mmtpStart: number;
-        switch (tlvPayload[2]) {
-            case 0x20: // PartialIpv4AndPartialUdp
-            case 0x21: // Ipv4Identifier
-            case 0x61: // NoCompressedHeader
-                mmtpStart = CID_HEADER_BASE;
-                break;
-            case 0x60: // PartialIpv6AndPartialUdp
-                mmtpStart = CID_HEADER_BASE + CID_HEADER_0x60_EXTRA;
-                break;
-            default:
-                return null;
-        }
-
-        const mmtp = tlvPayload.subarray(mmtpStart);
-        // MMTP minimum: V/flags(1) + reserved(1) + packetId(2) + timestamp(4) + seqNum(4) = 12
-        if (mmtp.length < 12) {
-            return null;
-        }
-
-        return {
-            packetId: (mmtp[2] << 8) | mmtp[3],
-            packetSequenceNumber: ((mmtp[8] << 24) | (mmtp[9] << 16) | (mmtp[10] << 8) | mmtp[11]) >>> 0
-        };
     }
 
     private _drainFrames(): void {
@@ -496,7 +476,7 @@ export default class TLVAssembler extends EventEmitter {
 
         for (let i = 0; i < drainCount; i++) {
             const sfs = carriers.map(c => c.superframes[i]);
-            this._iterateSlots(sfs, packet => this._onTLV(packet));
+            this._forEachSlot(sfs, packet => this._onTLV(packet));
             this._outputSuperframeCount++;
         }
 
