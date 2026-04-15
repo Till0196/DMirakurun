@@ -4,7 +4,7 @@ import { TsCrc32 } from "@chinachu/aribts";
 import * as log from "./log";
 import TLVAssembler from "./TLVAssembler";
 
-// TS / TSMF constants (ARIB STD-B32)
+// TS / TSMF constants
 const PACKET_SIZE = 188;
 const TS_SYNC_BYTE = 0x47;
 const TLV_PID = 0x2d;
@@ -137,9 +137,6 @@ interface SourceState {
     currentFrame?: CarrierFrame;
     headerLocked: boolean;
     activeHeaderCRC: number;
-    effectiveTargetStreamNumber: number;
-    tsmfRelativeStreamNumber: number[];
-    streamTypeBits: number;
     targetSlotsCache: boolean[];
     ccChecker: TsmfCCChecker;
 }
@@ -463,9 +460,6 @@ export default class TSMFFilter extends EventEmitter {
             offset: -1,
             headerLocked: false,
             activeHeaderCRC: -1,
-            effectiveTargetStreamNumber: 0,
-            tsmfRelativeStreamNumber: [],
-            streamTypeBits: 0,
             targetSlotsCache: new Array(SLOT_COUNT).fill(true),
             ccChecker: new TsmfCCChecker()
         });
@@ -593,8 +587,8 @@ export default class TSMFFilter extends EventEmitter {
     }
 
     private _onTSMF(source: SourceState, packet: Buffer): void {
-        const frameInfo = this._validateTSMFFrame(packet);
-        if (!frameInfo) {
+        const info = TSMFFilter.parseTSMFHeader(packet);
+        if (!info) {
             return;
         }
 
@@ -608,13 +602,13 @@ export default class TSMFFilter extends EventEmitter {
                 this._tunerIndex, source.sourceId);
         }
 
-        if (this._expectedGroupId !== null && frameInfo.groupId !== this._expectedGroupId) {
+        if (this._expectedGroupId !== null && info.groupId !== this._expectedGroupId) {
             return;
         }
 
-        if (this._detectedGroupId === null && frameInfo.groupId !== 255) {
-            this._detectedGroupId = frameInfo.groupId;
-            this.emit("groupId", frameInfo.groupId, frameInfo.carriers.numberOfCarriers);
+        if (this._detectedGroupId === null && info.groupId !== 255) {
+            this._detectedGroupId = info.groupId;
+            this.emit("groupId", info.groupId, info.numberOfCarriers);
         }
 
         // Record / verify streamIds[] from the Extended TSMF header.
@@ -624,16 +618,16 @@ export default class TSMFFilter extends EventEmitter {
         // dropped and logged once. This catches the case where two CATV
         // systems reuse the same groupId for different bonding groups.
         if (this._detectedStreamIds === null) {
-            this._detectedStreamIds = frameInfo.streamIds.slice();
+            this._detectedStreamIds = info.streamIds.slice();
         } else {
             for (let i = 0; i < 15; i++) {
-                if (frameInfo.streamIds[i] !== this._detectedStreamIds[i]) {
+                if (info.streamIds[i] !== this._detectedStreamIds[i]) {
                     if (!this._streamIdMismatchLogged) {
                         log.warn(
                             "TunerDevice#%d source#%d TSMF stream_id mismatch: expected [%s], got [%s] — rejecting carrier (likely a groupId collision between different CATV systems)",
                             this._tunerIndex, source.sourceId,
                             this._detectedStreamIds.join(","),
-                            frameInfo.streamIds.join(",")
+                            info.streamIds.join(",")
                         );
                         this._streamIdMismatchLogged = true;
                     }
@@ -642,16 +636,16 @@ export default class TSMFFilter extends EventEmitter {
             }
         }
 
-        const carrierState = this._resolveCarrier(source, frameInfo);
+        const carrierState = this._resolveCarrier(source, info);
         if (!carrierState) {
             return;
         }
 
         // Lock/re-lock header at frame boundaries (frame_position=0)
         // Skip when CRC matches the currently locked header.
-        if (frameInfo.framePosition === 0 &&
-            !(source.headerLocked && frameInfo.headerCRC === source.activeHeaderCRC)) {
-            this._applyTSMFHeader(source, frameInfo.slotMap, frameInfo.streamTypeBits, frameInfo.headerCRC);
+        if (info.framePosition === 0 &&
+            !(source.headerLocked && info.headerCRC === source.activeHeaderCRC)) {
+            this._applyTSMFHeader(source, info.slotMap, info.streamTypeBits, info.headerCRC);
         }
 
         if (source.currentFrame && source.currentFrame.slots.length > 0) {
@@ -659,8 +653,8 @@ export default class TSMFFilter extends EventEmitter {
         }
 
         source.currentFrame = {
-            framePosition: frameInfo.framePosition,
-            numberOfFrames: frameInfo.numberOfFrames,
+            framePosition: info.framePosition,
+            numberOfFrames: info.numberOfFrames,
             slots: [],
             targetSlots: source.targetSlotsCache
         };
@@ -668,10 +662,6 @@ export default class TSMFFilter extends EventEmitter {
 
     private _applyTSMFHeader(source: SourceState, slotMap: number[], streamTypeBits: number, headerCRC: number): void {
         const target = this._targetRelStream;
-
-        source.tsmfRelativeStreamNumber = slotMap;
-        source.streamTypeBits = streamTypeBits;
-        source.effectiveTargetStreamNumber = target;
         source.headerLocked = true;
         source.activeHeaderCRC = headerCRC;
         // Pre-compute target slot mask used by every frame in this header epoch.
@@ -681,13 +671,8 @@ export default class TSMFFilter extends EventEmitter {
         source.targetSlotsCache = slotMap.map(v => v === target && TSMFFilter.isTLVStream(streamTypeBits, v));
     }
 
-    private _resolveCarrier(
-        source: SourceState,
-        frameInfo: {
-            carriers: { numberOfCarriers: number; carrierSequence: number };
-        }
-    ): CarrierState | null {
-        const { numberOfCarriers, carrierSequence } = frameInfo.carriers;
+    private _resolveCarrier(source: SourceState, info: TSMFHeaderInfo): CarrierState | null {
+        const { numberOfCarriers, carrierSequence } = info;
 
         // Commit numberOfCarriers on the first valid frame from any source.
         // The frame has already passed CRC32 validation in parseTSMFHeader and
@@ -762,39 +747,6 @@ export default class TSMFFilter extends EventEmitter {
             const frames = blocks.splice(i, n);
             this._assembler.pushSuperframe(carrier.carrierSequence, { numberOfFrames: n, frames });
         }
-    }
-
-    private _validateTSMFFrame(packet: Buffer): {
-        payload: Buffer;
-        headerCRC: number;
-        framePosition: number;
-        numberOfFrames: number;
-        carriers: { numberOfCarriers: number; carrierSequence: number };
-        groupId: number;
-        slotMap: number[];
-        streamTypeBits: number;
-        streamIds: number[];
-        originalNetworkIds: number[];
-    } | null {
-        const info = TSMFFilter.parseTSMFHeader(packet);
-        if (!info) {
-            return null;
-        }
-        return {
-            payload: info.payload,
-            headerCRC: info.headerCRC,
-            framePosition: info.framePosition,
-            numberOfFrames: info.numberOfFrames,
-            carriers: {
-                numberOfCarriers: info.numberOfCarriers,
-                carrierSequence: info.carrierSequence
-            },
-            groupId: info.groupId,
-            slotMap: info.slotMap,
-            streamTypeBits: info.streamTypeBits,
-            streamIds: info.streamIds,
-            originalNetworkIds: info.originalNetworkIds
-        };
     }
 
 }

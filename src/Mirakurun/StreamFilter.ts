@@ -26,14 +26,30 @@ import TSFilter from "./TSFilter";
 import { TSMFCarrierBonding, TSMFSlotFilter } from "./TSMF";
 import TSMFFilter, { TSMFHeaderInfo } from "./TSMFFilter";
 
-// Stream format detection constants
-const TS_SYNC = 0x47;
-const TS_PKT = 188;
-const TLV_SYNC = 0x7f;
-const TLV_VALID_TYPES = new Set([0x01, 0x02, 0x03, 0xfe, 0xff]);
+// TS / TLV packet constants
+const PACKET_SIZE = 188;
+const TS_SYNC_BYTE = 0x47;
+const TLV_SYNC_BYTE = 0x7f;
+const TLV_TYPE_IPV4 = 0x01;
+const TLV_TYPE_IPV6 = 0x02;
+const TLV_TYPE_HEADER_COMPRESSED_IP = 0x03;
+const TLV_TYPE_SIGNALLING = 0xfe;
+const TLV_TYPE_NULL = 0xff;
+const TLV_VALID_TYPES = new Set([
+    TLV_TYPE_IPV4,
+    TLV_TYPE_IPV6,
+    TLV_TYPE_HEADER_COMPRESSED_IP,
+    TLV_TYPE_SIGNALLING,
+    TLV_TYPE_NULL
+]);
+
+// Stream format detection parameters
 // TSMF frames are 52 TS packets (9776 bytes). Need at least 1 full frame
 // plus margin for sync alignment.
-const DETECT_MIN_BYTES = 188 * 53 * 2; // ~20KB, guarantees 2 TSMF frames
+const DETECT_MIN_BYTES = PACKET_SIZE * 53 * 2; // ~20KB, guarantees 2 TSMF frames
+// Minimum consecutive TS sync bytes at PACKET_SIZE stride to declare the
+// buffer TS-aligned. 8 packets is enough to rule out chance 0x47 matches.
+const TS_MIN_CONSECUTIVE = 8;
 
 // TSMF is a sub-classification of TS, encoded by `tsmfHeader` not by format.
 export type StreamFormat = "ts" | "tlv";
@@ -375,13 +391,15 @@ export default class StreamFilter extends EventEmitter {
                 this._initTs(buffered, new TSMFSlotFilter(decision.relTs, !opts.serviceId));
                 return;
 
-            case "tsmf-scan":
+            case "tsmf-scan": {
+                const hasGroupId = header.groupId !== 0 && header.groupId !== 255;
                 log.info("StreamFilter TSMF scan started: %d relTs groupId=%s on %s",
                     decision.activeStreams.size,
-                    header.groupId !== 0 && header.groupId !== 255 ? String(header.groupId) : "none",
+                    hasGroupId ? header.groupId : "none",
                     ch.channel);
                 this._initTsmfScan(buffered, decision.activeStreams, decision.streamTypeBits);
                 return;
+            }
         }
     }
 
@@ -392,8 +410,6 @@ export default class StreamFilter extends EventEmitter {
             const isTlv = TSMFFilter.isTLVStream(streamTypeBits, relTs);
             const slot = new TSMFSlotFilter(relTs, false);
 
-            // TLV slot services may not parse during scan (needs dantto4k),
-            // but the relTs is already known from streamTypeBits.
             if (isTlv) {
                 ch.setTsmfRelTs(relTs);
             }
@@ -419,17 +435,23 @@ export default class StreamFilter extends EventEmitter {
 
             slot.on("data", (chunk: Buffer) => filter.write(chunk));
 
-            const entry = {
-                ...(isTlv ? { relTlv: relTs } : { relTs }),
+            const entry: (typeof this._relStreams)[number] = {
                 slot,
                 filter,
                 gotServices: false,
                 gotNetwork: false,
-                services: null as any[] | null
+                services: null
             };
+            if (isTlv) {
+                entry.relTlv = relTs;
+            } else {
+                entry.relTs = relTs;
+            }
 
             filter.on("network", (net: any) => {
-                if (entry.gotNetwork) { return; }
+                if (entry.gotNetwork) {
+                    return;
+                }
                 entry.gotNetwork = true;
                 if (this._aggregatedNetwork === null) {
                     this._aggregatedNetwork = net;
@@ -438,7 +460,9 @@ export default class StreamFilter extends EventEmitter {
             });
 
             filter.on("services", (svs: any[]) => {
-                if (entry.gotServices) { return; }
+                if (entry.gotServices) {
+                    return;
+                }
                 entry.gotServices = true;
                 entry.services = svs;
                 if (this._relStreams.every(e => e.gotServices)) {
@@ -458,7 +482,9 @@ export default class StreamFilter extends EventEmitter {
         this._activePipeline = {
             write: (chunk: Buffer) => {
                 for (const e of this._relStreams) {
-                    if (!e.filter.closed) { e.slot.write(chunk); }
+                    if (!e.filter.closed) {
+                        e.slot.write(chunk);
+                    }
                 }
             }
         };
@@ -483,7 +509,9 @@ export default class StreamFilter extends EventEmitter {
      * timeout, or from close() if the session is torn down prematurely.
      */
     private _emitMergedServices(partial: boolean): void {
-        if (this._emittedServices) { return; }
+        if (this._emittedServices) {
+            return;
+        }
         this._emittedServices = true;
         if (this._aggregationTimer) {
             clearTimeout(this._aggregationTimer);
@@ -494,18 +522,20 @@ export default class StreamFilter extends EventEmitter {
         const seen = new Set<string>();
         const merged: any[] = [];
         for (const e of this._relStreams) {
-            if (!e.services) { continue; }
+            if (!e.services) {
+                continue;
+            }
             for (const svc of e.services) {
                 const key = `${svc.networkId}:${svc.serviceId}`;
-                if (seen.has(key)) { continue; }
+                if (seen.has(key)) {
+                    continue;
+                }
                 seen.add(key);
                 merged.push(svc);
                 if (e.relTs !== undefined) {
                     // fromConfig locks are honoured inside addServiceId.
                     ch.addServiceId(svc.serviceId, e.relTs);
                 }
-                // relTlv: per-service mapping is not needed; channel-level
-                // tsmfRelTs is set in _initTsmfScan / _initTsmf.
             }
         }
 
@@ -655,15 +685,14 @@ export default class StreamFilter extends EventEmitter {
     }
 
     private _findTsStart(buffer: Buffer): number {
-        const TS_MIN_CONSECUTIVE = 8;
-        const tsScanEnd = buffer.length - TS_PKT * TS_MIN_CONSECUTIVE;
+        const tsScanEnd = buffer.length - PACKET_SIZE * TS_MIN_CONSECUTIVE;
         for (let i = 0; i <= tsScanEnd; i++) {
-            if (buffer[i] !== TS_SYNC) {
+            if (buffer[i] !== TS_SYNC_BYTE) {
                 continue;
             }
             let ok = true;
             for (let k = 1; k < TS_MIN_CONSECUTIVE; k++) {
-                if (buffer[i + TS_PKT * k] !== TS_SYNC) {
+                if (buffer[i + PACKET_SIZE * k] !== TS_SYNC_BYTE) {
                     ok = false;
                     break;
                 }
@@ -677,7 +706,7 @@ export default class StreamFilter extends EventEmitter {
 
     private _isTlvBuffer(buffer: Buffer): boolean {
         for (let i = 0; i <= buffer.length - 4; i++) {
-            if (buffer[i] !== TLV_SYNC) {
+            if (buffer[i] !== TLV_SYNC_BYTE) {
                 continue;
             }
             const tlvType = buffer[i + 1];
@@ -692,7 +721,7 @@ export default class StreamFilter extends EventEmitter {
                 }
                 continue;
             }
-            if (buffer[next] === TLV_SYNC && TLV_VALID_TYPES.has(buffer[next + 1])) {
+            if (buffer[next] === TLV_SYNC_BYTE && TLV_VALID_TYPES.has(buffer[next + 1])) {
                 return true;
             }
         }
