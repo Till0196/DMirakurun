@@ -184,7 +184,6 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
                                 groups.set(key, { route, type: ch.type, channels: [ch.channel], rel, groupId: ch.tsmfGroupId });
                             }
                         }
-                        const uniqueRoutes = Array.from(new Set(Array.from(groups.values()).map(g => g.route)));
                         const showRoute = multiRouteTypes.has(service.channels?.[0]?.type ?? "");
                         const lines: string[] = [
                             `#${service.id}`,
@@ -202,9 +201,6 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
                                 return `${label}: ${parts.join(" / ")}`;
                             })
                         ];
-                        if (showRoute) {
-                            lines.push(`Route: ${uniqueRoutes.join(", ")}`);
-                        }
                         return lines.join("\n");
                     })()}
                 >
