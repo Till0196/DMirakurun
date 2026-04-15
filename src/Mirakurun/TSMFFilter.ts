@@ -728,6 +728,13 @@ export default class TSMFFilter extends EventEmitter {
         }
         carrier.blocks.push(frame);
         this._packFrames(carrier);
+        // _packFrames can only splice contiguous framePosition=0..n-1 runs;
+        // stray blocks (framePosition!=0 at head, or numberOfFrames mismatch)
+        // stay behind. Cap at 32 (> max superframe length 15) to bound memory
+        // under noisy reception.
+        if (carrier.blocks.length > 32) {
+            carrier.blocks.splice(0, carrier.blocks.length - 32);
+        }
     }
 
     private _packFrames(carrier: CarrierState): void {

@@ -21,6 +21,11 @@ const OFFSET_MIN_SFS = 30;
 const OFFSET_RETRY_SFS = 30;
 const OFFSET_MMTP_MIN_PACKETS = 16;
 const OFFSET_MAX_DROP_RATIO = 0.05;
+// Upper bound on per-carrier superframes kept while offset detection is still
+// pending. At ~15 frames × 52 × 188B ≈ 146KB/SF × 3 carriers, 600 SFs caps the
+// pending state at ~260MB — enough for retries but prevents OOM if detection
+// never commits (e.g. one carrier never arrives).
+const OFFSET_MAX_KEEP = 600;
 const READY_MIN_SUPERFRAMES = 2;
 const OUTPUT_MIN_BUFFER_SFS = 2;
 
@@ -147,6 +152,9 @@ export default class TLVAssembler extends EventEmitter {
             this._carriers.set(carrierSequence, bucket);
         }
         bucket.superframes.push(sf);
+        if (!this._offsets && bucket.superframes.length > OFFSET_MAX_KEEP) {
+            bucket.superframes.splice(0, bucket.superframes.length - OFFSET_MAX_KEEP);
+        }
 
         this._detectOffsets();
         this._drainFrames();
