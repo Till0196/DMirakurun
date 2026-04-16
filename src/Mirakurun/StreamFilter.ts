@@ -501,13 +501,6 @@ export default class StreamFilter extends EventEmitter {
         });
     }
 
-    /**
-     * Merge services collected from each per-relTs filter, persist the
-     * serviceId→relTs mapping (TS or TLV map as appropriate), and emit the
-     * aggregated "services" event.
-     * Called when every relTs has delivered services, on the aggregation
-     * timeout, or from close() if the session is torn down prematurely.
-     */
     private _emitMergedServices(partial: boolean): void {
         if (this._emittedServices) {
             return;
@@ -554,11 +547,6 @@ export default class StreamFilter extends EventEmitter {
         this.emit("services", merged);
     }
 
-    /**
-     * TSMF→TLV pipeline. In `tsmfDiscovery` mode waits for the groupId event:
-     * single-carrier proceeds to TLV setup, multi-carrier emits a discovery
-     * result so the caller queues a bonded scan.
-     */
     private _initTsmfTlv(buffered: Buffer, relTs: number): void {
         const opts = this._options;
         const ch = opts.channel;

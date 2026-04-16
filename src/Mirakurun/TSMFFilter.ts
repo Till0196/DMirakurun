@@ -13,10 +13,7 @@ const SLOT_COUNT = 52 as const;
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
 
-/**
- * TSMF continuity counter tracker.
- * Skips stale DVR buffer data after retune by requiring two consecutive CC values.
- */
+// Requires two consecutive CC values before trusting frames (skips stale DVR data).
 export class TsmfCCChecker {
     private _lastCC = -1;
     private _synced = false;
@@ -25,7 +22,6 @@ export class TsmfCCChecker {
         return this._synced;
     }
 
-    /** Returns true if this packet should be processed, false if it should be skipped. */
     check(cc: number): boolean {
         if (!this._synced) {
             if (this._lastCC >= 0 && cc === ((this._lastCC + 1) & 0x0f)) {
@@ -40,10 +36,7 @@ export class TsmfCCChecker {
     }
 }
 
-/**
- * Check if a TS packet is a TSMF header packet.
- * Returns the CC (continuity_counter) if it is, or -1 if not.
- */
+// Returns CC if this is a TSMF header packet, or -1 if not.
 export function getTsmfPacketCC(packet: Buffer, offset = 0): number {
     if (packet[offset] !== TS_SYNC_BYTE) {
         return -1;
@@ -59,10 +52,7 @@ export function getTsmfPacketCC(packet: Buffer, offset = 0): number {
     return packet[offset + 3] & 0x0f;
 }
 
-/**
- * Extract groupId from Extended TSMF header (frame_type=0x02) in a raw TS packet.
- * Returns the groupId, or -1 if not an Extended TSMF frame or groupId is 255.
- */
+// Returns groupId from Extended TSMF header, or -1.
 export function extractGroupIdFromPacket(packet: Buffer, offset = 0): number {
     const frameType = packet[offset + 6] & 0x0f;
     if (frameType !== 0x02) {
@@ -84,20 +74,13 @@ export interface CarrierSuperframe {
     frames: CarrierFrame[];
 }
 
-/**
- * Parsed information from a TSMF Extended frame header (frame_type=0x02).
- * See ARIB STD-B32 6.3.3 / 6.3.4. The `streamTypeBits` field encodes
- * stream_type[1..15] in MSB-first order: bit (15-n) corresponds to
- * relative stream `n`; value 0 = TLV, value 1 = TS or no stream.
- */
+// Extended TSMF header fields.
 export interface TSMFHeaderInfo {
     payload: Buffer;
     slotMap: number[];        // 52 entries, each 0..15 (0 = unused)
     streamTypeBits: number;   // 15 bits, MSB = relative stream 1
-    /** stream_id per relative stream (index 0 = relTs 1). ARIB STD-B32 6.3.2. */
-    streamIds: number[];      // 15 entries, each 16-bit unsigned
-    /** original_network_id per relative stream (index 0 = relTs 1). */
-    originalNetworkIds: number[]; // 15 entries, each 16-bit unsigned
+    streamIds: number[];      // 15 entries, stream_id per relative stream
+    originalNetworkIds: number[]; // 15 entries, original_network_id per relative stream
     groupId: number;          // 0..254, 255 = undefined
     numberOfCarriers: number; // 1..16
     carrierSequence: number;  // 1..numberOfCarriers
@@ -106,17 +89,6 @@ export interface TSMFHeaderInfo {
     headerCRC: number;
 }
 
-/**
- * Result of `TSMFFilter.resolveRoute`.
- *
- * - `tsmf-tlv` / `tsmf-ts`: single-relTs pipeline. `pinned` is true when the
- *   relTs came from caller hints (URL query / per-service mapping / channel
- *   default), false when picked by auto-detection.
- * - `tsmf-scan`: multi-relTs scan fan-out (Tuner.getServices with parseSDT=true).
- *   Covers both pure-TS and mixed TLV+TS multiplexes; the caller inspects
- *   `streamTypeBits` per relTs to choose TSFilter or TLVFilter.
- * - `empty`: slot map is empty — multiplex is unusable.
- */
 export type TSMFRouteDecision =
     | { kind: "tsmf-tlv"; relTs: number; pinned: boolean; activeStreams: Set<number> }
     | { kind: "tsmf-ts"; relTs: number; pinned: boolean; activeStreams: Set<number> }
@@ -141,44 +113,9 @@ interface SourceState {
     ccChecker: TsmfCCChecker;
 }
 
-/**
- * TSMF→TLV demuxer + parser.
- *
- * - Parses TSMF frames (CRC, slot map, target stream selection).
- * - Hands packed superframes to TLVAssembler for offset detection and TLV output.
- * - Emits `needCarriers` when the multiplex requires multi-carrier bonding.
- *   The actual carrier acquisition is done by `TSMFCarrierBonding` (in TSMF.ts),
- *   which subscribes to that event and feeds additional bytes back through
- *   `createInput()`.
- */
 export default class TSMFFilter extends EventEmitter {
 
-    /**
-     * Parse a TSMF frame header from a TS packet (PID=0x2F).
-     *
-     * Validates AFC, frame_sync, and CRC32. The header layout is the
-     * "拡張 TSMF" (Extended TSMF) syntax defined in ARIB STD-B32 6.3.2 —
-     * the byte positions of stream_status, slot_map, group_id and the
-     * carrier bonding fields are identical regardless of frame_type.
-     *
-     * Per ARIB STD-B32 6.3.3.5 table 6.3-4, frame_type indicates how the
-     * multiplex is used:
-     *   0x1 = TS-only multiplexing, or partial mixed TS + multi-carrier.
-     *         Carrier bonding fields are unused; operators commonly fill
-     *         them with 0xFF.
-     *   0x2 = Multi-carrier (carrier bonding) only. number_of_carriers /
-     *         carrier_sequence are valid.
-     *   0xF = Single TS (no multiplexing) — never appears in a header.
-     *
-     * Range-check the carrier bonding fields only when frame_type=0x2;
-     * for frame_type=0x1 we synthesise (numberOfCarriers, carrierSequence)
-     * = (1, 1) so the rest of the pipeline can treat the multiplex as a
-     * single-carrier source.
-     *
-     * Used by `StreamFilter._detectStreamFormat` to deterministically route
-     * each session to the TLV or TS pipeline based on the requested
-     * service's `stream_type`.
-     */
+    // Validates AFC, frame_sync, CRC32. frame_type=0x1 → single-carrier, 0x2 → bonded.
     static parseTSMFHeader(packet: Buffer): TSMFHeaderInfo | null {
         if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
             return null;
@@ -258,18 +195,11 @@ export default class TSMFFilter extends EventEmitter {
         };
     }
 
-    /**
-     * True iff relative stream `n` (1..15) carries TLV.
-     * stream_type bit 0 = TLV, 1 = TS or no stream (ARIB STD-B32 6.3.4.2,
-     * table 6.3-8). Bit (15-n) of `streamTypeBits` corresponds to stream n.
-     */
+    // stream_type bit 0 = TLV, 1 = TS
     static isTLVStream(streamTypeBits: number, n: number): boolean {
         return n >= 1 && n <= 15 && ((streamTypeBits >> (15 - n)) & 1) === 0;
     }
 
-    /**
-     * Extract the set of active relative streams (1..15) from a TSMF slot map.
-     */
     static getActiveRelTs(header: TSMFHeaderInfo): Set<number> {
         const activeStreams = new Set<number>();
         for (const r of header.slotMap) {
@@ -280,16 +210,6 @@ export default class TSMFFilter extends EventEmitter {
         return activeStreams;
     }
 
-    /**
-     * Scan a TS-aligned buffer for the first CC-synced TSMF Extended frame
-     * and return its parsed header. Returns null if no valid TSMF packet is
-     * found within the buffer.
-     *
-     * Walks 188-byte aligned positions starting at `tsStart`. After retune,
-     * the first frames may be stale DVR buffer data from the previous
-     * channel, so we require two consecutive CCs (`TsmfCCChecker`) before
-     * trusting a frame.
-     */
     static findFirstExtendedHeader(buffer: Buffer, tsStart: number): TSMFHeaderInfo | null {
         const ccChecker = new TsmfCCChecker();
         for (let offset = tsStart; offset + PACKET_SIZE <= buffer.length; offset += PACKET_SIZE) {
@@ -316,24 +236,7 @@ export default class TSMFFilter extends EventEmitter {
         return null;
     }
 
-    /**
-     * Decide how to route a TSMF multiplex into the StreamFilter inner
-     * pipelines, given the parsed Extended header and caller hints.
-     *
-     * Routing rules:
-     *   1. `requestedRelTs` set → use it; pick TS or TLV by stream_type bit.
-     *   2. otherwise: prefer the smallest TLV-bearing relTs and route to
-     *      `tsmf-tlv`. The TLV pipeline (`_initTsmfTlv`) is the only path
-     *      that correctly demuxes TLV bytes from TSMF — the multi-relTs
-     *      `tsmf-scan` path fans TS packets directly into TLVFilter and
-     *      cannot extract MMT control tables (NIT/SDT) for TLV slots, so we
-     *      avoid it for TLV multiplexes regardless of `parseSDT`.
-     *   3. otherwise (pure TS multiplex):
-     *      - parseSDT=true (Tuner.getServices scan): "tsmf-scan" so the
-     *        caller can fan out per-relTs TSFilters.
-     *      - parseSDT=false (streaming/EPG): "tsmf-ts" with the smallest
-     *        active relTs.
-     */
+    // Prefer TLV relTs → tsmf-tlv; pure TS: parseSDT → tsmf-scan, else → tsmf-ts.
     static resolveRoute(
         header: TSMFHeaderInfo,
         requestedRelTs: number | null | undefined,
@@ -378,7 +281,6 @@ export default class TSMFFilter extends EventEmitter {
         };
     }
 
-    /** Aggregate slot counts per relative stream for diagnostic logging. */
     static countSlots(slotMap: number[]): Record<number, number> {
         const counts: Record<number, number> = {};
         for (const v of slotMap) {
@@ -402,14 +304,7 @@ export default class TSMFFilter extends EventEmitter {
     private _targetRelStream: number;
     private _expectedGroupId: number | null;
     private _detectedGroupId: number | null = null;
-    /**
-     * streamIds[] from the first valid Extended TSMF header seen by this
-     * demuxer. Subsequent frames (including those from additional bonding
-     * carriers) are rejected if their streamIds array doesn't match — this
-     * is the definitive guard against accidentally bonding carriers from
-     * two different CATV systems that happen to share the same 8-bit
-     * groupId (e.g. when multiple Mirakurun instances are aggregated).
-     */
+    // guards against bonding carriers from different CATV systems sharing a groupId
     private _detectedStreamIds: number[] | null = null;
     private _streamIdMismatchLogged = false;
 
@@ -487,8 +382,6 @@ export default class TSMFFilter extends EventEmitter {
     close(): void {
         this._close();
     }
-
-    // --- Private ---
 
     private _writeFromSource(sourceId: number, chunk: Buffer): void {
         if (this._closed || this._closing) {
@@ -664,25 +557,12 @@ export default class TSMFFilter extends EventEmitter {
         const target = this._targetRelStream;
         source.headerLocked = true;
         source.activeHeaderCRC = headerCRC;
-        // Pre-compute target slot mask used by every frame in this header epoch.
-        // The caller is expected to have already verified that `target` is a
-        // TLV slot in this multiplex (StreamFilter probes the slot map before
-        // constructing TSMFFilter), so we don't second-guess the choice here.
         source.targetSlotsCache = slotMap.map(v => v === target && TSMFFilter.isTLVStream(streamTypeBits, v));
     }
 
     private _resolveCarrier(source: SourceState, info: TSMFHeaderInfo): CarrierState | null {
         const { numberOfCarriers, carrierSequence } = info;
 
-        // Commit numberOfCarriers on the first valid frame from any source.
-        // The frame has already passed CRC32 validation in parseTSMFHeader and
-        // CC sync in TsmfCCChecker, so the field value is authoritative — no
-        // multi-frame confirmation is needed. (The previous "wait N frames"
-        // heuristic was redundant defence against vanishingly rare CRC false
-        // positives, and could not be expressed in spec terms because the
-        // super-frame composition spans multiple carriers with potentially
-        // different modulations, none of which is known until carriers are
-        // actually attached.)
         if (this._numberOfCarriers === 0) {
             this._numberOfCarriers = numberOfCarriers;
             this._assembler.setNumberOfCarriers(numberOfCarriers);

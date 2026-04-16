@@ -25,8 +25,7 @@ import TSMFFilter, { TsmfCCChecker } from "./TSMFFilter";
 
 export { TsmfCCChecker };
 
-// TS / TSMF constants (ARIB STD-B32) — duplicated from TSMFFilter for the
-// slot filter; the parser/demuxer side keeps its own copies in TSMFFilter.ts.
+// TS / TSMF constants
 const PACKET_SIZE = 188;
 const TS_SYNC_BYTE = 0x47;
 const TSMF_PID = 0x2f;
@@ -34,14 +33,6 @@ const SLOT_COUNT = 52 as const;
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
 
-// =============================================================================
-// TSMFSlotFilter — single-relTs Transform stream for TSMF→TS pipelines
-// =============================================================================
-
-/**
- * Single-relTs TSMF slot filter (non-TLV, e.g. BS/CS over CATV).
- * Extracts packets for a specific relative stream number from TSMF frames.
- */
 export class TSMFSlotFilter extends stream.Transform {
 
     static createDetector(): TSMFSlotFilter {
@@ -141,7 +132,7 @@ export class TSMFSlotFilter extends stream.Transform {
                     // group_id meaningful only for Extended TSMF (frame_type=0x2)
                     const frameType = packet[6] & 0x0f;
                     const groupId = frameType === 0x02 ? packet[127] : null;
-                    // streamTypeBits: 15 bits at TS packet 125..126 (ARIB STD-B32 6.3.4.2)
+                    // streamTypeBits: 15 bits at TS packet 125..126
                     const streamTypeBits = (packet[125] << 7) | (packet[126] >> 1);
                     this.emit("slotMap", this._slotMap.slice(), groupId, streamTypeBits);
                 }
@@ -178,10 +169,6 @@ export class TSMFSlotFilter extends stream.Transform {
     }
 }
 
-// =============================================================================
-// TSMFCarrierBonding — multi-carrier orchestration on top of a TSMFFilter demuxer
-// =============================================================================
-
 interface CarrierLink {
     device: TunerDevice;
     user: common.User & { _stream?: TSFilter };
@@ -190,11 +177,6 @@ interface CarrierLink {
     demuxerInput: stream.Writable;
 }
 
-/**
- * Multi-carrier bonding orchestrator on top of a `TSMFFilter` demuxer.
- * Acquires additional tuners on `needCarriers`, feeds bytes into
- * `demuxer.createInput()`, and tears the links down on close.
- */
 export class TSMFCarrierBonding {
 
     private _demuxer: TSMFFilter;

@@ -106,11 +106,6 @@ export default class TLVFilter extends EventEmitter {
     private _serviceIds = new Set<number>();
     private _parseServiceIds = new Set<number>();
     private _mptPid = -1;
-    /**
-     * One-shot guard for the `streamInfo` event so the channels.json
-     * persistence layer only records the primary TLV stream once. Set true
-     * after the first valid TLV-NIT containing at least one tlvStream entry.
-     */
     private _streamInfoEmitted = false;
     private _pmtTimer: NodeJS.Timeout;
     private _streamTime: number = null;
@@ -232,7 +227,6 @@ export default class TLVFilter extends EventEmitter {
         this._close();
     }
 
-    /** Count TLV packets per type for streamInfo. */
     private _countTLVPackets(chunk: Buffer): void {
         const buf = this._tlvParseBuf ? Buffer.concat([this._tlvParseBuf, chunk]) : chunk;
         this._tlvParseBuf = null;
@@ -262,7 +256,6 @@ export default class TLVFilter extends EventEmitter {
         }
     }
 
-    // --- SI event handlers ---
 
     private _onPLT(plt: PackageListTable): void {
         const newServiceIds = new Set<number>();
@@ -536,7 +529,6 @@ export default class TLVFilter extends EventEmitter {
         Service.saveLogoData(cdt.originalNetworkId, cdt.dataModule.logoId, data);
     }
 
-    // --- EPG state management ---
 
     private _observeProvideEvent(): void {
         if (Date.now() - this._provideEventLastDetectedAt < 10000) {
@@ -658,7 +650,6 @@ export default class TLVFilter extends EventEmitter {
         }
     }
 
-    // --- close ---
 
     private _close(): void {
         if (this._closed) {

@@ -7,7 +7,7 @@ import type { CarrierSuperframe } from "./TSMFFilter";
 const PACKET_SIZE = 188;
 const TS_SYNC_BYTE = 0x47;
 
-// TLV packet constants (ARIB STD-B32)
+// TLV packet constants
 const TLV_SYNC_BYTE = 0x7f;
 const TLV_HEADER_SIZE = 4; // sync(1) + type(1) + length(2)
 const TLV_TYPE_IPV4 = 0x01;
@@ -16,7 +16,7 @@ const TLV_TYPE_HEADER_COMPRESSED_IP = 0x03;
 const TLV_TYPE_SIGNALLING = 0xfe;
 const TLV_TYPE_NULL = 0xff;
 
-// Compressed IP header type bytes (ARIB STD-B32 §6, dantto4k/compressedIPPacket.h)
+// Compressed IP header type bytes
 const CID_TYPE_PARTIAL_IPV4_UDP = 0x20;
 const CID_TYPE_IPV4_IDENTIFIER = 0x21;
 const CID_TYPE_PARTIAL_IPV6_UDP = 0x60;
@@ -41,21 +41,9 @@ interface CarrierBucket {
     superframes: CarrierSuperframe[];
 }
 
-/**
- * TLV layer of the TSMF→MPEG-TS pipeline.
- *
- * Receives completed superframes from the TSMF parser (TSMFDemuxer),
- * detects per-carrier offsets, interleaves slots in TSMF order, and
- * writes the resulting TLV byte stream to the configured Writable sink.
- *
- * Single-carrier streams skip offset detection entirely.
- */
 export default class TLVAssembler extends EventEmitter {
 
-    /**
-     * Find a valid TLV sync position by verifying that at least 3 consecutive
-     * TLV packets chain correctly (each packet's end points to the next 0x7F).
-     */
+    // Find a valid TLV sync position by verifying 3 consecutive chained packets.
     private static _findTlvSync(buffer: Buffer): number {
         let searchFrom = 0;
         while (searchFrom < buffer.length) {
@@ -85,7 +73,7 @@ export default class TLVAssembler extends EventEmitter {
         return -1;
     }
 
-    /** Extract TLV payload from a TSMF TS packet (PUSI=1: skip pointer field). */
+    // PUSI=1: skip pointer field
     private static _extractTlvPayload(packet: Buffer): Buffer | null {
         if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
             return null;
@@ -140,7 +128,6 @@ export default class TLVAssembler extends EventEmitter {
         this._numberOfCarriers = n;
     }
 
-    /** Reset all carrier state. Used by TSMFDemuxer on resetCarriers. */
     resetCarriers(): void {
         this._carriers.clear();
         this._offsets = null;
@@ -175,8 +162,6 @@ export default class TLVAssembler extends EventEmitter {
         }
         this._close();
     }
-
-    // --- Private ---
 
     private _setupOutputHandlers(): void {
         if (!this._output) {
@@ -238,14 +223,6 @@ export default class TLVAssembler extends EventEmitter {
         }
     }
 
-    /**
-     * Offset probe using TLV structural integrity. For each candidate,
-     * assembles the TLV byte stream and measures how many bytes parse
-     * cleanly as chained TLV packets (validRatio) plus how many compressed
-     * IP headers have a valid type byte. At the correct offset validRatio
-     * ≈ 1.0 and cidOk === cidTotal; at any wrong offset validRatio drops
-     * to ~0.001 (a 1000× gap), so first-match acceptance is sufficient.
-     */
     private _probeOffsets(carriers: CarrierBucket[]): number[] | null {
         const candidates = this._buildOffsetCandidates(carriers);
         for (let i = 0; i < candidates.length; i++) {
@@ -280,12 +257,7 @@ export default class TLVAssembler extends EventEmitter {
         return null;
     }
 
-    /**
-     * Build the deterministic offset candidate set for brute-force probing.
-     * Covers the naive sfCounts-based base plus ±1 single-axis, ±1 two-axis,
-     * and ±2 single-axis perturbations. Non-negative constraint is enforced
-     * and duplicates are dropped. For N=3 carriers the set caps at ~25.
-     */
+    // base = sfCounts - minSf, ±1 single/two-axis, ±2 single-axis
     private _buildOffsetCandidates(carriers: CarrierBucket[]): number[][] {
         const sfCounts = carriers.map(c => c.superframes.length);
         const minSf = Math.min(...sfCounts);
@@ -336,12 +308,6 @@ export default class TLVAssembler extends EventEmitter {
         return candidates;
     }
 
-    /**
-     * Scan the assembled TLV byte buffer from `start` as chained TLV
-     * packets. Reports how many bytes parse cleanly before the sync byte /
-     * type / length chain breaks, and how many type=0x03
-     * (HeaderCompressedIP) payloads carry a valid CID header type byte.
-     */
     private _measureTlvIntegrity(
         buffer: Buffer,
         start: number
@@ -380,7 +346,6 @@ export default class TLVAssembler extends EventEmitter {
         return { validBytes, totalBytes, validRatio: validBytes / totalBytes, cidOk, cidTotal };
     }
 
-    /** Emit interleaved slots across carrier superframes in TSMF order. */
     private _forEachSlot(
         superframes: CarrierSuperframe[],
         callback: (packet: Buffer) => void
@@ -435,7 +400,6 @@ export default class TLVAssembler extends EventEmitter {
         return outputChunks;
     }
 
-    /** Assemble a TLV byte stream from TS packets for offset probing. */
     private _assembleTlv(packets: Buffer[]): Buffer {
         const chunks: Buffer[] = [];
         for (const packet of packets) {
@@ -518,11 +482,7 @@ export default class TLVAssembler extends EventEmitter {
         }
     }
 
-    /**
-     * Move accumulated TLV chunks (`_buffer`) into `_pendingOutput`.
-     * Caller MUST guarantee that `_buffer` represents a complete TLV packet
-     * (i.e. invoked at PUSI=1 boundary). Does not write to the sink.
-     */
+    // flush _buffer into _pendingOutput (caller must invoke at PUSI=1 boundary)
     private _flushPartialBuffer(): void {
         if (this._sinkClosed || this._buffer.length === 0) {
             return;
@@ -554,7 +514,6 @@ export default class TLVAssembler extends EventEmitter {
         this._buffer.length = 0;
     }
 
-    /** Write `_pendingOutput` to the sink, honoring backpressure. */
     private _writePending(): void {
         if (this._sinkClosed || this._pendingOutput.length === 0 || this._drainWaiting) {
             return;
