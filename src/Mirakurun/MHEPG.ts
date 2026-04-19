@@ -1,6 +1,7 @@
 /*
    Copyright 2016 kanreisa
    Copyright 2024 otya
+   Copyright 2026 Till0196
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
