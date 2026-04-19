@@ -447,7 +447,7 @@ export default class TunerDevice extends EventEmitter {
                 }
             });
 
-            log.info("TunerDevice#%d TSMF bonding pipeline started for groupId=%d on %s", this._index, ch.tsmfGroupId, ch.channel);
+            log.info("TunerDevice#%d TSMF pipeline started for groupId=%d on %s", this._index, ch.tsmfGroupId, ch.channel);
             // Set _stream to a dummy so _streamOnData doesn't receive raw data
             this._stream = new stream.PassThrough();
         } else {
