@@ -184,7 +184,7 @@ export class TSMFCarrierBonding {
             ch.setTsmfGroupId(groupId);
             log.debug("TunerDevice#%d TSMF detected groupId=%d numberOfCarriers=%d on %s",
                 this._tunerIndex, groupId, numberOfCarriers, ch.channel);
-            _.service?.save();
+            _.channel?.save();
         });
         this._demuxer.on("needCarriers", (count: number) => {
             log.debug("TunerDevice#%d need %d carriers", this._tunerIndex, count);
