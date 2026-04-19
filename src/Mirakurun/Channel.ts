@@ -280,7 +280,7 @@ export class Channel {
                 return;
             }
 
-            if (channel.route != null && channel.route !== "TER" && channel.route !== "SAT" && channel.route !== "CATV" && channel.route !== "HIKARI") {
+            if (channel.route !== null && channel.route !== undefined && channel.route !== "TER" && channel.route !== "SAT" && channel.route !== "CATV" && channel.route !== "HIKARI") {
                 log.error("invalid type of property `route` in channel#%d (%s) configuration", i, channel.name);
                 return;
             }
@@ -295,11 +295,11 @@ export class Channel {
                 return;
             }
 
-            if (channel.tsmfRelTs != null && typeof channel.tsmfRelTs !== "number") {
+            if (channel.tsmfRelTs !== null && channel.tsmfRelTs !== undefined && typeof channel.tsmfRelTs !== "number") {
                 log.error("invalid type of property `tsmfRelTs` in channel#%d (%s) configuration", i, channel.name);
                 return;
             }
-            if (channel.tsmfGroupId != null && typeof channel.tsmfGroupId !== "number") {
+            if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined && typeof channel.tsmfGroupId !== "number") {
                 log.error("invalid type of property `tsmfGroupId` in channel#%d (%s) configuration", i, channel.name);
                 return;
             }

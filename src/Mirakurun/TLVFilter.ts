@@ -257,7 +257,6 @@ export default class TLVFilter extends EventEmitter {
         }
     }
 
-
     private _onPLT(plt: PackageListTable): void {
         const newServiceIds = new Set<number>();
 
@@ -527,7 +526,6 @@ export default class TLVFilter extends EventEmitter {
         Service.saveLogoData(cdt.originalNetworkId, cdt.dataModule.logoId, data);
     }
 
-
     private _observeProvideEvent(): void {
         if (Date.now() - this._provideEventLastDetectedAt < 10000) {
             this._provideEventTimeout = setTimeout(
@@ -644,7 +642,6 @@ export default class TLVFilter extends EventEmitter {
             delete this._epgState[nid];
         }
     }
-
 
     private _close(): void {
         if (this._closed) {
