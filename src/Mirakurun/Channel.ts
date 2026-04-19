@@ -17,6 +17,7 @@ import * as common from "./common";
 import * as log from "./log";
 import * as apid from "../../api";
 import _ from "./_";
+import * as db from "./db";
 import status from "./status";
 import ChannelItem from "./ChannelItem";
 import { JobItem } from "./Job";
@@ -24,6 +25,7 @@ import { JobItem } from "./Job";
 export class Channel {
     private _items: ChannelItem[] = [];
     private _startup: boolean = true;
+    private _saveTimerId: NodeJS.Timeout = null;
 
     constructor() {
         this._load();
@@ -85,6 +87,183 @@ export class Channel {
         return items;
     }
 
+    /**
+     * Resolve the channel(s) that carry a logical multiplex identified by
+     * `(networkId, streamId)`. May return multiple ChannelItems when the
+     * same logical service is reachable via more than one route — e.g. a
+     * BS channel listed once with `route: SAT, channel: BS13_1` and again
+     * with `route: CATV, channel: CATV_13`.
+     *
+     * Used by `ServiceItem.channel` (lazy lookup) and by `Service.load()`
+     * to skip orphaned services after channels.yml is edited.
+     */
+    findByStreamId(networkId: number, streamId: number): ChannelItem[] {
+        const results: ChannelItem[] = [];
+        for (const channel of this._items) {
+            for (const entry of channel.getStreams().values()) {
+                if (entry.networkId === networkId && entry.streamId === streamId) {
+                    results.push(channel);
+                    break;
+                }
+            }
+        }
+        return results;
+    }
+
+    findByTypeAndStreamId(type: apid.ChannelType, streamId: number): ChannelItem[] {
+        const results: ChannelItem[] = [];
+        for (const channel of this._items) {
+            if (channel.type !== type) {
+                continue;
+            }
+            for (const entry of channel.getStreams().values()) {
+                if (entry.streamId === streamId) {
+                    results.push(channel);
+                    break;
+                }
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Resolve the channels that can tune a given service.
+     *
+     * Returns channels whose stream entries include `serviceId` under the
+     * matching `networkId`. Unscanned channels (empty streams map) are
+     * included for backward compatibility with fresh installs.
+     */
+    findByService(networkId: number, serviceId: number): ChannelItem[] {
+        const results: ChannelItem[] = [];
+        for (const channel of this._items) {
+            if (channel.getStreams().size === 0) {
+                results.push(channel);
+                continue;
+            }
+            const entry = channel.getStreamForService(serviceId);
+            if (entry && entry.networkId === networkId) {
+                results.push(channel);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Debounced save of `channels.json` — the per-ChannelItem auto-detected
+     * stream metadata (TSMF / non-TSMF TS / direct-TLV unified). Multiple
+     * calls during a scan or detection burst collapse into a single disk
+     * write. Mirrors the `Service.save()` style.
+     */
+    save(): void {
+        clearTimeout(this._saveTimerId);
+        this._saveTimerId = setTimeout(() => this._save(), 500);
+    }
+
+    /**
+     * Read `channels.json` and apply each record to the matching ChannelItem.
+     * Restores TSMF groupId, the unified streams map, and per-service relTs
+     * mappings so a fresh process can serve content without re-scanning.
+     *
+     * Called once at startup from `server.ts` after `_.channel` is constructed.
+     */
+    async load(): Promise<void> {
+        log.debug("loading channels db...");
+
+        const records = await db.loadChannels(_.configIntegrity.channels);
+        for (const record of records) {
+            const channel = this.get(record.type, record.channel);
+            if (!channel) {
+                continue;
+            }
+            if (record.groupId !== undefined && record.groupId !== null) {
+                channel.setTsmfGroupId(record.groupId);
+            }
+            let firstRelTs: number | undefined;
+            if (record.streams) {
+                for (const entry of record.streams) {
+                    let streamKey: number;
+                    let isTlv: boolean;
+                    let relTs: number | undefined;
+                    if (entry.relTs !== undefined) {
+                        streamKey = entry.relTs;
+                        isTlv = false;
+                        relTs = entry.relTs;
+                    } else if (entry.relTlv !== undefined) {
+                        streamKey = entry.relTlv;
+                        isTlv = true;
+                        relTs = entry.relTlv;
+                    } else {
+                        streamKey = 0;
+                        isTlv = false;
+                        relTs = undefined;
+                    }
+                    channel.setStream(streamKey, entry.streamId, entry.networkId, isTlv, relTs);
+                    if (entry.serviceIds) {
+                        for (const sid of entry.serviceIds) {
+                            channel.addServiceId(sid, streamKey);
+                        }
+                    }
+                    if (firstRelTs === undefined && relTs !== undefined) {
+                        firstRelTs = relTs;
+                    }
+                }
+            }
+            if (firstRelTs !== undefined) {
+                channel.setTsmfRelTs(firstRelTs);
+            }
+        }
+        log.info("loaded channels db (%d records)", records.length);
+    }
+
+    private _save(): void {
+        log.debug("saving channels db...");
+
+        const records: db.ChannelRecord[] = [];
+        for (const channel of this._items) {
+            const record: db.ChannelRecord = {
+                type: channel.type,
+                channel: channel.channel,
+                route: channel.route
+            };
+            let hasData = false;
+
+            if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined &&
+                channel.tsmfGroupId !== 255 && !channel.hasConfigTsmfGroupId) {
+                record.groupId = channel.tsmfGroupId;
+                hasData = true;
+            }
+
+            const streams = channel.getStreams();
+            if (streams.size > 0) {
+                record.streams = [];
+                for (const info of streams.values()) {
+                    const entry: db.ChannelStreamEntry = {
+                        streamId: info.streamId,
+                        networkId: info.networkId
+                    };
+                    if (info.relTs !== undefined) {
+                        if (info.isTlv) {
+                            entry.relTlv = info.relTs;
+                        } else {
+                            entry.relTs = info.relTs;
+                        }
+                    }
+                    if (info.serviceIds.size > 0) {
+                        entry.serviceIds = [...info.serviceIds];
+                    }
+                    record.streams.push(entry);
+                }
+                hasData = true;
+            }
+
+            if (hasData) {
+                records.push(record);
+            }
+        }
+        db.saveChannels(records, _.configIntegrity.channels)
+            .catch(e => log.error("channels db save failed: %s", (e as Error).message));
+    }
+
     private _load(): void {
         log.debug("loading channels...");
 
@@ -101,6 +280,11 @@ export class Channel {
                 return;
             }
 
+            if (channel.route != null && channel.route !== "TER" && channel.route !== "SAT" && channel.route !== "CATV" && channel.route !== "HIKARI") {
+                log.error("invalid type of property `route` in channel#%d (%s) configuration", i, channel.name);
+                return;
+            }
+
             if (typeof channel.channel !== "string") {
                 log.error("invalid type of property `channel` in channel#%d (%s) configuration", i, channel.name);
                 return;
@@ -111,8 +295,12 @@ export class Channel {
                 return;
             }
 
-            if (channel.tsmfRelTs && typeof channel.tsmfRelTs !== "number") {
+            if (channel.tsmfRelTs != null && typeof channel.tsmfRelTs !== "number") {
                 log.error("invalid type of property `tsmfRelTs` in channel#%d (%s) configuration", i, channel.name);
+                return;
+            }
+            if (channel.tsmfGroupId != null && typeof channel.tsmfGroupId !== "number") {
+                log.error("invalid type of property `tsmfGroupId` in channel#%d (%s) configuration", i, channel.name);
                 return;
             }
 
@@ -166,11 +354,22 @@ export class Channel {
                 return;
             }
 
-            if (!this.get(channel.type, channel.channel)) {
+            // channels.yml は tsmfRelTs に統一。runtime は TS/TLV を auto-detect。
+            const configRelSlot = channel.tsmfRelTs;
+            const existing = this.get(channel.type, channel.channel);
+            if (existing) {
+                if (channel.serviceId && configRelSlot !== undefined && configRelSlot !== null) {
+                    existing.addServiceId(channel.serviceId, configRelSlot, true);
+                }
+            } else {
                 if (channel.serviceId) {
                     (<any> channel).name = `${channel.type}:${channel.channel}`;
                 }
-                this.add(new ChannelItem(channel));
+                const item = new ChannelItem(channel);
+                if (channel.serviceId && configRelSlot !== undefined && configRelSlot !== null) {
+                    item.addServiceId(channel.serviceId, configRelSlot, true);
+                }
+                this.add(item);
             }
         });
     }
@@ -181,20 +380,76 @@ export class Channel {
             this._startup = false;
         }
 
-        const addEPGJob = (networkId, service) => {
+        // Wait here (in the parent EPG.Gatherer fn body) — not in the
+        // per-network children's readyFn — to avoid filling standby/running
+        // slots and deadlocking BondedScan.
+        const hasPendingBondedScan = () => _.job.jobs.some(job =>
+            job.status !== "finished" && job.key.startsWith("Service.Add.BondedScan.")
+        );
+        if (hasPendingBondedScan()) {
+            log.info("EPG gathering is yielding to pending bonded scan(s)");
+            while (hasPendingBondedScan()) {
+                await common.sleep(3000);
+            }
+        }
+
+        // MMT/TLV networks: MH-EIT is self-stream only (ARIB STD-B60 7.3.3.9)
+        // so EPG must be gathered per-channel, handled by the second loop.
+        const MMT_NETWORK_IDS = new Set([0x0B, 0x0C]);
+
+        const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
+
+        for (const networkId of networkIds) {
+            if (MMT_NETWORK_IDS.has(networkId)) {
+                continue;
+            }
+            const services = _.service.findByNetworkId(networkId);
+            if (services.length === 0) {
+                continue;
+            }
+            const service = services[0];
+
+            // Distinct ChannelItems carrying this networkId, in channels.yml
+            // order (= implicit priority). Falls through routes on getEPG
+            // failure so EPG gathering picks whichever tuner is free.
+            const candidateChannels: ChannelItem[] = [];
+            const seen = new Set<ChannelItem>();
+            for (const svc of services) {
+                for (const ch of svc.channels) {
+                    if (!seen.has(ch)) {
+                        seen.add(ch);
+                        candidateChannels.push(ch);
+                    }
+                }
+            }
+            if (candidateChannels.length === 0) {
+                continue;
+            }
+
             _.job.add({
                 key: `EPG.Gather.NID.${networkId}`,
                 name: `EPG Gather Network#${networkId}`,
                 isRerunnable: true,
                 fn: async () => {
                     log.info("Network#%d EPG gathering has started", networkId);
-                    try {
-                        await _.tuner.getEPG(service.channel);
-                        log.info("Network#%d EPG gathering has finished", networkId);
-                    } catch (e) {
-                        log.warn("Network#%d EPG gathering has failed [%s]", networkId, e);
-                        throw new Error("EPG gathering failed");
+                    let lastError: unknown = null;
+                    for (const ch of candidateChannels) {
+                        if (!(await _.tuner.readyForJob(ch))) {
+                            continue;
+                        }
+                        try {
+                            log.info("Network#%d EPG gathering using %s/%s", networkId, ch.type, ch.channel);
+                            await _.tuner.getEPG(ch);
+                            log.info("Network#%d EPG gathering has finished", networkId);
+                            return;
+                        } catch (e) {
+                            lastError = e;
+                            log.warn("Network#%d EPG gathering on %s failed [%s], trying next route",
+                                networkId, ch.channel, e);
+                        }
                     }
+                    log.warn("Network#%d EPG gathering has failed on all routes [%s]", networkId, lastError);
+                    throw new Error("EPG gathering failed");
                 },
                 readyFn: async () => {
                     await common.sleep(100);
@@ -224,24 +479,54 @@ export class Channel {
                                 service.epgReady = false;
                             }
                         }
-                        return _.tuner.readyForJob(service.channel);
                     }
+
+                    // Ready when ANY candidate route currently has a free tuner.
+                    for (const ch of candidateChannels) {
+                        if (await _.tuner.readyForJob(ch)) {
+                            return true;
+                        }
+                    }
+                    return false;
                 }
             });
-        };
+        }
 
-        const addBS4KEPGJob = (networkId, service) => {
+        // MMT per-channel EPG gathering. MH-EIT is self-stream only, so each
+        // BS4K channel needs its own job; multi-carrier groups consolidate to
+        // a single primary channel.
+        const seenGroups = new Set<number>();
+        for (const channel of _.channel.items) {
+            const services = channel.getServices();
+            if (services.length === 0) {
+                continue;
+            }
+            if (!MMT_NETWORK_IDS.has(services[0].networkId)) {
+                continue;
+            }
+            const gid = channel.tsmfGroupId;
+            if (gid !== null && gid !== undefined) {
+                if (seenGroups.has(gid)) {
+                    continue;
+                }
+                seenGroups.add(gid);
+            }
+            const service = services[0];
+            const carrierCount = gid !== null && gid !== undefined
+                ? _.channel.items.filter(ch => ch.tsmfGroupId === gid).length
+                : 1;
+
             _.job.add({
-                key: `EPG.Gather.NID.${networkId}.SID.${service.id}`,
-                name: `EPG Gather Network#${networkId} Service#${service.id}`,
+                key: `EPG.Gather.${channel.type}.${channel.channel}`,
+                name: `EPG Gather ${channel.type}/${channel.channel}`,
                 isRerunnable: true,
                 fn: async () => {
-                    log.info("Network#%d Service#%d EPG gathering has started", networkId, service.id);
+                    log.info("Channel#%s EPG gathering has started", channel.name);
                     try {
-                        await _.tuner.getEPG(service.channel);
-                        log.info("Network#%d Service#%d EPG gathering has finished", networkId, service.id);
+                        await _.tuner.getEPG(channel);
+                        log.info("Channel#%s EPG gathering has finished", channel.name);
                     } catch (e) {
-                        log.warn("Network#%d Service#%d EPG gathering has failed [%s]", networkId, service.id, e);
+                        log.warn("Channel#%s EPG gathering has failed [%s]", channel.name, e);
                         throw new Error("EPG gathering failed");
                     }
                 },
@@ -251,46 +536,29 @@ export class Channel {
                     if (service.epgReady === true) {
                         const now = Date.now();
                         if (startup && now - service.epgUpdatedAt < 1000 * 60 * 10) { // 10 mins
-                            log.info("Network#%d Service#%d EPG gathering has skipped because EPG is already up to date (in 10 mins)", networkId, service.id);
+                            log.info("Channel#%s EPG gathering has skipped because EPG is already up to date (in 10 mins)", channel.name);
                             return false;
                         }
                         if (now - service.epgUpdatedAt > 1000 * 60 * 60 * 12) { // 12 hours
-                            log.info("Network#%d Service#%d EPG gathering is resuming forcibly because reached maximum pause time (12 hours)", networkId, service.id);
+                            log.info("Channel#%s EPG gathering is resuming forcibly because reached maximum pause time (12 hours)", channel.name);
                             service.epgReady = false;
                         } else {
-                            const currentPrograms = _.program.findByNetworkIdAndServiceIdAndTime(networkId, service.id, now)
+                            const currentPrograms = _.program.findByNetworkIdAndServiceIdAndTime(service.networkId, service.serviceId, now)
                                 .filter(program => !!program.name && program.name !== "放送休止");
                             if (currentPrograms.length === 0) {
-                                const networkServicePrograms = _.program.findByNetworkIdServiceId(networkId, service.id);
-                                if (networkServicePrograms.length > 0) {
-                                    log.info("Network#%d Service#%d EPG gathering has skipped because broadcast is off", networkId, service.id);
+                                const servicePrograms = _.program.findByNetworkIdServiceId(service.networkId, service.serviceId);
+                                if (servicePrograms.length > 0) {
+                                    log.info("Channel#%s EPG gathering has skipped because broadcast is off", channel.name);
                                     return false;
                                 }
                                 service.epgReady = false;
                             }
                         }
-                        return _.tuner.readyForJob(service.channel);
                     }
+
+                    return _.tuner.readyForJob(channel, carrierCount);
                 }
             });
-        };
-
-        const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
-        for (const networkId of networkIds) {
-            const services = _.service.findByNetworkId(networkId);
-            if (services.length === 0) {
-                continue;
-            }
-
-            const service = services[0];
-            if (service.channel.type === "BS4K") {
-                for (const serviceItem of services) {
-                    addBS4KEPGJob(networkId, serviceItem);
-                }
-            } else {
-                addEPGJob(networkId, service);
-            }
-
         }
     }
 }

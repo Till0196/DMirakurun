@@ -134,7 +134,7 @@ const isEmptyStreamInfo = (streamInfo: StreamInfo): boolean => {
     return Object.keys(streamInfo).length === 0;
 };
 
-const TunersManager: React.FC<{ tuners: TunerDevice[], rpc: RPCClient }> = ({ tuners, rpc }) => {
+const TunersManager: React.FC<{ tuners: TunerDevice[], rpc: RPCClient, multiRouteTypes?: Set<string> }> = ({ tuners, rpc, multiRouteTypes }) => {
     const [killTarget, setKillTarget] = useState<number>(null);
     const [tunersEx, setTunersEx] = useState<TunerDevice[]>([]);
     const [streamDetail, setStreamDetail] = useState<{ userId: string; info: StreamInfo }>(null);
@@ -171,7 +171,7 @@ const TunersManager: React.FC<{ tuners: TunerDevice[], rpc: RPCClient }> = ({ tu
         }
 
         const item: Item = {
-            _group: `#${tuner.index}: ${tuner.name} (${tuner.types.join(", ")})`,
+            _group: `#${tuner.index}: ${tuner.name} (${tuner.types.join(", ")}${tuner.routes && tuner.routes.length > 0 ? ` | ${tuner.routes.join(",")}` : ""})`,
             _kind: "device",
             key: `row-device-${tuner.index}`,
             name: tuner.name,
@@ -223,16 +223,43 @@ const TunersManager: React.FC<{ tuners: TunerDevice[], rpc: RPCClient }> = ({ tu
                         <Text style={{ marginLeft: 8 }}>{user.priority}</Text>
                     </>
                 ),
-                ch: (
-                    <>
-                        <Icon title="Channel" iconName="TVMonitor" />
-                        <Text style={{ marginLeft: 8 }}>{user.streamSetting.channel.type} / {user.streamSetting.channel.channel}</Text>
-                    </>
-                ),
+                ch: (() => {
+                    const setting = user.streamSetting;
+                    const ch = setting?.channel;
+                    const tsmfRelTs = setting?.tsmfRelTs ?? ch?.tsmfRelTs;
+                    const tsmfRelTlv = setting?.tsmfRelTlv;
+                    const tsmfGroupId = ch?.tsmfGroupId;
+                    const chLabel = ch ? `${ch.type} / ${ch.channel}` : "-";
+                    const showRoute = ch && ch.route && multiRouteTypes?.has(ch.type);
+                    const routeLabel = showRoute ? ch.route : "";
+                    const tsmfParts: string[] = [];
+                    if (tsmfRelTlv != null) {
+                        tsmfParts.push(`RelTlv=${tsmfRelTlv}`);
+                    } else if (tsmfRelTs != null) {
+                        tsmfParts.push(`RelTs=${tsmfRelTs}`);
+                    }
+                    if (tsmfGroupId != null) tsmfParts.push(`Group=${tsmfGroupId}`);
+                    const tsmfLabel = tsmfParts.length > 0 ? `TSMF: ${tsmfParts.join(", ")}` : "";
+                    const meta = [routeLabel, tsmfLabel].filter(Boolean).join(" | ");
+                    return (
+                        <>
+                            <Icon title="Channel" iconName="TVMonitor" />
+                            <Text style={{ marginLeft: 8 }}>{chLabel}</Text>
+                            {meta && (
+                                <Text
+                                    style={{ marginLeft: 4 }}
+                                    className={ColorClassNames.neutralTertiaryAlt}
+                                >{` (${meta})`}</Text>
+                            )}
+                        </>
+                    );
+                })(),
                 sid: (
                     <>
                         <Icon title="Service ID" iconName="Filter" />
-                        <Text style={{ marginLeft: 8 }}>{user.streamSetting.serviceId ? `SID: 0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}</Text>
+                        <Text style={{ marginLeft: 8 }}>
+                            {user.streamSetting?.serviceId ? `SID: 0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}
+                        </Text>
                     </>
                 ),
                 streamInfo: isEmptyStreamInfo(user.streamInfo) ? undefined : (

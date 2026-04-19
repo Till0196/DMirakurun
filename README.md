@@ -1,5 +1,5 @@
 # DMirakurun
-dantto4kに対応するためにmmtsDecoderオプションを追加したMirakurunのforkです。
+dantto4kに対応するためにtlvToTsDecoderオプションを追加したMirakurunのforkです。
 
 ## tuners.ymlの例
 ```yaml
@@ -9,8 +9,9 @@ dantto4kに対応するためにmmtsDecoderオプションを追加したMirakur
     - CS
     - BS4K
   decoder: arib-b25-stream-test
-  mmtsDecoder: dantto4k - -
-  # mmtsDecoder: dantto4k - - --smartCardReaderName="Generic USB2.0-CRW [Smart Card Reader Interface] (20070818000000000) 00 00" --disableADTSConversion
+  tlvDecoder: arib-b61-stream-test
+  tlvToTsDecoder: dantto4k - -
+  # tlvToTsDecoder: dantto4k - - --smartCardReaderName="Generic USB2.0-CRW [Smart Card Reader Interface] (20070818000000000) 00 00" --disableADTSConversion
   command: recdvb --lnb 15 --dev 0 <channel> - -
 - name: PT4K-1
   types:
@@ -18,7 +19,8 @@ dantto4kに対応するためにmmtsDecoderオプションを追加したMirakur
     - CS
     - BS4K
   decoder: arib-b25-stream-test
-  mmtsDecoder: dantto4k - -
+  tlvDecoder: arib-b61-stream-test
+  tlvToTsDecoder: dantto4k - -
   command: recdvb --lnb 15 --dev 1 <channel> - -
 ```
 

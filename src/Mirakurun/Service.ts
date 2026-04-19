@@ -19,10 +19,16 @@ import { stat, mkdir, readFile, writeFile } from "fs/promises";
 import { sleep } from "./common";
 import * as log from "./log";
 import * as db from "./db";
+import * as apid from "../../api";
 import _ from "./_";
 import Event from "./Event";
 import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
+import { DiscoveryResult } from "./StreamFilter";
+
+function isDiscoveryResult(result: apid.Service[] | DiscoveryResult): result is DiscoveryResult {
+    return result && !Array.isArray(result) && "groupId" in result && "numberOfCarriers" in result;
+}
 
 const { LOGO_DATA_DIR_PATH } = process.env;
 
@@ -66,29 +72,6 @@ export class Service {
 
         try {
             return await readFile(Service.getLogoDataPath(networkId, logoId));
-        } catch (e) {
-            return null;
-        }
-    }
-
-    static async getLogoType(networkId: number, logoId: number): Promise<number | null> {
-        try {
-            const data = await readFile(Service.getLogoDataPath(networkId, logoId));
-
-            if (data.length < 24 || data[0] !== 0x89 || data[1] !== 0x50 || data[2] !== 0x4E || data[3] !== 0x47) {
-                return null;
-            }
-
-            const width = data.readUInt32BE(16);
-            const height = data.readUInt32BE(20);
-
-            if (width === 64 && height === 36) {
-                return 0x05;
-            } else if (width === 256 && height === 144) {
-                return 0x07;
-            }
-
-            return null;
         } catch (e) {
             return null;
         }
@@ -170,16 +153,21 @@ export class Service {
         return this.get(id, serviceId) !== null;
     }
 
+    // Match on `(networkId, streamId)` via the channel's stream entries so
+    // that services reachable via multiple routes (e.g. SAT + CATV) are
+    // found regardless of which route was registered first.
     findByChannel(channel: ChannelItem): ServiceItem[] {
-        const items = [];
-
-        const l = this._items.length;
-        for (let i = 0; i < l; i++) {
-            if (this._items[i].channel === channel) {
-                items.push(this._items[i]);
+        const items: ServiceItem[] = [];
+        for (const entry of channel.getStreams().values()) {
+            if (entry.streamId === 0) {
+                continue;
+            }
+            for (const service of this._items) {
+                if (service.networkId === entry.networkId && service.streamId === entry.streamId) {
+                    items.push(service);
+                }
             }
         }
-
         return items;
     }
 
@@ -221,34 +209,26 @@ export class Service {
 
         const services = await db.loadServices(_.configIntegrity.channels, true);
         for (const service of services) {
-            const channelItem = _.channel.get(service.channel.type, service.channel.channel);
-
-            if (channelItem === null) {
+            if (service.streamId === undefined || service.streamId === 0) {
                 updated = true;
-                return;
+                continue;
             }
 
             if (service.networkId === undefined || service.serviceId === undefined) {
                 updated = true;
-                return;
+                continue;
             }
 
-            // migrate logo data
-            if (service.logoData) {
-                const logoDataPath = Service.getLogoDataPath(service.networkId, service.logoId);
-                log.warn("migrating deprecated property `logoData` to file `%s` in service#%d (%s) db", logoDataPath, service.id, service.name);
-                Service.saveLogoData(service.networkId, service.logoId, Buffer.from(service.logoData, "base64"));
-
-                // delete duplicates
-                services.filter(s => s.networkId === service.networkId && s.logoId === service.logoId).forEach(s => {
-                    delete s.logoData;
-                });
+            // Drop services whose carrier no longer exists in channels.yml.
+            const matchingChannels = _.channel.findByStreamId(service.networkId, service.streamId);
+            if (matchingChannels.length === 0) {
                 updated = true;
+                continue;
             }
 
             this.add(
                 new ServiceItem(
-                    channelItem,
+                    service.streamId,
                     service.networkId,
                     service.serviceId,
                     service.name,
@@ -300,6 +280,51 @@ export class Service {
 
                     this._queueScanToAdd(channel);
                 }
+
+                // Fallback: after all initial scans finish, queue bonded scans for
+                // groups that were discovered but never got enough carriers.
+                _.job.add({
+                    key: "Service.Add.BondedScan.Fallback",
+                    name: "Service Add Bonded Scan [Fallback]",
+                    fn: async () => {
+                        const groupMap = new Map<number, ChannelItem[]>();
+                        for (const ch of _.channel.items) {
+                            if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined) {
+                                if (!groupMap.has(ch.tsmfGroupId)) {
+                                    groupMap.set(ch.tsmfGroupId, []);
+                                }
+                                groupMap.get(ch.tsmfGroupId).push(ch);
+                            }
+                        }
+                        for (const [groupId, channels] of groupMap) {
+                            if (channels.some(ch => this.findByChannel(ch).length > 0)) {
+                                continue;
+                            }
+                            const bondedKey = `Service.Add.BondedScan.group${groupId}`;
+                            if (_.job.jobs.some(j => j.key === bondedKey)) {
+                                continue;
+                            }
+                            if (channels.length > 1) {
+                                log.info("Fallback: queueing bonded scan for group %d with %d carriers",
+                                    groupId, channels.length);
+                                this._queueBondedScan(groupId, channels);
+                            }
+                        }
+                    },
+                    readyFn: async () => {
+                        while (true) {
+                            const pending = _.job.jobs.some(job =>
+                                job.status !== "finished" &&
+                                job.key.startsWith("Service.Add.Scan.") &&
+                                job.key !== "Service.Add.Scan.Find-Channels"
+                            );
+                            if (!pending) {
+                                return true;
+                            }
+                            await sleep(3000);
+                        }
+                    }
+                });
             },
             readyFn: async () => {
                 // wait for all Service.Check-Add.* jobs to finish
@@ -341,11 +366,32 @@ export class Service {
 
     private _save(): void {
         log.debug("saving services...");
-
-        db.saveServices(
-            this._items.map(service => service.export()),
-            _.configIntegrity.channels
-        );
+        const records = this._items
+            .filter(s => s.streamId !== undefined && s.streamId !== 0)
+            .map(s => {
+                const rec: any = {
+                    id: s.id,
+                    serviceId: s.serviceId,
+                    networkId: s.networkId,
+                    streamId: s.streamId,
+                    name: s.name,
+                    type: s.type
+                };
+                if (s.logoId !== undefined) {
+                    rec.logoId = s.logoId;
+                }
+                if (s.remoteControlKeyId !== undefined) {
+                    rec.remoteControlKeyId = s.remoteControlKeyId;
+                }
+                if (s.epgReady !== undefined) {
+                    rec.epgReady = s.epgReady;
+                }
+                if (s.epgUpdatedAt !== undefined) {
+                    rec.epgUpdatedAt = s.epgUpdatedAt;
+                }
+                return rec;
+            });
+        db.saveServices(records, _.configIntegrity.channels);
     }
 
     private _queueCheckToAdd(channel: ChannelItem, serviceId: number): void {
@@ -367,16 +413,23 @@ export class Service {
             fn: async () => this._scan(channel, true),
             readyFn: () => _.tuner.readyForJob(channel),
             retryOnFail: true,
-            retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3), // (12時間 / retryDelay) = 12時間～
+            retryMax: (1000 * 60 * 60 * 12) / (1000 * 60 * 3),
             retryDelay: 1000 * 60 * 3
         });
     }
 
     private _queueScanToUpdate(channel: ChannelItem): void {
+        // For TSMF groups, only the first channel in the group scans
+        if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
+            const first = _.channel.items.find(item => item.isSameTsmfGroup(channel));
+            if (first && first.channel !== channel.channel) {
+                return;
+            }
+        }
         _.job.add({
             key: `Service.Update.Scan.${channel.type}.${channel.channel}`,
             name: `Service Update Scan ${channel.type}/${channel.channel}`,
-            fn: async () => this._scan(channel, false),
+            fn: async () => this._scan(channel, false, false),
             readyFn: () => _.tuner.readyForJob(channel)
         });
     }
@@ -384,15 +437,21 @@ export class Service {
     private async _checkToAdd(channel: ChannelItem, serviceId: number): Promise<void> {
         log.info("ChannelItem#'%s' serviceId=%d check has started", channel.name, serviceId);
 
-        let services: Awaited<ReturnType<typeof _.tuner.getServices>>;
+        let result: Awaited<ReturnType<typeof _.tuner.discoverServices>>;
         try {
-            services = await _.tuner.getServices(channel);
+            result = await _.tuner.discoverServices(channel, { serviceId });
         } catch (e) {
             log.warn("ChannelItem#'%s' serviceId=%d check has failed [%s]", channel.name, serviceId, e);
             throw new Error("Service check failed");
         }
 
-        const service = services.find(service => service.serviceId === serviceId);
+        if (isDiscoveryResult(result)) {
+            log.warn("ChannelItem#'%s' serviceId=%d check: multi-carrier (groupId=%d), deferring to bonded scan",
+                channel.name, serviceId, result.groupId);
+            throw new Error("Service check failed: multi-carrier channel requires bonded scan");
+        }
+
+        const service = result.find(service => service.serviceId === serviceId);
         if (!service) {
             log.warn("ChannelItem#'%s' serviceId=%d check has failed [no service]", channel.name, serviceId);
 
@@ -403,24 +462,103 @@ export class Service {
 
         log.debug("ChannelItem#'%s' serviceId=%d: %s", channel.name, serviceId, JSON.stringify(service, null, "  "));
 
+        const streamEntry = channel.getStreamForService(service.serviceId);
+        if (!streamEntry || streamEntry.streamId === 0) {
+            log.warn("ChannelItem#'%s' serviceId=%d has no streamId yet — skipping", channel.name, serviceId);
+            return;
+        }
+
         this.add(
-            new ServiceItem(channel, service.networkId, service.serviceId, service.name, service.type, service.logoId)
+            new ServiceItem(streamEntry.streamId, service.networkId, service.serviceId, service.name, service.type, service.logoId)
         );
+        _.channel.save();
 
         log.info("ChannelItem#'%s' serviceId=%d check has finished", channel.name, serviceId);
     }
 
-    private async _scan(channel: ChannelItem, add: boolean): Promise<void> {
-        log.info("ChannelItem#'%s' service scan has started", channel.name);
+    private async _scan(channel: ChannelItem, add: boolean, tsmfDiscovery = true): Promise<void> {
+        log.info("ChannelItem#'%s' service scan has started (tsmfDiscovery=%s)", channel.name, tsmfDiscovery);
 
-        let services: Awaited<ReturnType<typeof _.tuner.getServices>>;
+        let result: Awaited<ReturnType<typeof _.tuner.discoverServices>>;
         try {
-            services = await _.tuner.getServices(channel);
+            result = await _.tuner.discoverServices(channel, { tsmfDiscovery });
         } catch (e) {
             log.warn("ChannelItem#'%s' service scan has failed [%s]", channel.name, e);
             throw new Error("Service scan failed");
         }
 
+        if (isDiscoveryResult(result)) {
+            // Multi-carrier: groupId saved by StreamFilter, check group completeness
+            const { groupId, numberOfCarriers } = result;
+            log.info("ChannelItem#'%s' discovered groupId=%d numberOfCarriers=%d",
+                channel.name, groupId, numberOfCarriers);
+            const groupChannels = _.channel.items.filter(item =>
+                item.tsmfGroupId === groupId
+            );
+            log.info("Group %d: %d/%d carriers discovered", groupId, groupChannels.length, numberOfCarriers);
+            if (groupChannels.length >= numberOfCarriers) {
+                this._queueBondedScan(groupId, groupChannels);
+            }
+            _.channel.save();
+            return;
+        }
+
+        this._applyScannedServices(channel, result, add);
+
+        // After bonded scan completes, propagate groupId to sibling channels
+        // and abort their individual scan jobs. Also save to persist groupId.
+        if (!tsmfDiscovery && channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
+            const groupChannels = _.channel.items.filter(item =>
+                item.type === channel.type &&
+                item.channel !== channel.channel &&
+                item.isSameTsmfGroup(channel)
+            );
+            for (const ch of groupChannels) {
+                if (ch.tsmfGroupId !== channel.tsmfGroupId) {
+                    ch.setTsmfGroupId(channel.tsmfGroupId);
+                }
+                const key = `Service.Add.Scan.${ch.type}.${ch.channel}`;
+                _.job.abortByKey(key, "group primary scan completed");
+            }
+            this.save();
+        }
+        _.channel.save();
+
+        log.info("ChannelItem#'%s' service scan has finished", channel.name);
+    }
+
+    private _queueBondedScan(groupId: number, groupChannels: ChannelItem[]): void {
+        const primaryChannel = groupChannels[0];
+        const key = `Service.Add.BondedScan.group${groupId}`;
+        const carrierCount = groupChannels.length;
+
+        _.job.add({
+            key,
+            name: `Service Add Bonded Scan group${groupId} (${carrierCount} carriers)`,
+            fn: async () => this._scan(primaryChannel, true, false),
+            readyFn: async () => {
+                // Wait for all initial scan jobs to finish first,
+                // so all tuners are free for multi-carrier bonding.
+                while (_.job.jobs.some(j =>
+                    j.status !== "finished" &&
+                    j.key.startsWith("Service.Add.Scan.") &&
+                    j.key !== "Service.Add.Scan.Find-Channels"
+                )) {
+                    await sleep(3000);
+                }
+                return _.tuner.readyForJob(primaryChannel, carrierCount);
+            },
+            retryOnFail: true,
+            retryMax: 3,
+            retryDelay: 1000 * 60
+        });
+    }
+
+    private _applyScannedServices(
+        channel: ChannelItem,
+        services: apid.Service[],
+        add: boolean
+    ): void {
         log.debug("ChannelItem#'%s' services: %s", channel.name, JSON.stringify(services, null, "  "));
 
         services.forEach(service => {
@@ -433,9 +571,19 @@ export class Service {
                 }
                 item.remoteControlKeyId = service.remoteControlKeyId;
             } else if (add === true) {
+                // Resolve streamId from the channel's _streams entry that
+                // contains this serviceId. The PAT/SDT/TSMF detection runs
+                // before service emit (TSFilter._onSDT now emits streamInfo
+                // first, then services), so the entry should be present.
+                const streamEntry = channel.getStreamForService(service.serviceId);
+                if (!streamEntry || streamEntry.streamId === 0) {
+                    log.warn("ChannelItem#'%s' service serviceId=%d has no streamId yet — skipping",
+                        channel.name, service.serviceId);
+                    return;
+                }
                 this.add(
                     new ServiceItem(
-                        channel,
+                        streamEntry.streamId,
                         service.networkId,
                         service.serviceId,
                         service.name,
@@ -446,9 +594,8 @@ export class Service {
                 );
             }
         });
-
-        log.info("ChannelItem#'%s' service scan has finished", channel.name);
     }
+
 }
 
 export default Service;

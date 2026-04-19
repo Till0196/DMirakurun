@@ -238,6 +238,26 @@ export class Job {
         return false;
     }
 
+    abortByKey(key: string, reason: string): boolean {
+        for (const job of [...this._runningJobItemSet, ...this._standbyJobItems, ...this._queuedJobItems]) {
+            if (job.key === key && !job.ac.signal.aborted) {
+                job.ac.abort(reason);
+                log.info(`Job#abortByKey() abort requested "${job.key}" (id: ${job.id})`);
+
+                let status: apid.JobItem["status"] = "queued";
+                if (this._runningJobItemSet.has(job as RunningJobItem)) {
+                    status = "running";
+                } else if (this._standbyJobItems.includes(job)) {
+                    status = "standby";
+                }
+                Event.emit("job", "update", jobToJSON(status, job));
+
+                return true;
+            }
+        }
+        return false;
+    }
+
     addSchedule(schedule: ScheduleItem): void {
         // ignore duplicated schedule by key
         for (const job of this._scheduleItemSet) {

@@ -78,6 +78,8 @@ definitions:
         type: string
       tsmfRelTs:
         type: integer
+      tsmfGroupId:
+        type: integer
       services:
         type: array
         items:
@@ -631,6 +633,8 @@ definitions:
       serviceId:
         $ref: '#/definitions/ServiceId'
       tsmfRelTs:
+        type: integer
+      tsmfGroupId:
         type: integer
       commandVars:
         type: object

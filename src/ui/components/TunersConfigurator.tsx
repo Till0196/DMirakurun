@@ -37,7 +37,7 @@ import {
     ActionButton
 } from "@fluentui/react";
 import { UIState } from "../index";
-import { ConfigTuners, ChannelType } from "../../../api";
+import { ConfigTuners, ChannelType, ChannelRoute } from "../../../api";
 
 const configAPI = "/api/config/tuners";
 
@@ -46,6 +46,7 @@ interface Item {
     enable: JSX.Element;
     name: JSX.Element;
     types: JSX.Element;
+    routes: JSX.Element;
     options: JSX.Element;
     controls: JSX.Element;
 }
@@ -70,7 +71,14 @@ const columns: IColumn[] = [
         name: "Types",
         fieldName: "types",
         minWidth: 60,
-        maxWidth: 105
+        maxWidth: 120
+    },
+    {
+        key: "col-routes",
+        name: "Routes",
+        fieldName: "routes",
+        minWidth: 70,
+        maxWidth: 120
     },
     {
         key: "col-options",
@@ -93,6 +101,11 @@ const dummySelection = new Selection(); // dummy
 const typesIndex = ["GR", "BS", "CS", "SKY", "BS4K"];
 function sortTypes(types: ChannelType[]): ChannelType[] {
     return types.sort((a, b) => typesIndex.indexOf(a) - typesIndex.indexOf(b));
+}
+
+const routesIndex = ["TER", "SAT", "CATV", "HIKARI"];
+function sortRoutes(routes: ChannelRoute[]): ChannelRoute[] {
+    return routes.sort((a, b) => routesIndex.indexOf(a) - routesIndex.indexOf(b));
 }
 
 const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> = ({ uiState, uiStateEvents }) => {
@@ -147,7 +160,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
             ),
             types: (
                 <Dropdown
-                    styles={{ root: { display: "inline-block", minWidth: 70 } }}
+                    styles={{ root: { display: "block", width: "100%" } }}
                     multiSelect
                     options={[
                         { key: "GR", text: "GR" },
@@ -163,6 +176,31 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                             tuner.types = sortTypes(tuner.types);
                         } else {
                             tuner.types = tuner.types.filter(type => type !== option.key);
+                        }
+                        setEditing([...editing]);
+                    }}
+                />
+            ),
+            routes: (
+                <Dropdown
+                    styles={{ root: { display: "block", width: "100%" } }}
+                    multiSelect
+                    options={[
+                        { key: "TER", text: "TER" },
+                        { key: "SAT", text: "SAT" },
+                        { key: "CATV", text: "CATV" },
+                        { key: "HIKARI", text: "HIKARI" }
+                    ]}
+                    selectedKeys={tuner.routes ?? []}
+                    onChange={(ev, option) => {
+                        const current = tuner.routes ?? [];
+                        if (option.selected === true) {
+                            tuner.routes = sortRoutes([...current, option.key as ChannelRoute]);
+                        } else {
+                            tuner.routes = current.filter(route => route !== option.key);
+                            if (tuner.routes.length === 0) {
+                                delete tuner.routes;
+                            }
                         }
                         setEditing([...editing]);
                     }}
@@ -260,13 +298,27 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                     )}
                     {(!tuner.remoteMirakurunHost) && (
                         <TextField
-                            label="MMTS Decoder:"
-                            value={tuner.mmtsDecoder || ""}
+                            label="TLV Decoder:"
+                            value={tuner.tlvDecoder || ""}
                             onChange={(ev, newValue) => {
                                 if (newValue === "") {
-                                    delete tuner.mmtsDecoder;
+                                    delete tuner.tlvDecoder;
                                 } else {
-                                    tuner.mmtsDecoder = newValue;
+                                    tuner.tlvDecoder = newValue;
+                                }
+                                setEditing([...editing]);
+                            }}
+                        />
+                    )}
+                    {(!tuner.remoteMirakurunHost) && (
+                        <TextField
+                            label="TLV to TS Decoder:"
+                            value={tuner.tlvToTsDecoder || ""}
+                            onChange={(ev, newValue) => {
+                                if (newValue === "") {
+                                    delete tuner.tlvToTsDecoder;
+                                } else {
+                                    tuner.tlvToTsDecoder = newValue;
                                 }
                                 setEditing([...editing]);
                             }}
@@ -341,7 +393,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                                     command: `dvbv5-zap -a ${i} -c ./config/dvbconf-for-isdb/conf/dvbv5_channels_isdbs.conf -r -P <channel>`,
                                     dvbDevicePath: `/dev/dvb/adapter${i}/dvr0`,
                                     decoder: "arib-b25-stream-test",
-                                    mmtsDecoder: "dantto4k - -",
+                                    tlvToTsDecoder: "dantto4k - -",
                                     isDisabled: true
                                 });
                                 setEditing([...editing]);

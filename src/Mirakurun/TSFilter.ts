@@ -34,7 +34,6 @@ interface TSFilterOptions {
     readonly parseNIT?: boolean;
     readonly parseSDT?: boolean;
     readonly parseEIT?: boolean;
-    readonly tsmfRelTs?: number;
 }
 
 const PACKET_SIZE = 188;
@@ -113,12 +112,6 @@ export default class TSFilter extends EventEmitter {
     private _enableParseCDT = false;
     private _enableParseDSMCC = false;
 
-    // tsmf
-    private _tsmfEnableTsmfSplit = false;
-    private _tsmfSlotCounter = -1;
-    private _tsmfRelativeStreamNumber: number[] = [];
-    private _tsmfTsNumber = 0;
-
     // aribts
     private _parser = new TsStreamLite();
 
@@ -140,6 +133,12 @@ export default class TSFilter extends EventEmitter {
     private _providePids: Set<number> = null; // `null` to provides all
     private _parsePids = new Set<number>();
     private _tsid = -1;
+    /**
+     * Set once the first SDT for the current PAT-confirmed `_tsid` has been
+     * processed, signalling that we have emitted the `streamInfo` event with
+     * `{tsid, networkId}`. Subsequent SDTs do not re-emit.
+     */
+    private _streamInfoEmitted = false;
     private _serviceIds = new Set<number>();
     private _parseServiceIds = new Set<number>();
     private _pmtPid = -1;
@@ -150,18 +149,6 @@ export default class TSFilter extends EventEmitter {
     private _essEsPids = new Set<number>();
     private _networkName = "";
     private _dlDataMap = new Map<number, DownloadData>();
-    private _cdtDataMap = new Map<string, {
-        networkId: number;
-        logoId: number;
-        preferredLogoType: number; // Highest quality logo type seen (0x05 or 0x07)
-        savedLogoType: number | null; // Logo type already saved (null if not saved yet)
-        receivingData: Map<string, { // key: `${downloadDataId}_${logoType}`
-            logoType: number;
-            lastSectionNumber: number;
-            receivedSections: Set<number>;
-            sections: Map<number, Buffer>;
-        }>;
-    }>(); // key: `${networkId}_${logoId}`
     private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
     private _provideEventLastDetectedAt = -1;
@@ -177,12 +164,6 @@ export default class TSFilter extends EventEmitter {
 
     constructor(options: TSFilterOptions) {
         super();
-
-        const enabletsmf = options.tsmfRelTs || 0;
-        if (enabletsmf !== 0) {
-                this._tsmfEnableTsmfSplit = true;
-                this._tsmfTsNumber = options.tsmfRelTs;
-        }
 
         this._targetNetworkId = options.networkId || null;
         this._provideServiceId = options.serviceId || null;
@@ -334,35 +315,6 @@ export default class TSFilter extends EventEmitter {
 
         for (let packet of packets) {
             const pid = packet.readUInt16BE(1) & 0x1FFF;
-
-            // tsmf
-            if (this._tsmfEnableTsmfSplit) {
-                if (pid === 0x002F) {
-                    const tsmfFlameSync = packet.readUInt16BE(4) & 0x1FFF;
-                    if (tsmfFlameSync !== 0x1A86 && tsmfFlameSync !== 0x0579) {
-                        continue;
-                    }
-
-                    this._tsmfRelativeStreamNumber = [];
-                    for (let i = 0; i < 26; i++) {
-                        this._tsmfRelativeStreamNumber.push((packet[73 + i] & 0xf0) >> 4);
-                        this._tsmfRelativeStreamNumber.push(packet[73 + i] & 0x0f);
-                    }
-
-                    this._tsmfSlotCounter = 0;
-                    continue;
-                }
-
-                if (this._tsmfSlotCounter < 0 || this._tsmfSlotCounter > 51) {
-                    continue;
-                }
-
-                this._tsmfSlotCounter++;
-
-                if (this._tsmfRelativeStreamNumber[this._tsmfSlotCounter - 1] !== this._tsmfTsNumber) {
-                    continue;
-                }
-            }
 
             // NULL
             if (pid === 0x1FFF) {
@@ -678,6 +630,23 @@ export default class TSFilter extends EventEmitter {
             }
         }
 
+        // Emit a one-shot streamInfo event BEFORE the services event so the
+        // StreamFilter listener has time to write the (streamId, networkId)
+        // entry into ChannelItem._streams[0]. Downstream code (Service
+        // ._applyScannedServices) reads `channel.getStreamForService(serviceId)
+        // ?.streamId` to derive the persisted streamId for the new schema —
+        // if streamInfo emitted AFTER services, that lookup would race with
+        // the listener and return 0. The TSID comes from PAT (`_tsid`); the
+        // networkId comes from this SDT (`original_network_id`). Both must
+        // be valid before we emit.
+        if (!this._streamInfoEmitted && this._tsid !== -1) {
+            this._streamInfoEmitted = true;
+            this.emit("streamInfo", {
+                tsid: this._tsid,
+                networkId: data.original_network_id
+            });
+        }
+
         this.emit("services", _services);
 
         if (this._parsePids.has(pid)) {
@@ -744,114 +713,19 @@ export default class TSFilter extends EventEmitter {
         this._streamTime = getTimeFromMJD(data.JST_time);
     }
 
-    private async _onCDT(pid: number, data: any): Promise<void> {
-        if (data.data_type !== 0x01) {
-            return;
-        }
-
-        // Logo - each section has its own logo_type header
-        const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
-        const logoType: number = dataModule.logo_type;
-
-        // Accept logo_type 0x05 (64x36) and 0x07 (256x144)
-        if (logoType !== 0x05 && logoType !== 0x07) {
-            return;
-        }
-
-        const networkId: number = data.original_network_id;
-        const logoId: number = dataModule.logo_id;
-        const logoKey = `${networkId}_${logoId}`;
-        const downloadDataId: number = data.download_data_id;
-        const sectionNumber: number = data.section_number;
-        const lastSectionNumber: number = data.last_section_number;
-
-        let logoData = this._cdtDataMap.get(logoKey);
-        if (!logoData) {
-            logoData = {
-                networkId,
-                logoId,
-                preferredLogoType: logoType,
-                savedLogoType: null,
-                receivingData: new Map()
-            };
-            this._cdtDataMap.set(logoKey, logoData);
-        }
-
-        // Update preferred logo type if we found higher quality
-        if (logoType > logoData.preferredLogoType) {
-            for (const [key, receiving] of logoData.receivingData.entries()) {
-                if (receiving.logoType < logoType) {
-                    logoData.receivingData.delete(key);
-                    log.debug("TSFilter#_onCDT: discarding lower quality logo data (networkId=%d, logoId=%d, logoType=0x%s) in favor of 0x%s",
-                        networkId, logoId, receiving.logoType.toString(16).padStart(2, "0"), logoType.toString(16).padStart(2, "0"));
-                }
+    private _onCDT(pid: number, data: any): void {
+        if (data.data_type === 0x01) {
+            // Logo
+            const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
+            if (dataModule.logo_type !== 0x05) {
+                return;
             }
-            logoData.preferredLogoType = logoType;
+
+            log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d)", data.original_network_id, dataModule.logo_id);
+
+            const logoData = TsLogo.decode(dataModule.data_byte);
+            Service.saveLogoData(data.original_network_id, dataModule.logo_id, logoData);
         }
-
-        if (logoType < logoData.preferredLogoType) {
-            return;
-        }
-
-        if (logoData.savedLogoType !== null && logoData.savedLogoType >= logoType) {
-            return;
-        }
-
-        // On first check, verify existing logo file on disk
-        if (logoData.savedLogoType === null) {
-            const existingLogoType = await Service.getLogoType(networkId, logoId);
-            if (existingLogoType !== null) {
-                logoData.savedLogoType = existingLogoType;
-                if (existingLogoType >= logoType) {
-                    log.debug("TSFilter#_onCDT: skipping logo data save, existing file has same or better quality (networkId=%d, logoId=%d, existing=0x%s, current=0x%s)",
-                        networkId, logoId, existingLogoType.toString(16).padStart(2, "0"), logoType.toString(16).padStart(2, "0"));
-                    return;
-                }
-            }
-        }
-
-        const receivingKey = `${downloadDataId}_${logoType}`;
-        let receiving = logoData.receivingData.get(receivingKey);
-
-        if (!receiving) {
-            receiving = {
-                logoType,
-                lastSectionNumber,
-                receivedSections: new Set<number>(),
-                sections: new Map<number, Buffer>()
-            };
-            logoData.receivingData.set(receivingKey, receiving);
-        }
-
-        receiving.receivedSections.add(sectionNumber);
-        receiving.sections.set(sectionNumber, dataModule.data_byte);
-
-        const sortedSections = Array.from(receiving.sections.entries()).sort((a, b) => a[0] - b[0]);
-        const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
-
-        // Verify PNG signature (89 50 4E 47 0D 0A 1A 0A)
-        const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-        if (combinedData.length < 8 || !combinedData.subarray(0, 8).equals(pngSignature)) {
-            return;
-        }
-
-        // Check for PNG IEND chunk at the end (49 45 4E 44 AE 42 60 82)
-        const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
-        if (combinedData.length < 8 || !combinedData.subarray(-8).equals(iendSignature)) {
-            return;
-        }
-
-        // Complete PNG received - save
-        logoData.receivingData.delete(receivingKey);
-
-        log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s, size=%d)", networkId, logoId, logoType.toString(16).padStart(2, "0"), combinedData.length);
-
-        logoData.savedLogoType = logoType;
-
-        // logo_type 0x05 uses fixed CLUT, needs TsLogo.decode to add PLTE/tRNS chunks
-        // logo_type 0x06/0x07 already contains PLTE chunk, use as-is
-        const pngData = logoType === 0x05 ? TsLogo.decode(combinedData) : combinedData;
-        Service.saveLogoData(networkId, logoId, pngData);
     }
 
     private _onDSMCC(pid: number, data: any): void {
@@ -1193,13 +1067,8 @@ export default class TSFilter extends EventEmitter {
             this._epgReady = true;
             this._clearEpgState();
 
-            const service = _.service.get(this._targetNetworkId, serviceId);
-            if (service.channel.type === "BS4K") {
+            for (const service of _.service.findByNetworkId(this._targetNetworkId)) {
                 service.epgReady = true;
-            } else {
-                for (const serviceItem of _.service.findByNetworkId(this._targetNetworkId)) {
-                    serviceItem.epgReady = true;
-                }
             }
 
             process.nextTick(() => this.emit("epgReady"));
