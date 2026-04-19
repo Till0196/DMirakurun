@@ -44,11 +44,6 @@ interface StreamSetting {
     tsmfRelTs?: number;
     tsmfRelTlv?: number;
     tsmfDiscovery?: boolean;
-    /**
-     * Discard the first `drainBytes` bytes of the stream before forwarding.
-     * Used by background tasks (scan / EPG gather) to skip past stale data
-     * left over in the kernel DVB DVR ring from the previous tune.
-     */
     drainBytes?: number;
 }
 
@@ -63,19 +58,6 @@ export const channelTypes: apid.ChannelType[] = ["GR", "BS", "CS", "SKY", "BS4K"
 
 export const channelRoutes: apid.ChannelRoute[] = ["TER", "SAT", "CATV", "HIKARI"];
 
-/**
- * Default transmission path for a logical channel type. Used when a
- * channels.yml entry does not declare an explicit `route`.
- *
- *   GR  → TER (terrestrial antenna direct)
- *   BS  → SAT (satellite antenna direct)
- *   CS  → SAT
- *   SKY → SAT
- *   BS4K → SAT
- *
- * Operators on cable / fiber networks override this per-channel in
- * channels.yml (e.g. `route: CATV`).
- */
 export function defaultRouteForType(type: apid.ChannelType): apid.ChannelRoute {
     switch (type) {
         case "GR":

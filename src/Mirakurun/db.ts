@@ -24,8 +24,6 @@ import Queue from "promise-queue";
 import * as apid from "../../api";
 import * as log from "./log";
 
-// On-disk shape for `services.json`. Channel is resolved at load time from
-// the `(networkId, streamId)` pair via `Channel.findByStreamId`.
 interface Service {
     id: number;
     serviceId: number;
@@ -46,9 +44,6 @@ export interface Program extends apid.Program {
     _isFollowing?: true;
 }
 
-// channels.json — auto-detected per-ChannelItem stream metadata.
-// `relTs` and `relTlv` are mutually exclusive (TS slot vs TLV slot);
-// neither set = non-TSMF TS or direct TLV (re-detected on first stream).
 export interface ChannelStreamEntry {
     streamId: number;
     networkId: number;
@@ -60,7 +55,6 @@ export interface ChannelStreamEntry {
 export interface ChannelRecord {
     type: apid.ChannelType;
     channel: string;
-    // Restored from channels.yml at startup; informational on disk only.
     route?: apid.ChannelRoute;
     groupId?: number;
     streams?: ChannelStreamEntry[];
@@ -89,10 +83,6 @@ export async function loadChannels(integrity: string, sync = false): Promise<Cha
 export async function saveChannels(data: ChannelRecord[], integrity: string): Promise<void> {
     return save(process.env.CHANNELS_DB_PATH, data, integrity);
 }
-
-// =============================================================================
-// shared raw I/O
-// =============================================================================
 
 // use queue because async fs ops is not thread safe
 const dbIOQueue = new Queue(1, Infinity);

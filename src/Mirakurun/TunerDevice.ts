@@ -28,7 +28,6 @@ import TSMFFilter from "./TSMFFilter";
 import { TSMFCarrierBonding } from "./TSMF";
 import Client, { ProgramsQuery } from "../client";
 
-/** Surface that TunerDevice uses for both TSFilter and BS4K-aware StreamFilter. */
 interface StreamSink {
     readonly closed: boolean;
     write(chunk: Buffer): boolean | void;
@@ -45,7 +44,6 @@ interface User extends common.User {
 
 interface StartStreamOptions {
     suppressGroupCombine?: boolean;
-    /** Discard the first N bytes of cat/process stdout (kernel DVR ring drain). */
     drainBytes?: number;
 }
 
