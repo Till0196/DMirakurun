@@ -31,6 +31,7 @@ export const parameters = [
     {
         in: "path",
         name: "channel",
+        description: "Channel name, or numeric streamId.",
         type: "string",
         required: true
     },

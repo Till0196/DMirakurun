@@ -94,6 +94,14 @@ definitions:
       - SKY
       - BS4K
 
+  ChannelRoute:
+    type: string
+    enum:
+      - TER
+      - SAT
+      - CATV
+      - HIKARI
+
   # service -------------------------------------------------------------------
 
   Service:
@@ -597,6 +605,10 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/ChannelType'
+      routes:
+        type: array
+        items:
+          $ref: '#/definitions/ChannelRoute'
       command:
         type: string
       dvbDevicePath:
@@ -608,6 +620,10 @@ definitions:
       remoteMirakurunDecoder:
         type: boolean
       decoder:
+        type: string
+      tlvDecoder:
+        type: string
+      tlvToTsDecoder:
         type: string
       isDisabled:
         type: boolean
@@ -628,6 +644,8 @@ definitions:
         type: string
       type:
         $ref: '#/definitions/ChannelType'
+      route:
+        $ref: '#/definitions/ChannelRoute'
       channel:
         type: string
       serviceId:
