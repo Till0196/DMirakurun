@@ -32,6 +32,8 @@ RUN apt-get update && \
 
 FROM runtime AS dev
 COPY . /app
+CMD ["./docker/container-init.sh"]
+EXPOSE 40772 9229
 
 FROM runtime AS release
 COPY --from=build /app /app

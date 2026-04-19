@@ -22,8 +22,8 @@ services:
       #hostname: localhost
       # --
       # for debug
-      #LOG_LEVEL: "3"
-      #DEBUG: "true"
+      LOG_LEVEL: "${LOG_LEVEL:-2}"
+      DEBUG: "${DEBUG:-0}"
 
     # comment out `devices:` if you commented out all devices
     # `devices` を全てコメントアウトした場合は `devices:` もコメントアウト
@@ -43,6 +43,10 @@ services:
       - /opt/mirakurun/config:/app-config
       - /opt/mirakurun/data:/app-data
 
+      # for development purposes
+      # 開発用
+      - mirakurun_node_modules:/app/node_modules
+
       # if use host's pcscd (DISABLE_PCSCD=1)
       # ホストの pcscd を使う場合 (DISABLE_PCSCD=1)
       #- /var/run/pcscd/pcscd.comm:/var/run/pcscd/pcscd.comm
@@ -55,6 +59,32 @@ services:
     build:
       context: ../
       dockerfile: docker/${DOCKERFILE:-Dockerfile}
+      target: dev
+    develop:
+      watch:
+        - action: sync
+          path: ../src
+          target: /app/src
+        - action: sync
+          path: ../bin
+          target: /app/bin
+        - action: sync
+          path: ../docker/container-init.sh
+          target: /app/docker/container-init.sh
+        - action: sync+restart
+          path: ../package.json
+          target: /app/package.json
+        - action: sync+restart
+          path: ../package-lock.json
+          target: /app/package-lock.json
+        - action: sync+restart
+          path: ../tsconfig.json
+          target: /app/tsconfig.json
+        - action: sync+restart
+          path: ../webpack.config.js
+          target: /app/webpack.config.js
+        - action: rebuild
+          path: ../docker/Dockerfile
     network_mode: host
     cap_add:
       - SYS_ADMIN
@@ -69,3 +99,6 @@ services:
       options:
         max-file: "1"
         max-size: 10m
+
+volumes:
+  mirakurun_node_modules:

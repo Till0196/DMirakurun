@@ -70,11 +70,18 @@ if [ "$DISABLE_PCSCD" != "1" ] && [ -e "/etc/init.d/pcscd" ]; then
 fi
 
 function start() {
-  if [ "$DEBUG" != "true" ]; then
+  if [ "$DEBUG" = "true" ] || [ "$DEBUG" = "1" ]; then
+    if [ ! -e node_modules/.package-lock.json ]; then
+      npm ci
+    fi
+    if [ ! -d lib ] || [ -z "$(ls -A lib 2>/dev/null)" ]; then
+      npm run build
+    fi
+    npm run watch &
+    node --watch-path=./lib --max-semi-space-size=64 -r source-map-support/register lib/server.js &
+  else
     export NODE_ENV=production
     node --max-semi-space-size=64 -r source-map-support/register lib/server.js &
-  else
-    npm run debug &
   fi
 
   wait
