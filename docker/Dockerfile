@@ -10,7 +10,7 @@ RUN apt-get update && \
     npm run build && \
     npm ci --omit=dev
 
-FROM ${ARCH}node:22.14.0-bookworm-slim
+FROM ${ARCH}node:22.14.0-bookworm-slim AS runtime
 WORKDIR /app
 RUN apt-get update && \
     apt-get upgrade -y && \
@@ -29,6 +29,13 @@ RUN apt-get update && \
         && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+FROM runtime AS dev
+COPY . /app
+CMD ["./docker/container-init.sh"]
+EXPOSE 40772 9229
+
+FROM runtime AS release
 COPY --from=build /app /app
 CMD ["./docker/container-init.sh"]
 EXPOSE 40772 9229
