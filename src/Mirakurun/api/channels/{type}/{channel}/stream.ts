@@ -17,6 +17,7 @@ import {Operation} from "express-openapi";
 import * as api from "../../../../api";
 import * as apid from "../../../../../../api";
 import { channelTypes, OutputFormat } from "../../../../common";
+import ChannelItem, { StreamEntry } from "../../../../ChannelItem";
 import _ from "../../../../_";
 
 export const parameters = [
@@ -62,7 +63,28 @@ export const parameters = [
 ];
 
 export const get: Operation = (req, res) => {
-    const channel = _.channel.get(req.params.type as apid.ChannelType, req.params.channel);
+    const type = req.params.type as apid.ChannelType;
+    const key = req.params.channel as string;
+
+    // Numeric key falls back to streamId lookup so `channel.channel = String(streamId)`
+    // from `/api/services` resolves here; multi-route matches feed the tuner picker.
+    let channel: ChannelItem | null = _.channel.get(type, key);
+    let streamEntry: StreamEntry | undefined;
+    let altChannels: ChannelItem[] | undefined;
+    if (channel === null && /^\d+$/.test(key)) {
+        const streamId = parseInt(key, 10);
+        const matches = _.channel.findByTypeAndStreamId(type, streamId);
+        channel = matches[0] || null;
+        altChannels = matches.length > 1 ? matches : undefined;
+        if (channel) {
+            for (const e of channel.getStreams().values()) {
+                if (e.streamId === streamId) {
+                    streamEntry = e;
+                    break;
+                }
+            }
+        }
+    }
 
     if (channel === null) {
         api.responseError(res, 404);
@@ -71,7 +93,15 @@ export const get: Operation = (req, res) => {
 
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
 
-    const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
+    const queryFormat = req.query.format as ("ts" | "tlv" | undefined);
+    const outputFormat: OutputFormat | undefined = queryFormat
+        ? (queryFormat === "tlv" ? "tlv" : undefined)
+        : (streamEntry?.isTlv ? "tlv" : undefined);
+    const tsmfRelTs = req.query.tsmfRelTs !== undefined
+        ? parseInt(req.query.tsmfRelTs as string, 10)
+        : streamEntry?.relTs;
+
+    const contentType = outputFormat === "tlv" ? "application/octet-stream" : "video/MP2T";
 
     // HEAD request support
     if (req.method === "HEAD") {
@@ -87,17 +117,14 @@ export const get: Operation = (req, res) => {
     (<any> res.socket)._writableState.highWaterMark = Math.max(res.writableHighWaterMark, 1024 * 1024 * 16);
     res.socket.setNoDelay(true);
 
-    const tsmfRelTs = req.query.tsmfRelTs !== undefined ? parseInt(req.query.tsmfRelTs as string, 10) : undefined;
-    const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
-
-    channel.getStream({
+    _.tuner.initChannelStream(channel, {
         id: userId,
         priority: parseInt(req.get("X-Mirakurun-Priority"), 10) || 0,
         agent: req.get("User-Agent"),
         url: req.url,
         disableDecoder: (<number> <any> req.query.decode === 0),
         outputFormat
-    }, res, tsmfRelTs)
+    }, res, tsmfRelTs, altChannels)
         .then(tsFilter => {
             if (requestAborted === true || req.aborted === true) {
                 return tsFilter.close();

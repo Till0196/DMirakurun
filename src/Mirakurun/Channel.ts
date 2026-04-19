@@ -110,6 +110,22 @@ export class Channel {
         return results;
     }
 
+    findByTypeAndStreamId(type: apid.ChannelType, streamId: number): ChannelItem[] {
+        const results: ChannelItem[] = [];
+        for (const channel of this._items) {
+            if (channel.type !== type) {
+                continue;
+            }
+            for (const entry of channel.getStreams().values()) {
+                if (entry.streamId === streamId) {
+                    results.push(channel);
+                    break;
+                }
+            }
+        }
+        return results;
+    }
+
     /**
      * Resolve the channels that can tune a given service.
      *

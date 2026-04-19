@@ -159,9 +159,7 @@ export default class ServiceItem {
             epgUpdatedAt: this._epgUpdatedAt
         };
 
-        ret.channels = this.channels.map(ch => {
-            // Look up StreamEntry by (streamId, networkId): bonded sub-carriers
-            // share the same streamId but have empty serviceIds.
+        const serialize = (ch: ChannelItem): apid.Channel => {
             let entry: StreamEntry | undefined;
             for (const e of ch.getStreams().values()) {
                 if (e.streamId === this._streamId && e.networkId === this._networkId) {
@@ -185,7 +183,20 @@ export default class ServiceItem {
                 c.tsmfGroupId = ch.tsmfGroupId;
             }
             return c;
-        });
+        };
+
+        const all = this.channels;
+        if (all.length > 0) {
+            // streamId as channel string keeps the primary identifier stable
+            // across route changes for clients that store one channel per service.
+            ret.channel = {
+                type: all[0].type,
+                channel: String(this._streamId)
+            };
+        }
+        if (all.length >= 2) {
+            ret.channels = all.map(serialize);
+        }
 
         return ret;
     }

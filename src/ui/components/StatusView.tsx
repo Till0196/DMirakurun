@@ -130,12 +130,14 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
         );
     }
 
+    const routesOf = (svc: any): any[] => svc.channels ?? (svc.channel ? [svc.channel] : []);
+
     // Channel types with more than one route configured. Single-route
     // types omit the route from tooltips and tuner labels.
     const multiRouteTypes = (() => {
         const map = new Map<string, Set<string>>();
         for (const svc of services) {
-            for (const ch of (svc.channels ?? [])) {
+            for (const ch of routesOf(svc)) {
                 if (!ch.type) continue;
                 if (!map.has(ch.type)) map.set(ch.type, new Set());
                 map.get(ch.type).add(ch.route ?? "");
@@ -170,7 +172,7 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
                     styles={tooltipHostStyles}
                     tooltipProps={tooltipProps}
                     content={(() => {
-                        const channels = service.channels ?? [];
+                        const channels = routesOf(service);
                         // Group bonded carriers (same route/type/rel/groupId) into one line.
                         const groups = new Map<string, { route: string; type: string; channels: string[]; rel?: number; groupId?: number }>();
                         for (const ch of channels) {
@@ -184,7 +186,7 @@ const StatusView: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter, rpc:
                                 groups.set(key, { route, type: ch.type, channels: [ch.channel], rel, groupId: ch.tsmfGroupId });
                             }
                         }
-                        const showRoute = multiRouteTypes.has(service.channels?.[0]?.type ?? "");
+                        const showRoute = multiRouteTypes.has(channels[0]?.type ?? "");
                         const lines: string[] = [
                             `#${service.id}`,
                             ...(service.streamId ? [`StreamID: ${service.streamId}`] : []),

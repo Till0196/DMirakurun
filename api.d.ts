@@ -96,6 +96,8 @@ export interface Service {
      * this stream (e.g. channels.yml was edited).
      */
     channels?: Channel[];
+    /** Primary channel (upstream-compatible). `channel.channel` is `String(streamId)`. */
+    channel?: Channel;
     /** TSMF relative TS slot number (per-service, set by `Channel.toJSON()` for TS slots). */
     tsmfRelTs?: number;
     /** TSMF relative TS slot number (per-service, set by `Channel.toJSON()` for TLV slots). */

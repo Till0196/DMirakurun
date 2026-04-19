@@ -110,7 +110,7 @@ export class Tuner {
         return false;
     }
 
-    initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable, tsmfRelTs?: number): Promise<StreamFilter | TSFilter> {
+    initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable, tsmfRelTs?: number, altChannels?: ChannelItem[]): Promise<StreamFilter | TSFilter> {
         let networkId: number;
 
         const services = channel.getServices();
@@ -122,6 +122,7 @@ export class Tuner {
             ...userReq,
             streamSetting: {
                 channel,
+                channels: altChannels && altChannels.length > 1 ? altChannels : undefined,
                 networkId,
                 parseEIT: true,
                 tsmfRelTs
