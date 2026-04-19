@@ -24,6 +24,7 @@ import _ from "./_";
 import * as apid from "../../api";
 import { getProgramItemId } from "./Program";
 import Service from "./Service";
+import ChannelItem from "./ChannelItem";
 import { MMTTLVReader, createMMTTLVReader } from "arib-mmt-tlv-ts";
 import {
     MHEventInformationTable,
@@ -54,7 +55,7 @@ export interface TLVFilterOptions {
     readonly parseNIT?: boolean;
     readonly parseSDT?: boolean;
     readonly parseEIT?: boolean;
-    readonly channel: string;
+    readonly channelItem: ChannelItem;
 }
 
 interface BasicExtState {
@@ -114,7 +115,7 @@ export default class TLVFilter extends EventEmitter {
 
     private _eventEndTimeout = _.config.server.eventEndTimeout || 1000;
 
-    private _channel: string;
+    private _channelItem: ChannelItem;
 
     private _remoteControlKeyIdMap: Map<number, number> = null;
     private _logoTransmissions: Map<number, {
@@ -132,7 +133,7 @@ export default class TLVFilter extends EventEmitter {
         this._targetNetworkId = options.networkId || null;
         this._provideServiceId = options.serviceId || null;
         this._provideEventId = options.eventId || null;
-        this._channel = options.channel;
+        this._channelItem = options.channelItem;
 
         if (this._provideServiceId !== null) {
             this._ready = false;
@@ -290,13 +291,10 @@ export default class TLVFilter extends EventEmitter {
             );
 
             if (this._parseEIT && item) {
-                const channel = _.channel.get("BS4K", this._channel);
-                if (channel) {
-                    for (const service of channel.getServices()) {
-                        if (this._parseServiceIds.has(service.serviceId) === false) {
-                            this._parseServiceIds.add(service.serviceId);
-                            log.debug("TLVFilter#_onPLT: parsing serviceId=%d (%s)", service.serviceId, service.name);
-                        }
+                for (const service of this._channelItem.getServices()) {
+                    if (this._parseServiceIds.has(service.serviceId) === false) {
+                        this._parseServiceIds.add(service.serviceId);
+                        log.debug("TLVFilter#_onPLT: parsing serviceId=%d (%s)", service.serviceId, service.name);
                     }
                 }
             }
@@ -320,7 +318,7 @@ export default class TLVFilter extends EventEmitter {
 
         const streamIdList = nit.tlvStreams.map(s => s.tlvStreamId);
         const channels = streamIdList.map(s => ({
-            type: "BS4K" as apid.ChannelType,
+            type: this._channelItem.type,
             channel: `${s}`
         }));
         this.emit("networkStreams", channels);
@@ -477,8 +475,8 @@ export default class TLVFilter extends EventEmitter {
             this._parseEIT &&
             this._parseServiceIds.has(eit.serviceId)
         ) {
-            if (!this._epg && status.epgByChannel[this._channel] !== true) {
-                status.epgByChannel[this._channel] = true;
+            if (!this._epg && status.epgByChannel[this._channelItem.channel] !== true) {
+                status.epgByChannel[this._channelItem.channel] = true;
                 this._epg = new MHEPG();
             }
 
@@ -630,11 +628,8 @@ export default class TLVFilter extends EventEmitter {
             this._epgReady = true;
             this._clearEpgState();
 
-            const channel = _.channel.get("BS4K", this._channel);
-            if (channel) {
-                for (const service of channel.getServices()) {
-                    service.epgReady = true;
-                }
+            for (const service of this._channelItem.getServices()) {
+                service.epgReady = true;
             }
 
             process.nextTick(() => this.emit("epgReady"));
@@ -666,15 +661,12 @@ export default class TLVFilter extends EventEmitter {
         if (this._epg) {
             this._epg.end();
             delete this._epg;
-            status.epgByChannel[this._channel] = false;
+            status.epgByChannel[this._channelItem.channel] = false;
 
             if (this._epgReady === true) {
                 const now = Date.now();
-                const channel = _.channel.get("BS4K", this._channel);
-                if (channel) {
-                    for (const service of channel.getServices()) {
-                        service.epgUpdatedAt = now;
-                    }
+                for (const service of this._channelItem.getServices()) {
+                    service.epgUpdatedAt = now;
                 }
             }
 

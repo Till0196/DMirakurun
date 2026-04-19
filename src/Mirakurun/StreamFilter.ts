@@ -270,7 +270,7 @@ export default class StreamFilter extends EventEmitter {
             parseNIT: opts.parseNIT,
             parseSDT: opts.parseSDT,
             parseEIT: opts.parseEIT,
-            channel: opts.channel.channel
+            channelItem: opts.channel
         });
     }
 
@@ -422,7 +422,7 @@ export default class StreamFilter extends EventEmitter {
                     parseNIT: opts.parseNIT,
                     parseSDT: opts.parseSDT,
                     parseEIT: opts.parseEIT,
-                    channel: opts.channel.channel
+                    channelItem: opts.channel
                 })
                 : new TSFilter({
                     networkId: opts.networkId,
