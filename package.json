@@ -1,7 +1,7 @@
 {
   "name": "dmirakurun",
   "description": "Fork of Mirakurun modified to work with dantto4k",
-  "version": "4.1.0+dev",
+  "version": "4.1.0",
   "homepage": "https://github.com/Till0196/DMirakurun/",
   "keywords": [
     "mirakurun",
