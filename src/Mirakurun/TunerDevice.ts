@@ -140,7 +140,10 @@ export default class TunerDevice extends EventEmitter {
         }) as common.User[];
     }
 
-    get decoder(): string {
+    get decoder(): string | null {
+        if (this._isRemote && this._config.remoteMirakurunDecoder === true) {
+            return null;
+        }
         return this._config.decoder || null;
     }
 
