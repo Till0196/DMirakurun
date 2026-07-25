@@ -194,7 +194,11 @@ const ServicesSection: React.FC<{
                                     return (
                                         <>
                                             <div>#{service.id}</div>
-                                            {service.streamId !== undefined && <div>StreamID: {service.streamId}</div>}
+                                            {service.streamId !== undefined && (
+                                                <div>
+                                                    StreamID: 0x{service.streamId.toString(16).toUpperCase()} ({service.streamId})
+                                                </div>
+                                            )}
                                             <div>SID: 0x{service.serviceId.toString(16).toUpperCase()} ({service.serviceId})</div>
                                             <div>NID: 0x{service.networkId.toString(16).toUpperCase()} ({service.networkId})</div>
                                             <div>Type: 0x{service.type.toString(16).toUpperCase()} ({service.type})</div>
