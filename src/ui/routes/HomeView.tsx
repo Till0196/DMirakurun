@@ -311,9 +311,8 @@ const StreamInfoTable: React.FC<{
 
 const TunersSection: React.FC<{
     tuners: TunerDevice[];
-    services: Service[];
     multiRouteTypes: Set<string>;
-}> = ({ tuners, services, multiRouteTypes }) => {
+}> = ({ tuners, multiRouteTypes }) => {
     const [killTarget, setKillTarget] = useState<number>(null);
     const [tunersEx, setTunersEx] = useState<TunerDevice[]>([]);
     const [streamDetail, setStreamDetail] = useState<{ userId: string; info: StreamInfo }>(null);
@@ -399,21 +398,11 @@ const TunersSection: React.FC<{
             });
         }
 
-        // user nodes grouped by transport stream
-        const streamNodes = new Map<string, {
-            streamId: number;
-            networkId: number;
-            users: TreeNodeInfo[];
-        }>();
-        const ungroupedUserNodes: TreeNodeInfo[] = [];
+        // user nodes
         for (let i = 0; i < tuner.users.length; i++) {
             const user = tuner.users[i];
             const isMirakurun = /Mirakurun/.test(user.id);
             const channel = user.streamSetting?.channel;
-            const service = services.find(item =>
-                item.networkId === user.streamSetting?.networkId &&
-                item.serviceId === user.streamSetting?.serviceId
-            );
             const relTlv = user.streamSetting?.tsmfRelTlv;
             const relTs = user.streamSetting?.tsmfRelTs ?? channel?.tsmfRelTs;
             const groupId = channel?.tsmfGroupId;
@@ -470,43 +459,12 @@ const TunersSection: React.FC<{
                 );
             }
 
-            const userNode: TreeNodeInfo = {
+            childNodes.push({
                 id: `tuner-${tuner.index}-user-${i}`,
                 label: <span className="tuner-user-info">{userInfoItems}</span>,
                 hasCaret: false
-            };
-            if (service?.streamId !== undefined) {
-                const key = `${service.networkId}:${service.streamId}`;
-                const stream = streamNodes.get(key) ?? {
-                    streamId: service.streamId,
-                    networkId: service.networkId,
-                    users: []
-                };
-                stream.users.push(userNode);
-                streamNodes.set(key, stream);
-            } else {
-                ungroupedUserNodes.push(userNode);
-            }
-        }
-
-        for (const [key, stream] of streamNodes) {
-            childNodes.push({
-                id: `tuner-${tuner.index}-stream-${key}`,
-                icon: <Icon icon="diagram-tree" className="bp5-text-muted" />,
-                label: (
-                    <span className="tuner-label">
-                        StreamID: {stream.streamId}
-                        <span className="bp5-text-muted">
-                            {" "}(NID: 0x{stream.networkId.toString(16).toUpperCase()})
-                        </span>
-                    </span>
-                ),
-                isExpanded: true,
-                childNodes: stream.users,
-                hasCaret: true
             });
         }
-        childNodes.push(...ungroupedUserNodes);
 
         return {
             id: `tuner-${tuner.index}`,
@@ -707,11 +665,7 @@ export const HomeView: React.FC = () => {
                         compact
                     >
                         <div className="home-section-content">
-                            <TunersSection
-                                tuners={tuners}
-                                services={services}
-                                multiRouteTypes={multiRouteTypes}
-                            />
+                            <TunersSection tuners={tuners} multiRouteTypes={multiRouteTypes} />
                         </div>
                     </Section>
                 </div>
