@@ -35,7 +35,7 @@ import {
 } from "@blueprintjs/core";
 import { state } from "../modules/state";
 import * as ui from "../modules/ui";
-import { Service, Status, StreamInfo, TunerDevice } from "../../../api.d";
+import { Channel, Service, Status, StreamInfo, TunerDevice } from "../../../api.d";
 
 import "./HomeView.sass";
 
@@ -59,6 +59,26 @@ const isEmptyStreamInfo = (streamInfo: StreamInfo): boolean => {
         return true;
     }
     return Object.keys(streamInfo).length === 0;
+};
+
+const channelsOf = (service: Service): Channel[] => {
+    return service.channels ?? (service.channel ? [service.channel] : []);
+};
+
+const getMultiRouteTypes = (services: Service[]): Set<string> => {
+    const routesByType = new Map<string, Set<string>>();
+    for (const service of services) {
+        for (const channel of channelsOf(service)) {
+            const routes = routesByType.get(channel.type) ?? new Set<string>();
+            routes.add(channel.route ?? "");
+            routesByType.set(channel.type, routes);
+        }
+    }
+    return new Set(
+        Array.from(routesByType.entries())
+            .filter(([, routes]) => routes.size > 1)
+            .map(([type]) => type)
+    );
 };
 
 // --- Status Section ---
@@ -114,6 +134,7 @@ const ServicesSection: React.FC<{
         }
         return showOthers;
     });
+    const multiRouteTypes = getMultiRouteTypes(services);
 
     return (
         <>
@@ -143,11 +164,59 @@ const ServicesSection: React.FC<{
                         key={service.id}
                         content={
                             <div className="service-tooltip">
-                                <div>#{service.id}</div>
-                                <div>SID: 0x{service.serviceId.toString(16).toUpperCase()} ({service.serviceId})</div>
-                                <div>NID: 0x{service.networkId.toString(16).toUpperCase()} ({service.networkId})</div>
-                                <div>Type: 0x{service.type.toString(16).toUpperCase()} ({service.type})</div>
-                                <div>Channel: {service.channel?.type} / {service.channel?.channel}</div>
+                                {(() => {
+                                    const channels = channelsOf(service);
+                                    const groups = new Map<string, {
+                                        route: string;
+                                        type: string;
+                                        channels: string[];
+                                        rel?: number;
+                                        groupId?: number;
+                                    }>();
+                                    for (const channel of channels) {
+                                        const route = channel.route ?? channel.type;
+                                        const rel = channel.tsmfRelTs ?? channel.tsmfRelTlv;
+                                        const key = `${route}|${channel.type}|${rel ?? ""}|${channel.tsmfGroupId ?? ""}`;
+                                        const group = groups.get(key);
+                                        if (group) {
+                                            group.channels.push(channel.channel);
+                                        } else {
+                                            groups.set(key, {
+                                                route,
+                                                type: channel.type,
+                                                channels: [channel.channel],
+                                                rel,
+                                                groupId: channel.tsmfGroupId
+                                            });
+                                        }
+                                    }
+                                    const showRoute = multiRouteTypes.has(channels[0]?.type);
+                                    return (
+                                        <>
+                                            <div>#{service.id}</div>
+                                            {service.streamId !== undefined && <div>StreamID: {service.streamId}</div>}
+                                            <div>SID: 0x{service.serviceId.toString(16).toUpperCase()} ({service.serviceId})</div>
+                                            <div>NID: 0x{service.networkId.toString(16).toUpperCase()} ({service.networkId})</div>
+                                            <div>Type: 0x{service.type.toString(16).toUpperCase()} ({service.type})</div>
+                                            {Array.from(groups.values()).map((group, index) => {
+                                                const tail: string[] = [];
+                                                if (group.rel !== undefined) {
+                                                    tail.push(`Rel=${group.rel}`);
+                                                }
+                                                if (group.groupId !== undefined) {
+                                                    tail.push(`Group=${group.groupId}`);
+                                                }
+                                                return (
+                                                    <div key={index}>
+                                                        Channel{showRoute ? ` (${group.route})` : ""}:{" "}
+                                                        {group.type} / {group.channels.join(",")}
+                                                        {tail.length > 0 ? ` / ${tail.join(", ")}` : ""}
+                                                    </div>
+                                                );
+                                            })}
+                                        </>
+                                    );
+                                })()}
                             </div>
                         }
                         placement="bottom"
@@ -242,7 +311,8 @@ const StreamInfoTable: React.FC<{
 
 const TunersSection: React.FC<{
     tuners: TunerDevice[];
-}> = ({ tuners }) => {
+    multiRouteTypes: Set<string>;
+}> = ({ tuners, multiRouteTypes }) => {
     const [killTarget, setKillTarget] = useState<number>(null);
     const [tunersEx, setTunersEx] = useState<TunerDevice[]>([]);
     const [streamDetail, setStreamDetail] = useState<{ userId: string; info: StreamInfo }>(null);
@@ -283,7 +353,9 @@ const TunersSection: React.FC<{
     });
 
     const treeNodes: TreeNodeInfo[] = mergedTuners.map((tuner) => {
-        const tunerLabel = `#${tuner.index}: ${tuner.name} (${tuner.types.join(", ")})`;
+        const tunerLabel = `#${tuner.index}: ${tuner.name} (${tuner.types.join(", ")}${
+            tuner.routes?.length ? ` | ${tuner.routes.join(", ")}` : ""
+        })`;
         const hasUsers = tuner.users.length > 0;
 
         let tunerIcon: TreeNodeInfo["icon"];
@@ -330,6 +402,22 @@ const TunersSection: React.FC<{
         for (let i = 0; i < tuner.users.length; i++) {
             const user = tuner.users[i];
             const isMirakurun = /Mirakurun/.test(user.id);
+            const channel = user.streamSetting?.channel;
+            const relTlv = user.streamSetting?.tsmfRelTlv;
+            const relTs = user.streamSetting?.tsmfRelTs ?? channel?.tsmfRelTs;
+            const groupId = channel?.tsmfGroupId;
+            const channelMeta: string[] = [];
+            if (channel?.route && multiRouteTypes.has(channel.type)) {
+                channelMeta.push(channel.route);
+            }
+            if (relTlv !== undefined) {
+                channelMeta.push(`RelTlv=${relTlv}`);
+            } else if (relTs !== undefined) {
+                channelMeta.push(`RelTs=${relTs}`);
+            }
+            if (groupId !== undefined) {
+                channelMeta.push(`Group=${groupId}`);
+            }
 
             const userInfoItems: JSX.Element[] = [
                 <span key="priority" className="tuner-user-info-item">
@@ -342,7 +430,10 @@ const TunersSection: React.FC<{
                 </span>,
                 <span key="ch" className="tuner-user-info-item">
                     <Icon icon="mobile-video" className="bp5-text-muted" size={12} />
-                    <span>{user.streamSetting?.channel?.type} / {user.streamSetting?.channel?.channel}</span>
+                    <span>
+                        {channel ? `${channel.type} / ${channel.channel}` : "-"}
+                        {channelMeta.length > 0 ? ` (${channelMeta.join(" | ")})` : ""}
+                    </span>
                 </span>,
                 <span key="sid" className="tuner-user-info-item">
                     <Icon icon="filter" className="bp5-text-muted" size={12} />
@@ -483,6 +574,7 @@ export const HomeView: React.FC = () => {
     const [tuners, setTuners] = useState<TunerDevice[]>(state.tuners);
     const [allowPNA, setAllowPNA] = useState<boolean>(false);
     const [tsplayEndpoint, setTsplayEndpoint] = useState<string>("");
+    const multiRouteTypes = getMultiRouteTypes(services);
 
     useEffect(() => {
         // fetch server config
@@ -573,7 +665,7 @@ export const HomeView: React.FC = () => {
                         compact
                     >
                         <div className="home-section-content">
-                            <TunersSection tuners={tuners} />
+                            <TunersSection tuners={tuners} multiRouteTypes={multiRouteTypes} />
                         </div>
                     </Section>
                 </div>
