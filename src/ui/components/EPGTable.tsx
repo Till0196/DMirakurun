@@ -36,6 +36,7 @@ const scrollState = {
     left: {
         GR: -1,
         BS: -1,
+        BS4K: -1,
         CS: -1,
         SKY: -1,
     },
