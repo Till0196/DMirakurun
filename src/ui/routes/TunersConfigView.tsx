@@ -34,15 +34,21 @@ import {
 import equal from "fast-deep-equal";
 import { state } from "../modules/state";
 import * as ui from "../modules/ui";
-import { ConfigTuners, ConfigTunersItem, ChannelType } from "../../../api.d";
+import { ConfigTuners, ConfigTunersItem, ChannelRoute, ChannelType } from "../../../api.d";
 
 import "./TunersConfigView.sass";
 
 const configAPI = "/api/config/tuners";
-const typesIndex = ["GR", "BS", "CS", "SKY"];
+const typesIndex = ["GR", "BS", "CS", "SKY", "BS4K"];
 
 function sortTypes(types: ChannelType[]): ChannelType[] {
     return types.sort((a, b) => typesIndex.indexOf(a) - typesIndex.indexOf(b));
+}
+
+const routesIndex = ["TER", "SAT", "CATV", "HIKARI"];
+
+function sortRoutes(routes: ChannelRoute[]): ChannelRoute[] {
+    return routes.sort((a, b) => routesIndex.indexOf(a) - routesIndex.indexOf(b));
 }
 
 export const TunersConfigView: React.FC = () => {
@@ -115,6 +121,7 @@ export const TunersConfigView: React.FC = () => {
             command: `dvbv5-zap -a ${i} -c ./config/dvbconf-for-isdb/conf/dvbv5_channels_isdbs.conf -r -P <channel>`,
             dvbDevicePath: `/dev/dvb/adapter${i}/dvr0`,
             decoder: "arib-b25-stream-test",
+            tlvToTsDecoder: "dantto4k - -",
             isDisabled: true
         };
         setEditing([...editing, newTuner]);
@@ -227,6 +234,7 @@ export const TunersConfigView: React.FC = () => {
                             <th style={{ width: "80px" }}>Enable</th>
                             <th style={{ width: "180px" }}>Name</th>
                             <th style={{ width: "120px" }}>Types</th>
+                            <th style={{ width: "120px" }}>Routes</th>
                             <th>Options</th>
                             <th style={{ width: "140px", textAlign: "right" }}></th>
                         </tr>
@@ -252,7 +260,7 @@ export const TunersConfigView: React.FC = () => {
                                 </td>
                                 <td>
                                     <div className="types-checkboxes">
-                                        {(["GR", "BS", "CS", "SKY"] as ChannelType[]).map((type) => {
+                                        {(["GR", "BS", "CS", "SKY", "BS4K"] as ChannelType[]).map((type) => {
                                             const checked = tuner.types?.includes(type) ?? false;
                                             return (
                                                 <Checkbox
@@ -269,6 +277,36 @@ export const TunersConfigView: React.FC = () => {
                                                             newTypes = newTypes.filter(t => t !== type);
                                                         }
                                                         updateTuner(i, { types: newTypes });
+                                                    }}
+                                                />
+                                            );
+                                        })}
+                                    </div>
+                                </td>
+                                <td>
+                                    <div className="types-checkboxes">
+                                        {(["TER", "SAT", "CATV", "HIKARI"] as ChannelRoute[]).map((route) => {
+                                            const checked = tuner.routes?.includes(route) ?? false;
+                                            return (
+                                                <Checkbox
+                                                    key={route}
+                                                    label={route}
+                                                    checked={checked}
+                                                    inline
+                                                    onChange={(e) => {
+                                                        let routes = [...(tuner.routes || [])];
+                                                        if (e.currentTarget.checked) {
+                                                            routes.push(route);
+                                                            routes = sortRoutes(routes);
+                                                            updateTuner(i, { routes });
+                                                        } else {
+                                                            routes = routes.filter(item => item !== route);
+                                                            if (routes.length === 0) {
+                                                                deleteTunerProperty(i, "routes");
+                                                            } else {
+                                                                updateTuner(i, { routes });
+                                                            }
+                                                        }
                                                     }}
                                                 />
                                             );
@@ -366,6 +404,36 @@ export const TunersConfigView: React.FC = () => {
                                                             deleteTunerProperty(i, "decoder");
                                                         } else {
                                                             updateTuner(i, { decoder: val });
+                                                        }
+                                                    }}
+                                                />
+                                            </FormGroup>
+                                        )}
+                                        {!tuner.remoteMirakurunHost && (
+                                            <FormGroup label="TLV Decoder">
+                                                <InputGroup
+                                                    value={tuner.tlvDecoder || ""}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === "") {
+                                                            deleteTunerProperty(i, "tlvDecoder");
+                                                        } else {
+                                                            updateTuner(i, { tlvDecoder: val });
+                                                        }
+                                                    }}
+                                                />
+                                            </FormGroup>
+                                        )}
+                                        {!tuner.remoteMirakurunHost && (
+                                            <FormGroup label="TLV to TS Decoder">
+                                                <InputGroup
+                                                    value={tuner.tlvToTsDecoder || ""}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === "") {
+                                                            deleteTunerProperty(i, "tlvToTsDecoder");
+                                                        } else {
+                                                            updateTuner(i, { tlvToTsDecoder: val });
                                                         }
                                                     }}
                                                 />

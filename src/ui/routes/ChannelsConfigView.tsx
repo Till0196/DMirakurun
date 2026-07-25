@@ -36,12 +36,12 @@ import {
 import equal from "fast-deep-equal";
 import { state } from "../modules/state";
 import * as ui from "../modules/ui";
-import { ConfigChannels, ConfigChannelsItem, ChannelType, ChannelScanStatus } from "../../../api.d";
+import { ConfigChannels, ConfigChannelsItem, ChannelRoute, ChannelType, ChannelScanStatus } from "../../../api.d";
 
 import "./ChannelsConfigView.sass";
 
 const configAPI = "/api/config/channels";
-const typesIndex = ["GR", "BS", "CS", "SKY"];
+const typesIndex = ["GR", "BS", "CS", "SKY", "BS4K"];
 
 function sortTypes(types: ChannelType[]): ChannelType[] {
     return types.sort((a, b) => typesIndex.indexOf(a) - typesIndex.indexOf(b));
@@ -158,7 +158,7 @@ export const ChannelsConfigView: React.FC = () => {
                 params.append("skipCh", expandedSkipCh);
             }
 
-            if (scanType === "BS" && scanUseSubCh) {
+            if ((scanType === "BS" || scanType === "BS4K") && scanUseSubCh) {
                 params.append("minSubCh", scanMinSubCh);
                 params.append("maxSubCh", scanMaxSubCh);
                 params.append("useSubCh", "true");
@@ -525,6 +525,7 @@ export const ChannelsConfigView: React.FC = () => {
                             <th style={{ width: "80px" }}>Enable</th>
                             <th style={{ width: "160px" }}>Name</th>
                             <th style={{ width: "100px" }}>Type</th>
+                            <th style={{ width: "100px" }}>Route</th>
                             <th style={{ width: "120px" }}>Channel</th>
                             <th>Options</th>
                             <th style={{ width: "140px", textAlign: "right" }}></th>
@@ -564,7 +565,28 @@ export const ChannelsConfigView: React.FC = () => {
                                             { value: "GR", label: "GR" },
                                             { value: "BS", label: "BS" },
                                             { value: "CS", label: "CS" },
-                                            { value: "SKY", label: "SKY" }
+                                            { value: "SKY", label: "SKY" },
+                                            { value: "BS4K", label: "BS4K" }
+                                        ]}
+                                    />
+                                </td>
+                                <td>
+                                    <HTMLSelect
+                                        value={ch.route || ""}
+                                        onChange={(e) => {
+                                            const route = e.target.value;
+                                            if (route === "") {
+                                                deleteChannelProperty(i, "route");
+                                            } else {
+                                                updateChannel(i, { route: route as ChannelRoute });
+                                            }
+                                        }}
+                                        options={[
+                                            { value: "", label: "(default)" },
+                                            { value: "TER", label: "TER" },
+                                            { value: "SAT", label: "SAT" },
+                                            { value: "CATV", label: "CATV" },
+                                            { value: "HIKARI", label: "HIKARI" }
                                         ]}
                                     />
                                 </td>
@@ -612,6 +634,21 @@ export const ChannelsConfigView: React.FC = () => {
                                                     } else if (/^[0-9]+$/.test(val)) {
                                                         const tsmfRelTs = parseInt(val, 10);
                                                         updateChannel(i, { tsmfRelTs });
+                                                    }
+                                                }}
+                                            />
+                                        </FormGroup>
+
+                                        <FormGroup label="TsmfGroupId" style={{ width: "100px", marginBottom: 0 }}>
+                                            <InputGroup
+                                                placeholder="Group ID"
+                                                value={`${ch.tsmfGroupId ?? ""}`}
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    if (val === "") {
+                                                        deleteChannelProperty(i, "tsmfGroupId");
+                                                    } else if (/^[0-9]+$/.test(val)) {
+                                                        updateChannel(i, { tsmfGroupId: parseInt(val, 10) });
                                                     }
                                                 }}
                                             />
@@ -738,12 +775,17 @@ export const ChannelsConfigView: React.FC = () => {
                                             setScanMinCh("2");
                                             setScanMaxCh("24");
                                             break;
+                                        case "BS4K":
+                                            setScanMinCh("7");
+                                            setScanMaxCh("17");
+                                            break;
                                     }
                                 }}
                                 options={[
                                     { value: "GR", label: "GR" },
                                     { value: "BS", label: "BS" },
-                                    { value: "CS", label: "CS" }
+                                    { value: "CS", label: "CS" },
+                                    { value: "BS4K", label: "BS4K" }
                                 ]}
                             />
                         </FormGroup>
@@ -779,7 +821,7 @@ export const ChannelsConfigView: React.FC = () => {
                             />
                         </FormGroup>
 
-                        {scanType === "BS" && (
+                        {(scanType === "BS" || scanType === "BS4K") && (
                             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                                 <Switch
                                     label="Use Subchannel Style (BS01_0)"
