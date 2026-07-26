@@ -281,9 +281,7 @@ export default class MHEPG {
                         const resolutionMap = d.videoScanFlag ? VIDEO_RESOLUTION_P : VIDEO_RESOLUTION_I;
                         _.program.set(state.programId, {
                             video: {
-                                type: "h.265",
                                 resolution: resolutionMap[d.videoResolution] || null,
-                                streamContent: 0x09,
                                 componentType: d.componentTag,
                                 frameRate: VIDEO_FRAME_RATE[d.videoFrameRate] || undefined,
                                 transferCharacteristics: VIDEO_TRANSFER_CHARACTERISTICS[d.videoTransferCharacteristics] || undefined
