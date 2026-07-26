@@ -281,7 +281,13 @@ export default class MHEPG {
                         const resolutionMap = d.videoScanFlag ? VIDEO_RESOLUTION_P : VIDEO_RESOLUTION_I;
                         _.program.set(state.programId, {
                             video: {
+                                // ARIB STD-B60 の MH-EIT Video Component Descriptor には、
+                                // STD-B10 の Component Descriptor にある stream_content が存在しない。
+                                // コーデックを推定せず、従来 API との互換性を保つため、
+                                // 汎用映像を表す stream_content=0x01 相当として正規化する。
+                                type: "mpeg2",
                                 resolution: resolutionMap[d.videoResolution] || null,
+                                streamContent: 0x01,
                                 componentType: d.componentTag,
                                 frameRate: VIDEO_FRAME_RATE[d.videoFrameRate] || undefined,
                                 transferCharacteristics: VIDEO_TRANSFER_CHARACTERISTICS[d.videoTransferCharacteristics] || undefined

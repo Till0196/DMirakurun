@@ -104,9 +104,9 @@ export interface ProgramGenre {
 }
 
 export interface ProgramVideo {
-    type?: ProgramVideoType;
+    type: ProgramVideoType;
     resolution: ProgramVideoResolution;
-    streamContent?: number;
+    streamContent: number;
     componentType: number;
     frameRate?: ProgramVideoFrameRate;
     transferCharacteristics?: ProgramVideoTransferCharacteristics;
