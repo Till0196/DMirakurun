@@ -14,8 +14,8 @@
    limitations under the License.
 */
 import * as React from "react";
-import { langMap, audioModeMap } from "../modules/constants";
-import { ProgramVideo, ProgramAudio } from "../../../api.d";;
+import { langMap, audioModeDetailMap, audioModeMap } from "../modules/constants";
+import { ProgramVideo, ProgramAudio } from "../../../api.d";
 
 import "./ProgramAVInfo.sass";
 
@@ -41,11 +41,13 @@ export const ProgramAVInfo: React.FC<ProgramAVInfoProps> = ({ video, audios }) =
             const trackPrefix = count === 0 ? "主" : "副";
             const type8 = audio.componentType.toString(2).padStart(8, "0");
 
-            const mode = audioModeMap[type8.slice(-5)] || "不明なモード";
+            const modeKey = type8.slice(-5);
+            const mode = audioModeMap[modeKey] || "不明なモード";
+            const modeDetail = audioModeDetailMap[modeKey];
             const lang = audio.langs.map(lang => langMap[lang]).join("＋");
 
             labels.push(
-                <span key={`audios.${count}`} className="audio">
+                <span key={`audios.${count}`} className="audio" title={modeDetail}>
                     {audios.length > 1 && <>{trackPrefix}:&nbsp;</>}
                     {mode}
                     {lang !== "日本語" && <>&nbsp;/&nbsp;{lang}</>}
