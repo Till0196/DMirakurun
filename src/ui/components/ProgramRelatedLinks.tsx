@@ -35,9 +35,14 @@ export const ProgramRelatedLinks: React.FC<ProgramRelatedLinksProps> = ({ progra
     const relatedItems = useMemo(() => {
         return program?.relatedItems?.filter(item => {
             if (item.networkId) {
-                return item.eventId !== program.eventId || item.serviceId !== program.serviceId || item.networkId !== program.networkId;
+                return item.eventId !== program.eventId ||
+                    item.serviceId !== program.serviceId ||
+                    item.networkId !== program.networkId ||
+                    item.streamId !== program.streamId;
             }
-            return item.eventId !== program.eventId || item.serviceId !== program.serviceId;
+            return item.eventId !== program.eventId ||
+                item.serviceId !== program.serviceId ||
+                item.streamId !== program.streamId;
         });
     }, [program]);
 
@@ -62,9 +67,14 @@ export const ProgramRelatedLinks: React.FC<ProgramRelatedLinksProps> = ({ progra
             for (const item of relatedItems) {
                 const p = programs.find(p => {
                     if (item.networkId) {
-                        return p.eventId === item.eventId && p.serviceId === item.serviceId && p.networkId === item.networkId;
+                        return p.eventId === item.eventId &&
+                            p.serviceId === item.serviceId &&
+                            p.networkId === item.networkId &&
+                            p.streamId === item.streamId;
                     }
-                    return p.eventId === item.eventId && p.serviceId === item.serviceId;
+                    return p.eventId === item.eventId &&
+                        p.serviceId === item.serviceId &&
+                        p.streamId === item.streamId;
                 });
                 if (!p) {
                     continue;
@@ -72,7 +82,7 @@ export const ProgramRelatedLinks: React.FC<ProgramRelatedLinksProps> = ({ progra
 
                 const link = (
                     <Section
-                        key={`${item.type}-${item.eventId}-${item.serviceId}`}
+                        key={`${item.type}-${item.eventId}-${item.streamId}-${item.serviceId}`}
                         className={`related-item-type-${item.type}`}
                         icon={relatedItemTypeIconMap[item.type]}
                         title={relatedItemTypeMap[item.type]}

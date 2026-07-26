@@ -383,6 +383,7 @@ export default class MHEPG {
                         const relItems: apid.ProgramRelatedItem[] = d.events.map(event => ({
                             type: relType,
                             networkId: eit.originalNetworkId,
+                            streamId: eit.tlvStreamId,
                             serviceId: event.serviceId,
                             eventId: event.eventId
                         }));
@@ -393,6 +394,7 @@ export default class MHEPG {
                                 relItems.push({
                                     type: relType,
                                     networkId: other.originalNetworkId,
+                                    streamId: other.tlvStreamId,
                                     serviceId: other.serviceId,
                                     eventId: other.eventId
                                 });

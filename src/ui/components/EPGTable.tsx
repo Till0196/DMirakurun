@@ -325,7 +325,10 @@ export const EPGTable: React.FC<EPGTableProps> = ({ date, channelType, globalSer
                     // オリジナルイベントのみをカウント
                     count++;
                     // イベントグループ被参照対象
-                    programMap.set(`${program.serviceId}.${program.eventId}`, program);
+                    programMap.set(
+                        `${program.networkId}.${program.streamId}.${program.serviceId}.${program.eventId}`,
+                        program
+                    );
                 }
                 servicePrograms.push(program);
             }
@@ -467,7 +470,10 @@ export const EPGTable: React.FC<EPGTableProps> = ({ date, channelType, globalSer
                 if (program.relatedItems && program.relatedItems.filter(item => item.type === "shared").length === 1) {
                     className += " event-group-shared";
 
-                    const ref = programMap.get(`${program.relatedItems[0].serviceId}.${program.relatedItems[0].eventId}`)
+                    const relatedItem = program.relatedItems[0];
+                    const ref = programMap.get(
+                        `${relatedItem.networkId}.${relatedItem.streamId}.${relatedItem.serviceId}.${relatedItem.eventId}`
+                    );
                     if (ref) {
                         program.name = program.name || ref.name;
                         program.genres = program.genres || ref.genres;

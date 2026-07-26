@@ -347,6 +347,8 @@ definitions:
           - movement
       networkId:
         type: integer
+      streamId:
+        type: integer
       serviceId:
         type: integer
       eventId:

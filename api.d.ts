@@ -208,6 +208,7 @@ export type ProgramRelatedItemType = "shared" | "relay" | "movement";
 export interface ProgramRelatedItem {
     type: ProgramRelatedItemType;
     networkId?: number;
+    streamId?: number;
     serviceId: number;
     eventId: number;
 }
