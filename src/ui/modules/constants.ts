@@ -18,6 +18,7 @@ import { IconName } from "@blueprintjs/core";
 export const channelTypeMap = {
     GR: "地上",
     BS: "BS",
+    BS4K: "BS4K",
     CS: "CS",
     SKY: "SKY",
 };
