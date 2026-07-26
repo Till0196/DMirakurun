@@ -16,7 +16,11 @@
 import * as React from "react";
 import { useMemo } from "react";
 import * as regexp from "../modules/regexp";
-import { ProgramAttributeMap } from "../modules/constants";;
+import {
+    ProgramAttributeClassMap,
+    ProgramAttributeMap,
+    ProgramAttributeNormalizationMap,
+} from "../modules/constants";
 import { Program } from "../../../api.d";
 
 import "./ProgramTitle.sass";
@@ -54,7 +58,8 @@ export const ProgramTitle: React.FC<ProgramTitleProps> = ({ program }) => {
                 items.push("無");
             }
             for (const item of items) {
-                const attrKey = item.replace(/[\[\]()［］]/g, "").normalize("NFKC");
+                const normalizedItem = item.replace(/[\[\]()［］]/g, "").normalize("NFKC");
+                const attrKey = ProgramAttributeNormalizationMap[normalizedItem] || normalizedItem;
                 if (ProgramAttributeMap[attrKey]) {
                     attrSet.add(attrKey as any);
                 }
@@ -75,7 +80,7 @@ export const ProgramTitle: React.FC<ProgramTitleProps> = ({ program }) => {
 
             const label = (
                 <span key={`attribute-${attribute}`}
-                    className={`attribute bg-attribute-${attribute}`}
+                    className={`attribute bg-attribute-${ProgramAttributeClassMap[attribute]}`}
                     title={ProgramAttributeMap[attribute]}>
                     {attribute}
                 </span>

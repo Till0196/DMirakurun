@@ -69,6 +69,12 @@ export const audioModeMap = {
 };
 
 export const ProgramAttributeMap = {
+    "4K": "4K",
+    "8K": "8K",
+    "5.1ch": "5.1ch",
+    "7.1ch": "7.1ch",
+    "22.2ch": "22.2ch",
+    HDR: "HDR",
     字: "字幕放送", // 字幕放送
     新: "新番組", // 新番組
     初: "初回放送", // 初回放送
@@ -86,6 +92,41 @@ export const ProgramAttributeMap = {
     解: "音声解説", // 音声解説
     PPV: "PPV", // PPV
     手: "手話通訳放送", // 手話通訳放送
+};
+
+export const ProgramAttributeNormalizationMap: Record<string, keyof typeof ProgramAttributeMap> = {
+    "🆞": "4K",
+    "🆟": "8K",
+    "🆠": "5.1ch",
+    "🆡": "7.1ch",
+    "🆢": "22.2ch",
+    "🆧": "HDR",
+};
+
+export const ProgramAttributeClassMap: Record<keyof typeof ProgramAttributeMap, string> = {
+    "4K": "4k",
+    "8K": "8k",
+    "5.1ch": "5-1ch",
+    "7.1ch": "7-1ch",
+    "22.2ch": "22-2ch",
+    HDR: "hdr",
+    字: "subtitles",
+    新: "new",
+    初: "first",
+    終: "final",
+    再: "rerun",
+    デ: "data",
+    双: "interactive",
+    無: "free",
+    二: "bilingual",
+    多: "multi-audio",
+    SS: "surround",
+    生: "live",
+    前: "first-part",
+    後: "second-part",
+    解: "audio-description",
+    PPV: "ppv",
+    手: "sign-language",
 };
 
 export const Genre1Map = {
