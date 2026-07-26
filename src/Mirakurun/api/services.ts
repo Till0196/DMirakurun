@@ -55,6 +55,12 @@ get.apiDoc = {
         },
         {
             in: "query",
+            name: "streamId",
+            type: "integer",
+            required: false
+        },
+        {
+            in: "query",
             name: "name",
             type: "string",
             required: false
