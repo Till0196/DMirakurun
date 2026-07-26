@@ -69,12 +69,25 @@ export const audioModeMap = {
 };
 
 export const ProgramAttributeMap = {
+    "3D": "3DTV",
+    "2nd Screen": "セカンドスクリーン",
+    "2K": "2K放送",
     "4K": "4K",
     "8K": "8K",
     "5.1ch": "5.1ch",
     "7.1ch": "7.1ch",
     "22.2ch": "22.2ch",
+    "60P": "60Hzプログレッシブスキャン放送",
+    "120P": "120Hzプログレッシブスキャン放送",
+    d: "データ放送",
+    HC: "Hybridcast",
     HDR: "HDR",
+    "Hi-Res": "ハイレゾ音声",
+    Lossless: "ロスレス音声",
+    SHV: "SHV放送",
+    UHD: "UHDTV",
+    VOD: "VOD",
+    配: "インターネット同時配信",
     字: "字幕放送", // 字幕放送
     新: "新番組", // 新番組
     初: "初回放送", // 初回放送
@@ -95,21 +108,46 @@ export const ProgramAttributeMap = {
 };
 
 export const ProgramAttributeNormalizationMap: Record<string, keyof typeof ProgramAttributeMap> = {
+    "🆛": "3D",
+    "🆜": "2nd Screen",
+    "🆝": "2K",
     "🆞": "4K",
     "🆟": "8K",
     "🆠": "5.1ch",
     "🆡": "7.1ch",
     "🆢": "22.2ch",
+    "🆣": "60P",
+    "🆤": "120P",
+    "🆥": "d",
+    "🆦": "HC",
     "🆧": "HDR",
+    "🆨": "Hi-Res",
+    "🆩": "Lossless",
+    "🆪": "SHV",
+    "🆫": "UHD",
+    "🆬": "VOD",
 };
 
 export const ProgramAttributeClassMap: Record<keyof typeof ProgramAttributeMap, string> = {
+    "3D": "3d",
+    "2nd Screen": "second-screen",
+    "2K": "2k",
     "4K": "4k",
     "8K": "8k",
     "5.1ch": "5-1ch",
     "7.1ch": "7-1ch",
     "22.2ch": "22-2ch",
+    "60P": "60p",
+    "120P": "120p",
+    d: "data-broadcasting",
+    HC: "hybridcast",
     HDR: "hdr",
+    "Hi-Res": "hi-res",
+    Lossless: "lossless",
+    SHV: "shv",
+    UHD: "uhd",
+    VOD: "vod",
+    配: "simulcast",
     字: "subtitles",
     新: "new",
     初: "first",
