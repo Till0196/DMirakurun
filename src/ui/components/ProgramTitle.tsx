@@ -21,6 +21,7 @@ import {
     ProgramAttributeMap,
     ProgramAttributeNormalizationMap,
 } from "../modules/constants";
+import { state } from "../modules/state";
 import { Program } from "../../../api.d";
 
 import "./ProgramTitle.sass";
@@ -46,6 +47,11 @@ export const ProgramTitle: React.FC<ProgramTitleProps> = ({ program }) => {
     }
     name = name.replace(regexp.squaredUnicode, "").replace(regexp.legacyAttributeFormat, "");
 
+    const serviceIsFree = state.services.find(service =>
+        service.networkId === program.networkId &&
+        service.serviceId === program.serviceId
+    )?.isFree;
+
     const attributes = useMemo(() => {
         const attrSet = new Set<keyof typeof ProgramAttributeMap>();
         const attributeSource = (program.name || "") + (program.description || "");
@@ -54,30 +60,32 @@ export const ProgramTitle: React.FC<ProgramTitleProps> = ({ program }) => {
                 ...attributeSource.match(regexp.enclosedAttributeUnicode) || [],
                 ...attributeSource.match(regexp.legacyAttributeFormat) || [],
             ];
-            if (program.networkId >= 0x01 && program.networkId <= 0x0C && program.isFree) {
-                items.push("無");
-            }
             for (const item of items) {
                 const normalizedItem = item.replace(/[\[\]()［］]/g, "").normalize("NFKC");
                 const attrKey = ProgramAttributeNormalizationMap[normalizedItem] || normalizedItem;
+                if (attrKey === "無" && serviceIsFree === true) {
+                    // SDT/MH-SDT が通常無料と示す公共放送・無料放送では [無] を省略する。
+                    continue;
+                }
                 if (ProgramAttributeMap[attrKey]) {
                     attrSet.add(attrKey as any);
                 }
             }
         }
+
+        // 通常有料のサービスでEITが無料と示す番組は、無料開放として表示する。
+        if (program.isFree && serviceIsFree === false) {
+            attrSet.add("無");
+        }
+
         return [...attrSet];
-    }, [program.name, program.description]);
+    }, [program.name, program.description, program.isFree, serviceIsFree]);
 
     const labels = useMemo(() => {
         const pre: JSX.Element[] = [];
         const post: JSX.Element[] = [];
 
         for (const attribute of attributes) {
-            /* if (attribute === "無") {
-                // 公共放送と無料放送の [無] は省略
-                continue;
-            } */
-
             const label = (
                 <span key={`attribute-${attribute}`}
                     className={`attribute bg-attribute-${ProgramAttributeClassMap[attribute]}`}

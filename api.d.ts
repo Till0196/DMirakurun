@@ -61,6 +61,7 @@ export interface Service {
     streamId?: number;
     name: string;
     type: number;
+    isFree?: boolean;
     logoId?: number;
     hasLogoData?: boolean;
     remoteControlKeyId?: number;

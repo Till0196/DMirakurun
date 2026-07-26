@@ -31,6 +31,7 @@ interface Service {
     streamId: number;
     name: string;
     type: number;
+    isFree?: boolean;
     logoId?: number;
     remoteControlKeyId?: number;
     epgReady?: boolean;

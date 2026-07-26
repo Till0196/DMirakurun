@@ -430,6 +430,7 @@ export default class TLVFilter extends EventEmitter {
                     serviceId: service.serviceId,
                     name,
                     type,
+                    isFree: !service.freeCAMode,
                     logoId,
                     remoteControlKeyId: this._remoteControlKeyIdMap.get(service.serviceId)
                 });

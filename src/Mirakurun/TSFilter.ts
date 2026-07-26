@@ -625,6 +625,7 @@ export default class TSFilter extends EventEmitter {
                     serviceId: service.service_id,
                     name: name,
                     type: type,
+                    isFree: service.free_CA_mode === 0,
                     logoId: logoId
                 });
             }
