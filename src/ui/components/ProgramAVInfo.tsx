@@ -29,9 +29,6 @@ export const ProgramAVInfo: React.FC<ProgramAVInfoProps> = ({ video, audios }) =
     const labels: JSX.Element[] = [];
 
     if (video) {
-        if (video.type !== "mpeg2") {
-            labels.push(<span key="video.type" className="video type">{video.type}</span>);
-        }
         labels.push(<span key="video.resolution" className="video resolution">{video.resolution}</span>);
     }
 
