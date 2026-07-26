@@ -55,6 +55,10 @@ definitions:
     type: integer
     maximum: 65535
 
+  StreamId:
+    type: integer
+    maximum: 65535
+
   ServiceItemId:
     type: integer
     maximum: 6553565535
@@ -110,6 +114,7 @@ definitions:
       - id
       - serviceId
       - networkId
+      - streamId
       - name
       - type
     properties:
@@ -119,6 +124,8 @@ definitions:
         $ref: '#/definitions/ServiceId'
       networkId:
         $ref: '#/definitions/NetworkId'
+      streamId:
+        $ref: '#/definitions/StreamId'
       name:
         type: string
       type:
@@ -145,6 +152,7 @@ definitions:
       - eventId
       - serviceId
       - networkId
+      - streamId
       - startAt
       - duration
       - isFree
@@ -157,6 +165,8 @@ definitions:
         $ref: '#/definitions/ServiceId'
       networkId:
         $ref: '#/definitions/NetworkId'
+      streamId:
+        $ref: '#/definitions/StreamId'
       startAt:
         $ref: '#/definitions/UnixtimeMS'
       duration:

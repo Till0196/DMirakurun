@@ -175,6 +175,7 @@ export default class EPG {
                         eventId: e.event_id,
                         serviceId: eit.service_id,
                         networkId: networkId,
+                        streamId: eit.transport_stream_id,
                         startAt: getTimeFromMJD(e.start_time),
                         duration: UNKNOWN_DURATION.compare(e.duration) === 0 ? 1 : getTimeFromBCD24(e.duration),
                         isFree: e.free_CA_mode === 0,
@@ -184,6 +185,9 @@ export default class EPG {
                     };
                     _.program.add(programItem);
                 }
+                _.program.set(id, {
+                    streamId: eit.transport_stream_id
+                });
 
                 state = {
                     version: {},
@@ -229,6 +233,7 @@ export default class EPG {
                             startAt: getTimeFromMJD(e.start_time),
                             duration: UNKNOWN_DURATION.compare(e.duration) === 0 ? 1 : getTimeFromBCD24(e.duration),
                             isFree: e.free_CA_mode === 0,
+                            streamId: eit.transport_stream_id,
                             _pf: isPF || undefined, // for compatibility
                             _isPresent: isP || undefined,
                             _isFollowing: isF || undefined

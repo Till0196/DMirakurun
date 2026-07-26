@@ -177,6 +177,7 @@ export default class MHEPG {
                         eventId: e.eventId,
                         serviceId: eit.serviceId,
                         networkId: networkId,
+                        streamId: eit.tlvStreamId,
                         startAt: mjdBCDToUnixEpoch(e.startTime) * 1000,
                         duration: e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
                         isFree: !e.freeCAMode,
@@ -184,6 +185,9 @@ export default class MHEPG {
                     };
                     _.program.add(programItem);
                 }
+                _.program.set(id, {
+                    streamId: eit.tlvStreamId
+                });
 
                 state = {
                     version: {},
@@ -216,6 +220,7 @@ export default class MHEPG {
                             startAt: mjdBCDToUnixEpoch(e.startTime) * 1000,
                             duration: e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
                             isFree: !e.freeCAMode,
+                            streamId: eit.tlvStreamId,
                             _pf: isPF || undefined
                         });
                     }

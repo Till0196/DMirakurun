@@ -245,6 +245,7 @@ export default class ChannelItem {
                     id: service.id,
                     serviceId: service.serviceId,
                     networkId: service.networkId,
+                    streamId: service.streamId,
                     name: service.name,
                     type: service.type
                 };

@@ -34,6 +34,8 @@ export type ServiceId = number;
 
 export type NetworkId = number;
 
+export type StreamId = number;
+
 export type ServiceItemId = number;
 
 export type UnixtimeMS = number;
@@ -58,7 +60,7 @@ export interface Service {
     id: ServiceItemId;
     serviceId: ServiceId;
     networkId: NetworkId;
-    streamId?: number;
+    streamId: StreamId;
     name: string;
     type: number;
     isFree?: boolean;
@@ -78,6 +80,7 @@ export interface Program {
     eventId: EventId;
     serviceId: ServiceId;
     networkId: NetworkId;
+    streamId: StreamId;
     startAt: UnixtimeMS;
     duration: number;
     isFree: boolean;
