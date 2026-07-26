@@ -15,7 +15,11 @@
 */
 import * as React from "react";
 import { langMap, audioModeDetailMap, audioModeMap } from "../modules/constants";
-import { ProgramVideo, ProgramAudio } from "../../../api.d";
+import {
+    ProgramVideo,
+    ProgramAudio,
+    ProgramVideoTransferCharacteristics,
+} from "../../../api.d";
 
 import "./ProgramAVInfo.sass";
 
@@ -23,6 +27,15 @@ type ProgramAVInfoProps = {
     video: ProgramVideo;
     audios: ProgramAudio[];
 };
+
+const transferCharacteristicsMap: Record<ProgramVideoTransferCharacteristics, string> = {
+    bt709: "BT.709",
+    iec61966: "IEC 61966",
+    bt2020: "BT.2020",
+    "bt2100-pq": "BT.2100 PQ",
+    "bt2100-hlg": "BT.2100 HLG",
+};
+
 export const ProgramAVInfo: React.FC<ProgramAVInfoProps> = ({ video, audios }) => {
     // console.debug("components", "ProgramAVInfo");
 
@@ -30,6 +43,16 @@ export const ProgramAVInfo: React.FC<ProgramAVInfoProps> = ({ video, audios }) =
 
     if (video) {
         labels.push(<span key="video.resolution" className="video resolution">{video.resolution}</span>);
+        if (video.frameRate) {
+            labels.push(<span key="video.frameRate" className="video frame-rate">{video.frameRate}fps</span>);
+        }
+        if (video.transferCharacteristics) {
+            labels.push(
+                <span key="video.transferCharacteristics" className="video transfer-characteristics">
+                    {transferCharacteristicsMap[video.transferCharacteristics]}
+                </span>
+            );
+        }
     }
 
     if (audios) {
