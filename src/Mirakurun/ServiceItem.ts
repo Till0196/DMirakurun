@@ -227,7 +227,7 @@ export default class ServiceItem {
                 channel: String(this._streamId)
             };
         }
-        if (all.length >= 2) {
+        if (all.length >= 1) {
             ret.channels = all.map(serialize);
         }
 
