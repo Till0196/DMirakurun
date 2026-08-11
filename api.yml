@@ -80,10 +80,16 @@ definitions:
         type: string
       name:
         type: string
+      route:
+        $ref: '#/definitions/ChannelRoute'
       tsmfRelTs:
+        type: integer
+      tsmfRelTlv:
         type: integer
       tsmfGroupId:
         type: integer
+      isMultiCarrier:
+        type: boolean
       services:
         type: array
         items:
@@ -130,6 +136,8 @@ definitions:
         type: string
       type:
         type: integer
+      isFree:
+        type: boolean
       logoId:
         type: integer
       hasLogoData:
@@ -140,8 +148,16 @@ definitions:
         type: boolean
       epgUpdatedAt:
         $ref: '#/definitions/UnixtimeMS'
+      channels:
+        type: array
+        items:
+          $ref: '#/definitions/Channel'
       channel:
         $ref: '#/definitions/Channel'
+      tsmfRelTs:
+        type: integer
+      tsmfRelTlv:
+        type: integer
 
   # program -------------------------------------------------------------------
 
