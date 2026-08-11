@@ -26,8 +26,20 @@ const CID_TYPE_NO_COMPRESSED_HEADER = 0x61;
 const OFFSET_MIN_SFS = 10;
 const OFFSET_RETRY_SFS = 60;
 const OFFSET_MIN_CID_PACKETS = 16;
-const OFFSET_VALID_RATIO_MIN = 0.999;
+// Sanity backstop only — rejects candidates that are clearly broken.
+// Disambiguation between surviving candidates is done by margin below, not
+// by how close this floor is to 1.0 (the tail of the probe window is nearly
+// always a truncated TLV packet, so even a correct candidate rarely reaches
+// exactly 1.0).
+const OFFSET_VALID_RATIO_FLOOR = 0.9;
+// The best candidate must beat the runner-up by at least this much, or the
+// probe is inconclusive and retried later with more accumulated data.
+const OFFSET_VALID_RATIO_MARGIN = 0.02;
 const OFFSET_MAX_PROBE_FAILURES = 3;
+// Consecutive TLV-sync misses on the already-committed live output before
+// we conclude alignment has drifted and re-probe from scratch.
+const RESYNC_MISS_THRESHOLD = 3;
+const RESYNC_MAX_ATTEMPTS = 5;
 // Upper bound on per-carrier superframes kept while offset detection is still
 // pending. At ~15 frames × 52 × 188B ≈ 146KB/SF × 3 carriers, 600 SFs caps the
 // pending state at ~260MB — enough for retries but prevents OOM if detection
@@ -93,6 +105,8 @@ export default class TLVAssembler extends EventEmitter {
     private _probeInProgress = false;
     private _nextProbeThreshold = 0;
     private _probeFailures = 0;
+    private _syncMisses = 0;
+    private _resyncCount = 0;
 
     private _buffer: Buffer[] = [];
     private _pendingOutput: Buffer = Buffer.alloc(0);
@@ -136,6 +150,8 @@ export default class TLVAssembler extends EventEmitter {
         this._nextProbeThreshold = 0;
         this._outputSuperframeCount = 0;
         this._probeFailures = 0;
+        this._syncMisses = 0;
+        this._resyncCount = 0;
     }
 
     pushSuperframe(carrierSequence: number, sf: CarrierSuperframe): void {
@@ -214,6 +230,20 @@ export default class TLVAssembler extends EventEmitter {
         }
     }
 
+    // Like resetCarriers(), but keeps _numberOfCarriers: it's a stable
+    // property of the broadcast (signalled per TSMF frame), not something
+    // that needs rediscovery when only the alignment has drifted. Used when
+    // the live output loses TLV sync after offsets were already committed.
+    private _resyncOffsets(): void {
+        this._carriers.clear();
+        this._offsets = null;
+        this._offsetsApplied = false;
+        this._nextProbeThreshold = 0;
+        this._outputSuperframeCount = 0;
+        this._probeFailures = 0;
+        this._syncMisses = 0;
+    }
+
     private _commitOffsets(offsets: number[]): void {
         this._offsets = offsets;
         this._offsetsApplied = false;
@@ -225,6 +255,8 @@ export default class TLVAssembler extends EventEmitter {
 
     private _probeOffsets(carriers: CarrierBucket[]): number[] | null {
         const candidates = this._buildOffsetCandidates(carriers);
+        const results: { offsets: number[]; validRatio: number; tried: number }[] = [];
+
         for (let i = 0; i < candidates.length; i++) {
             if (this._closed || this._closing) {
                 return null;
@@ -240,21 +272,35 @@ export default class TLVAssembler extends EventEmitter {
                 continue;
             }
             const stats = this._measureTlvIntegrity(tlv, syncStart);
-            if (stats.validRatio < OFFSET_VALID_RATIO_MIN ||
+            if (stats.validRatio < OFFSET_VALID_RATIO_FLOOR ||
                 stats.cidTotal < OFFSET_MIN_CID_PACKETS ||
                 stats.cidOk !== stats.cidTotal) {
                 continue;
             }
-            log.info(
-                "TunerDevice#%d TSMF offsets=%s (valid=%s%%, cid=%d/%d, tried %d/%d)",
-                this._tunerIndex, offsets.join(","),
-                (stats.validRatio * 100).toFixed(1),
-                stats.cidOk, stats.cidTotal,
-                i + 1, candidates.length
-            );
-            return offsets;
+            results.push({ offsets, validRatio: stats.validRatio, tried: i + 1 });
         }
-        return null;
+
+        if (results.length === 0) {
+            return null;
+        }
+        results.sort((a, b) => b.validRatio - a.validRatio);
+        const [best, runnerUp] = results;
+        if (runnerUp && best.validRatio - runnerUp.validRatio < OFFSET_VALID_RATIO_MARGIN) {
+            log.debug(
+                "TunerDevice#%d TSMF offset probe ambiguous: best=%s (valid=%s%%) vs runner-up=%s (valid=%s%%) — retrying with more data",
+                this._tunerIndex,
+                best.offsets.join(","), (best.validRatio * 100).toFixed(2),
+                runnerUp.offsets.join(","), (runnerUp.validRatio * 100).toFixed(2)
+            );
+            return null;
+        }
+
+        log.info(
+            "TunerDevice#%d TSMF offsets=%s (tried %d/%d)",
+            this._tunerIndex, best.offsets.join(","),
+            best.tried, candidates.length
+        );
+        return best.offsets;
     }
 
     // base = sfCounts - minSf, ±1 single/two-axis, ±2 single-axis
@@ -265,11 +311,26 @@ export default class TLVAssembler extends EventEmitter {
         const seen = new Set<string>();
         const candidates: number[][] = [];
 
+        // With 2+ carriers, only the *relative* offsets between carriers
+        // (their pairwise skew) represent a distinct alignment hypothesis —
+        // shifting every carrier by the same amount re-tests the exact same
+        // skew against a different window of buffered superframes (e.g.
+        // base=[0,0] vs the matching-sign two-axis candidate [1,1]).
+        // Keeping both feeds _probeOffsets two near-identical-quality
+        // "competing" candidates, which can spuriously trip the runner-up
+        // margin check below. Dedupe on that relative signature instead of
+        // the absolute one so only genuinely different skews are tried.
+        // With a single carrier there is no cross-carrier skew, so every
+        // absolute shift is its own hypothesis (e.g. skipping a corrupted
+        // leading superframe) and must stay distinguishable.
+        const keyOf = (offsets: number[]): string =>
+            carriers.length > 1 ? offsets.map(v => v - offsets[0]).join(",") : offsets.join(",");
+
         const add = (offsets: number[]): void => {
             if (offsets.some(v => v < 0)) {
                 return;
             }
-            const key = offsets.join(",");
+            const key = keyOf(offsets);
             if (seen.has(key)) {
                 return;
             }
@@ -442,6 +503,11 @@ export default class TLVAssembler extends EventEmitter {
             const sfs = carriers.map(c => c.superframes[i]);
             this._forEachSlot(sfs, packet => this._onTLV(packet));
             this._outputSuperframeCount++;
+            // _onTLV may have called _resyncOffsets() on a sync-loss; stop
+            // feeding it more slots from the now-stale alignment.
+            if (!this._offsets) {
+                break;
+            }
         }
 
         // Write any pending output to the sink WITHOUT flushing the partial
@@ -467,13 +533,56 @@ export default class TLVAssembler extends EventEmitter {
 
         const pusi = (packet[1] & 0x40) !== 0;
         if (pusi) {
+            // PUSI=1 means this payload should start exactly on a TLV sync
+            // byte (see _extractTlvPayload's pointer-field skip). This holds
+            // for free as long as carrier alignment is still correct, so it
+            // doubles as a continuous, near-zero-cost integrity check on the
+            // already-committed offsets — catching drift that the one-shot
+            // probe on a 30-superframe window can't see (e.g. a carrier
+            // silently dropping a superframe later in the session).
+            const synced = tlvChunk[0] === TLV_SYNC_BYTE;
+            if (synced) {
+                this._syncMisses = 0;
+            } else if (++this._syncMisses >= RESYNC_MISS_THRESHOLD) {
+                const attempt = ++this._resyncCount;
+                const offsetsBeforeReset = this._offsets ? this._offsets.join(",") : "?";
+                // Reset state (and null out _offsets) *before* possibly
+                // calling _close() below — _close() re-enters _drainFrames()
+                // while _offsets is still set, which would otherwise recurse
+                // back into the very loop that got us here.
+                this._resyncOffsets();
+                if (attempt > RESYNC_MAX_ATTEMPTS) {
+                    log.error(
+                        "TunerDevice#%d TSMF lost TLV sync on live output %d times — giving up",
+                        this._tunerIndex, attempt
+                    );
+                    this._close();
+                } else {
+                    log.warn(
+                        "TunerDevice#%d TSMF lost TLV sync on live output (offsets=%s) — re-probing (%d/%d)",
+                        this._tunerIndex, offsetsBeforeReset, attempt, RESYNC_MAX_ATTEMPTS
+                    );
+                }
+                return;
+            }
+
             // PUSI marks the start of a new TLV packet, so the previous
-            // partial buffer (if any) is now complete and can be flushed.
+            // (already sync-verified) packet is now complete and can be
+            // flushed.
             if (this._buffer.length > 0) {
                 this._flushPartialBuffer();
                 this._writePending();
             }
-            this._buffer.push(Buffer.from(tlvChunk));
+            // Only start accumulating the new packet if its own sync byte
+            // checked out. A miss here means this one packet is either a
+            // stray bit error or the leading edge of real drift — either
+            // way, don't let it (or its continuation bytes, via the
+            // _buffer.length===0 guard below) reach the output. Better to
+            // drop one TLV packet than to emit a corrupted one; downstream
+            // already has to tolerate lost packets.
+            if (synced) {
+                this._buffer.push(Buffer.from(tlvChunk));
+            }
         } else {
             if (this._buffer.length === 0) {
                 return;
