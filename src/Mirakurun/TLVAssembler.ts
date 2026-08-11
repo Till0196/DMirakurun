@@ -285,7 +285,15 @@ export default class TLVAssembler extends EventEmitter {
         }
         results.sort((a, b) => b.validRatio - a.validRatio);
         const [best, runnerUp] = results;
-        if (runnerUp && best.validRatio - runnerUp.validRatio < OFFSET_VALID_RATIO_MARGIN) {
+        // The margin check exists to disambiguate competing cross-carrier
+        // skew hypotheses. With a single carrier there is no such
+        // competition: each candidate offset only differs in how many
+        // leading superframes are trimmed, and a tie in valid ratio just
+        // means the trimmed superframes weren't needed — the stable sort
+        // above already keeps the smallest (least-trimmed) offset first, so
+        // it's always the right pick. Applying the margin check here would
+        // instead flag every clean single-carrier probe as ambiguous.
+        if (carriers.length > 1 && runnerUp && best.validRatio - runnerUp.validRatio < OFFSET_VALID_RATIO_MARGIN) {
             log.debug(
                 "TunerDevice#%d TSMF offset probe ambiguous: best=%s (valid=%s%%) vs runner-up=%s (valid=%s%%) — retrying with more data",
                 this._tunerIndex,
