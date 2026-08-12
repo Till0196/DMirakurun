@@ -431,9 +431,7 @@ export default class TunerDevice extends EventEmitter {
             const broadcastSink = new stream.Writable({
                 highWaterMark: 8 * 1024 * 1024,
                 write: (chunk: Buffer, _encoding: string, callback: () => void) => {
-                    for (const user of this._users) {
-                        user._stream.write(chunk);
-                    }
+                    this._writeToUsers(chunk);
                     callback();
                 }
             });
@@ -506,8 +504,24 @@ export default class TunerDevice extends EventEmitter {
             chunk = chunk.subarray(this._drainRemaining);
             this._drainRemaining = 0;
         }
-        for (const user of this._users) {
-            user._stream.write(chunk);
+        this._writeToUsers(chunk);
+    }
+
+    private _writeToUsers(chunk: Buffer): void {
+        for (const user of [...this._users]) {
+            try {
+                user._stream.write(chunk);
+            } catch (err: any) {
+                // A newly joined consumer can fail while detecting/parsing a
+                // stream that is already in progress. Keep that failure from
+                // turning into an error on the shared TSMF broadcast sink,
+                // which would otherwise close every user and kill the tuner.
+                log.warn(
+                    "TunerDevice#%d stream write failed for user `%s`: %s",
+                    this._index, user.id, err?.message || err
+                );
+                user._stream.close();
+            }
         }
     }
 

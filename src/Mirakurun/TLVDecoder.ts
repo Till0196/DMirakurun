@@ -37,11 +37,12 @@ export default class TLVDecoder extends stream.Writable {
      * Pick the right TLV sink for this session.
      *
      * Resolution rules (centralised here so callers don't repeat them):
-     *   1. `outputFormat === "tlv"`    → caller wants TLV out
+     *   1. no `output`                 → parsing-only; do not spawn a decoder
+     *   2. `outputFormat === "tlv"`    → caller wants TLV out
      *        - `disableDecoder`        → return `output` directly (raw TLV)
      *        - `tlvDecoder` set        → spawn TLV→TLV decoder
      *        - else                    → return `output` directly (raw TLV)
-     *   2. otherwise (TS output)       → caller wants TS out
+     *   3. otherwise (TS output)       → caller wants TS out
      *        - `disableDecoder`        → bypass `tlvDecoder`, keep TLV→TS conversion
      *        - both set                → TLV→TLV decoder, then TLV→TS decoder
      *        - `tlvToTsDecoder` set    → spawn TLV→TS decoder
@@ -49,6 +50,13 @@ export default class TLVDecoder extends stream.Writable {
      *        - else                    → return `output` directly (raw TLV)
      */
     static create(opts: TLVDecoderFactoryOptions): stream.Writable {
+        // Internal consumers such as EPG gathering only parse the TLV stream
+        // and intentionally have no output sink. `disableDecoder` on an HTTP
+        // TS request still has an output (the response), so it continues to
+        // use tlvToTsDecoder for format conversion below.
+        if (!opts.output) {
+            return opts.output;
+        }
         if (opts.outputFormat === "tlv") {
             if (!opts.disableDecoder && opts.tlvDecoder) {
                 return new TLVDecoder({ output: opts.output, command: opts.tlvDecoder });
