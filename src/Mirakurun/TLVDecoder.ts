@@ -14,10 +14,10 @@ interface TLVDecoderOptions {
 /**
  * Factory options for selecting an appropriate TLV-side sink for a session.
  * The intent of each field:
- * - `tlvDecoder`     : TLV→TLV decoder command (e.g. a TLV passthrough/normaliser)
+ * - `tlvDecoder`     : TLV→TLV decoder command (e.g. a descrambler/normaliser)
  * - `tlvToTsDecoder` : TLV→TS decoder command (e.g. dantto4k)
  * - `outputFormat`   : what the caller wants on `output` ("ts" by default, or "tlv")
- * - `disableDecoder` : bypass any decoder and write raw TLV to `output`
+ * - `disableDecoder` : bypass TLV decoding, but keep TLV→TS format conversion
  */
 export interface TLVDecoderFactoryOptions {
     readonly output: stream.Writable;
@@ -37,30 +37,32 @@ export default class TLVDecoder extends stream.Writable {
      * Pick the right TLV sink for this session.
      *
      * Resolution rules (centralised here so callers don't repeat them):
-     *   1. `disableDecoder`            → return `output` directly (raw TLV)
-     *   2. `outputFormat === "tlv"`    → caller wants TLV out
+     *   1. `outputFormat === "tlv"`    → caller wants TLV out
+     *        - `disableDecoder`        → return `output` directly (raw TLV)
      *        - `tlvDecoder` set        → spawn TLV→TLV decoder
      *        - else                    → return `output` directly (raw TLV)
-     *   3. otherwise (TS output)       → caller wants TS out
-     *        - `tlvToTsDecoder` set    → spawn TLV→TS decoder (preferred)
+     *   2. otherwise (TS output)       → caller wants TS out
+     *        - `disableDecoder`        → bypass `tlvDecoder`, keep TLV→TS conversion
+     *        - both set                → TLV→TLV decoder, then TLV→TS decoder
+     *        - `tlvToTsDecoder` set    → spawn TLV→TS decoder
      *        - else `tlvDecoder` set   → spawn that as a fallback
      *        - else                    → return `output` directly (raw TLV)
      */
     static create(opts: TLVDecoderFactoryOptions): stream.Writable {
-        if (opts.disableDecoder) {
-            return opts.output;
-        }
         if (opts.outputFormat === "tlv") {
-            if (opts.tlvDecoder) {
+            if (!opts.disableDecoder && opts.tlvDecoder) {
                 return new TLVDecoder({ output: opts.output, command: opts.tlvDecoder });
             }
             return opts.output;
         }
-        const command = opts.tlvToTsDecoder || opts.tlvDecoder;
-        if (command) {
-            return new TLVDecoder({ output: opts.output, command });
+        let output = opts.output;
+        if (opts.tlvToTsDecoder) {
+            output = new TLVDecoder({ output, command: opts.tlvToTsDecoder });
         }
-        return opts.output;
+        if (!opts.disableDecoder && opts.tlvDecoder) {
+            output = new TLVDecoder({ output, command: opts.tlvDecoder });
+        }
+        return output;
     }
 
     private _output: stream.Writable;
