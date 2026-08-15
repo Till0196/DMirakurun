@@ -78,6 +78,14 @@ export default class ServiceItem {
         return this._streamId;
     }
 
+    set streamId(streamId: number) {
+        if (this._streamId !== streamId) {
+            this._streamId = streamId;
+            _.service.save();
+            this._updated();
+        }
+    }
+
     get name(): string {
         return this._name || "";
     }

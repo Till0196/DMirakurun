@@ -316,9 +316,7 @@ export default class StreamFilter extends EventEmitter {
         const opts = this._options;
         const ch = opts.channel;
 
-        if (header.groupId !== 0 && header.groupId !== 255) {
-            ch.setTsmfGroupId(header.groupId);
-        }
+        ch.setTsmfGroupId(header.groupId !== 0 && header.groupId !== 255 ? header.groupId : undefined);
 
         for (const relTs of TSMFFilter.getActiveRelTs(header)) {
             const isTlv = TSMFFilter.isTLVStream(header.streamTypeBits, relTs);

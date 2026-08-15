@@ -36,6 +36,12 @@ export interface StreamEntry {
     configServiceIds: Set<number>;
 }
 
+interface StreamScanSnapshot {
+    streams: Map<number, StreamEntry>;
+    tsmfRelTs: number;
+    tsmfGroupId: number;
+}
+
 export default class ChannelItem {
     readonly name: string;
     readonly type: apid.ChannelType;
@@ -47,6 +53,10 @@ export default class ChannelItem {
     private _tsmfGroupId: number;
     private _configTsmfGroupId: boolean;
     private _streams = new Map<number, StreamEntry>();
+    private _streamScanSnapshot?: StreamScanSnapshot;
+    private _scanStreamKeys?: Set<number>;
+    private _scanServiceIds?: Map<number, Set<number>>;
+    private _scanGroupIdObserved = false;
 
     constructor(config: apid.ConfigChannelsItem) {
         this.name = config.name;
@@ -84,11 +94,62 @@ export default class ChannelItem {
         this._tsmfRelTs = relTs;
     }
 
-    setTsmfGroupId(groupId: number): void {
+    setTsmfGroupId(groupId: number | undefined): void {
+        if (this._streamScanSnapshot) {
+            this._scanGroupIdObserved = true;
+        }
         if (this._configTsmfGroupId || groupId === this._tsmfGroupId) {
             return;
         }
         this._tsmfGroupId = groupId;
+    }
+
+    beginStreamScan(): void {
+        this._streamScanSnapshot = {
+            streams: this._cloneStreams(this._streams),
+            tsmfRelTs: this._tsmfRelTs,
+            tsmfGroupId: this._tsmfGroupId
+        };
+        this._scanStreamKeys = new Set();
+        this._scanServiceIds = new Map();
+        this._scanGroupIdObserved = false;
+    }
+
+    commitStreamScan(replaceServiceIds: boolean): void {
+        if (!this._streamScanSnapshot) {
+            return;
+        }
+        for (const [key, entry] of this._streams) {
+            if (!this._scanStreamKeys.has(key)) {
+                if (entry.configServiceIds.size === 0) {
+                    this._streams.delete(key);
+                } else {
+                    entry.streamId = 0;
+                    entry.networkId = 0;
+                    entry.serviceIds.clear();
+                }
+                continue;
+            }
+            if (replaceServiceIds) {
+                entry.serviceIds = new Set(this._scanServiceIds.get(key) ?? []);
+            }
+        }
+        if (!this._scanGroupIdObserved && !this._configTsmfGroupId) {
+            this._tsmfGroupId = undefined;
+        }
+        this._finishStreamScan();
+        _.channel?.invalidateStreamIDIndex();
+    }
+
+    rollbackStreamScan(): void {
+        if (!this._streamScanSnapshot) {
+            return;
+        }
+        this._streams = this._streamScanSnapshot.streams;
+        this._tsmfRelTs = this._streamScanSnapshot.tsmfRelTs;
+        this._tsmfGroupId = this._streamScanSnapshot.tsmfGroupId;
+        this._finishStreamScan();
+        _.channel?.invalidateStreamIDIndex();
     }
 
     addServiceId(serviceId: number, streamKey: number, fromConfig = false): void {
@@ -117,6 +178,14 @@ export default class ChannelItem {
             entry.configServiceIds.add(serviceId);
             return;
         }
+        if (this._scanServiceIds) {
+            let serviceIds = this._scanServiceIds.get(streamKey);
+            if (!serviceIds) {
+                serviceIds = new Set();
+                this._scanServiceIds.set(streamKey, serviceIds);
+            }
+            serviceIds.add(serviceId);
+        }
         if (entry.configServiceIds.has(serviceId) || entry.serviceIds.has(serviceId)) {
             return;
         }
@@ -138,6 +207,7 @@ export default class ChannelItem {
         if (streamId === 0xFFFF) {
             return;
         }
+        this._scanStreamKeys?.add(streamKey);
 
         let updated = false;
         if (streamKey >= 1) {
@@ -269,6 +339,25 @@ export default class ChannelItem {
                 return svc;
             })
         };
+    }
+
+    private _finishStreamScan(): void {
+        this._streamScanSnapshot = undefined;
+        this._scanStreamKeys = undefined;
+        this._scanServiceIds = undefined;
+        this._scanGroupIdObserved = false;
+    }
+
+    private _cloneStreams(streams: Map<number, StreamEntry>): Map<number, StreamEntry> {
+        const clone = new Map<number, StreamEntry>();
+        for (const [key, entry] of streams) {
+            clone.set(key, {
+                ...entry,
+                serviceIds: new Set(entry.serviceIds),
+                configServiceIds: new Set(entry.configServiceIds)
+            });
+        }
+        return clone;
     }
 
 }
