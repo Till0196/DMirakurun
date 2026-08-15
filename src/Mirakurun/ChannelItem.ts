@@ -139,15 +139,18 @@ export default class ChannelItem {
             return;
         }
 
+        let updated = false;
         if (streamKey >= 1) {
             const stale = this._streams.get(0);
             if (stale && stale.configServiceIds.size === 0) {
                 this._streams.delete(0);
+                updated = true;
             }
         } else if (streamKey === 0) {
             const existing = this._streams.get(0);
             if (existing && existing.isTlv !== isTlv) {
                 this._streams.delete(0);
+                updated = true;
             }
         }
 
@@ -157,6 +160,9 @@ export default class ChannelItem {
                 existing.networkId === networkId &&
                 existing.isTlv === isTlv &&
                 existing.relTs === relTs) {
+                if (updated) {
+                    _.channel?.invalidateStreamIDIndex();
+                }
                 return;
             }
             existing.streamId = streamId;
@@ -170,6 +176,7 @@ export default class ChannelItem {
                 configServiceIds: new Set()
             });
         }
+        _.channel?.invalidateStreamIDIndex();
     }
 
     getStreams(): ReadonlyMap<number, StreamEntry> {

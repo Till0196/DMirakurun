@@ -56,6 +56,12 @@ export type ChannelType = "GR" | "BS" | "CS" | "SKY" | "BS4K";
 
 export type ChannelRoute = "TER" | "SAT" | "CATV" | "HIKARI";
 
+export interface StreamID {
+    networkId: NetworkId;
+    streamId: StreamId;
+    channels: Channel[];
+}
+
 export interface Service {
     id: ServiceItemId;
     serviceId: ServiceId;

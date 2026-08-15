@@ -19,13 +19,24 @@ import * as apid from "../../api";
 import _ from "./_";
 import * as db from "./db";
 import status from "./status";
-import ChannelItem from "./ChannelItem";
+import ChannelItem, { StreamEntry } from "./ChannelItem";
 import { JobItem } from "./Job";
+
+export interface StreamIDIndexItem {
+    readonly networkId: number;
+    readonly streamId: number;
+    readonly channels: Array<{
+        channel: ChannelItem;
+        entry: StreamEntry;
+    }>;
+}
 
 export class Channel {
     private _items: ChannelItem[] = [];
     private _startup: boolean = true;
     private _saveTimerId: NodeJS.Timeout = null;
+    private _streamIDIndex = new Map<number, Map<number, StreamIDIndexItem>>();
+    private _streamIDIndexDirty = true;
 
     constructor() {
         this._load();
@@ -60,6 +71,7 @@ export class Channel {
     add(item: ChannelItem): void {
         if (this.get(item.type, item.channel) === null) {
             this._items.push(item);
+            this.invalidateStreamIDIndex();
         }
     }
 
@@ -98,32 +110,30 @@ export class Channel {
      * to skip orphaned services after channels.yml is edited.
      */
     findByStreamId(networkId: number, streamId: number): ChannelItem[] {
-        const results: ChannelItem[] = [];
-        for (const channel of this._items) {
-            for (const entry of channel.getStreams().values()) {
-                if (entry.networkId === networkId && entry.streamId === streamId) {
-                    results.push(channel);
-                    break;
-                }
-            }
-        }
-        return results;
+        const item = this.getStreamID(networkId, streamId);
+        return item ? item.channels.map(value => value.channel) : [];
     }
 
-    findByTypeAndStreamId(type: apid.ChannelType, streamId: number): ChannelItem[] {
-        const results: ChannelItem[] = [];
-        for (const channel of this._items) {
-            if (channel.type !== type) {
-                continue;
-            }
-            for (const entry of channel.getStreams().values()) {
-                if (entry.streamId === streamId) {
-                    results.push(channel);
-                    break;
-                }
-            }
+    getStreamIDs(networkId?: number): StreamIDIndexItem[] {
+        this._ensureStreamIDIndex();
+        if (networkId !== undefined) {
+            const streams = this._streamIDIndex.get(networkId);
+            return streams ? [...streams.values()] : [];
         }
-        return results;
+        const items: StreamIDIndexItem[] = [];
+        for (const streams of this._streamIDIndex.values()) {
+            items.push(...streams.values());
+        }
+        return items;
+    }
+
+    getStreamID(networkId: number, streamId: number): StreamIDIndexItem | undefined {
+        this._ensureStreamIDIndex();
+        return this._streamIDIndex.get(networkId)?.get(streamId);
+    }
+
+    invalidateStreamIDIndex(): void {
+        this._streamIDIndexDirty = true;
     }
 
     /**
@@ -262,6 +272,40 @@ export class Channel {
         }
         db.saveChannels(records, _.configIntegrity.channels)
             .catch(e => log.error("channels db save failed: %s", (e as Error).message));
+    }
+
+    private _ensureStreamIDIndex(): void {
+        if (!this._streamIDIndexDirty) {
+            return;
+        }
+
+        const index = new Map<number, Map<number, StreamIDIndexItem>>();
+        for (const channel of this._items) {
+            for (const entry of channel.getStreams().values()) {
+                if (entry.streamId === 0) {
+                    continue;
+                }
+                let streams = index.get(entry.networkId);
+                if (!streams) {
+                    streams = new Map<number, StreamIDIndexItem>();
+                    index.set(entry.networkId, streams);
+                }
+                let item = streams.get(entry.streamId);
+                if (!item) {
+                    item = {
+                        networkId: entry.networkId,
+                        streamId: entry.streamId,
+                        channels: []
+                    };
+                    streams.set(entry.streamId, item);
+                }
+                if (!item.channels.some(value => value.channel === channel)) {
+                    item.channels.push({ channel, entry });
+                }
+            }
+        }
+        this._streamIDIndex = index;
+        this._streamIDIndexDirty = false;
     }
 
     private _load(): void {

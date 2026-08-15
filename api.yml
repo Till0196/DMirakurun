@@ -68,6 +68,22 @@ definitions:
 
   # channel -------------------------------------------------------------------
 
+  StreamID:
+    type: object
+    required:
+      - networkId
+      - streamId
+      - channels
+    properties:
+      networkId:
+        $ref: '#/definitions/NetworkId'
+      streamId:
+        $ref: '#/definitions/StreamId'
+      channels:
+        type: array
+        items:
+          $ref: '#/definitions/Channel'
+
   Channel:
     type: object
     required:

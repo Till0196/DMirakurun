@@ -337,6 +337,51 @@ export class Client {
         }, { priority, signal });
     }
 
+    async getStreamIDs(): Promise<apid.StreamID[]> {
+        const res = await this.call("getStreamIDs");
+        return res.body as apid.StreamID[];
+    }
+
+    async getStreamIDsByNetworkId(networkId: apid.NetworkId): Promise<apid.StreamID[]> {
+        const res = await this.call("getStreamIDsByNetworkId", { networkId });
+        return res.body as apid.StreamID[];
+    }
+
+    async getStreamID(networkId: apid.NetworkId, streamId: apid.StreamId): Promise<apid.StreamID> {
+        const res = await this.call("getStreamID", { networkId, streamId });
+        return res.body as apid.StreamID;
+    }
+
+    async getStreamIDStream(opt: { networkId: apid.NetworkId, streamId: apid.StreamId, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getStreamIDStream(networkId: apid.NetworkId, streamId: apid.StreamId, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getStreamIDStream(...args: any[]): Promise<http.IncomingMessage> {
+        let networkId: apid.NetworkId;
+        let streamId: apid.StreamId;
+        let decode: boolean;
+        let priority: number;
+        let signal: AbortSignal;
+
+        if (typeof args[0] === "object") {
+            const opt = args[0];
+            networkId = opt.networkId;
+            streamId = opt.streamId;
+            decode = opt.decode;
+            priority = opt.priority;
+            signal = opt.signal;
+        } else {
+            networkId = args[0];
+            streamId = args[1];
+            decode = args[2];
+            priority = args[3];
+        }
+
+        return this.call("getStreamIDStream", {
+            networkId,
+            streamId,
+            decode: decode ? 1 : 0
+        }, { priority, signal });
+    }
+
     async getPrograms(query?: ProgramsQuery): Promise<apid.Program[]> {
         const res = await this.call("getPrograms", query);
         return res.body as apid.Program[];

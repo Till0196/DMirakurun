@@ -137,6 +137,20 @@ export class Tuner {
         }, output);
     }
 
+    initStreamIDStream(networkId: number, streamId: number, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
+        const channels = _.channel.findByStreamId(networkId, streamId);
+        return this._initTS({
+            ...userReq,
+            streamSetting: {
+                channel: channels[0],
+                channels,
+                networkId,
+                streamId,
+                parseEIT: true
+            }
+        }, output);
+    }
+
     initServiceStream(service: ServiceItem, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
         const channels = _.channel.findByStreamId(service.networkId, service.streamId);
         const fallbackChannels = channels.length > 0

@@ -220,12 +220,7 @@ export default class ServiceItem {
 
         const all = this.channels;
         if (all.length > 0) {
-            // streamId as channel string keeps the primary identifier stable
-            // across route changes for clients that store one channel per service.
-            ret.channel = {
-                type: all[0].type,
-                channel: String(this._streamId)
-            };
+            ret.channel = serialize(all[0]);
         }
         if (all.length >= 1) {
             ret.channels = all.map(serialize);
