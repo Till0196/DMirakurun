@@ -56,25 +56,26 @@ export const get: Operation = (req, res) => {
         return;
     }
 
-    const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
+    const service = _.service.get(program.networkId, program.serviceId);
+    const streamID = service ? _.channel.getStreamID(service.networkId, service.streamId) : undefined;
+    if (req.query.format === "tlv" && streamID?.streamFormat === "ts") {
+        api.responseError(res, 406, "Requested Stream Format Unavailable");
+        return;
+    }
 
+    const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
     const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
     const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
-
-    // HEAD request support
     if (req.method === "HEAD") {
         res.setHeader("Content-Type", contentType);
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
     }
-
     let requestAborted = false;
     req.once("close", () => requestAborted = true);
-
     (<any> res.socket)._writableState.highWaterMark = Math.max(res.writableHighWaterMark, 1024 * 1024 * 16);
     res.socket.setNoDelay(true);
-
     _.tuner.initProgramStream(program, {
         id: userId,
         priority: parseInt(req.get("X-Mirakurun-Priority"), 10) || 0,
@@ -82,27 +83,22 @@ export const get: Operation = (req, res) => {
         url: req.url,
         disableDecoder: (<number> <any> req.query.decode === 0),
         outputFormat
-    }, res)
-        .then(tsFilter => {
-            if (requestAborted === true || req.aborted === true) {
-                return tsFilter.close();
-            }
-
-            req.once("close", () => tsFilter.close());
-
-            res.setHeader("Content-Type", contentType);
-            res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
-            res.status(200);
-
-            req.setTimeout(1000 * 60 * 10); // 10 minites
-        })
-        .catch((err) => api.responseStreamErrorHandler(res, err));
+    }, res).then(tsFilter => {
+        if (requestAborted === true || req.aborted === true) {
+            return tsFilter.close();
+        }
+        req.once("close", () => tsFilter.close());
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
+        res.status(200);
+        req.setTimeout(1000 * 60 * 10);
+    }).catch(err => api.responseStreamErrorHandler(res, err));
 };
 
 get.apiDoc = {
     tags: ["programs", "stream"],
     operationId: "getProgramStream",
-    produces: ["video/MP2T"],
+    produces: ["video/MP2T", "application/octet-stream"],
     responses: {
         200: {
             description: "OK",
@@ -114,6 +110,9 @@ get.apiDoc = {
         },
         404: {
             description: "Not Found"
+        },
+        406: {
+            description: "Requested Stream Format Unavailable"
         },
         503: {
             description: "Tuner Resource Unavailable"

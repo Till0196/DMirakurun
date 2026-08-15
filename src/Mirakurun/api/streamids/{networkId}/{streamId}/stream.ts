@@ -15,7 +15,6 @@
 */
 import { Operation } from "express-openapi";
 import * as api from "../../../../api";
-import * as apid from "../../../../../../api";
 import { OutputFormat } from "../../../../common";
 import _ from "../../../../_";
 
@@ -60,30 +59,30 @@ export const parameters = [
 export const get: Operation = (req, res) => {
     const networkId = req.params.networkId as any as number;
     const streamId = req.params.streamId as any as number;
-    const channels = _.channel.findByStreamId(networkId, streamId);
+    const streamID = _.channel.getStreamID(networkId, streamId);
 
-    if (channels.length === 0) {
+    if (!streamID) {
         api.responseError(res, 404);
         return;
     }
 
+    if (req.query.format === "tlv" && streamID.streamFormat === "ts") {
+        api.responseError(res, 406, "Requested Stream Format Unavailable");
+        return;
+    }
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
     const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
     const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
-
     if (req.method === "HEAD") {
         res.setHeader("Content-Type", contentType);
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
     }
-
     let requestAborted = false;
     req.once("close", () => requestAborted = true);
-
     (<any> res.socket)._writableState.highWaterMark = Math.max(res.writableHighWaterMark, 1024 * 1024 * 16);
     res.socket.setNoDelay(true);
-
     _.tuner.initStreamIDStream(networkId, streamId, {
         id: userId,
         priority: parseInt(req.get("X-Mirakurun-Priority"), 10) || 0,
@@ -91,19 +90,15 @@ export const get: Operation = (req, res) => {
         url: req.url,
         disableDecoder: (<number> <any> req.query.decode === 0),
         outputFormat
-    }, res)
-        .then(streamFilter => {
-            if (requestAborted === true || req.aborted === true) {
-                return streamFilter.close();
-            }
-
-            req.once("close", () => streamFilter.close());
-
-            res.setHeader("Content-Type", contentType);
-            res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
-            res.status(200);
-        })
-        .catch((err) => api.responseStreamErrorHandler(res, err));
+    }, res).then(streamFilter => {
+        if (requestAborted === true || req.aborted === true) {
+            return streamFilter.close();
+        }
+        req.once("close", () => streamFilter.close());
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
+        res.status(200);
+    }).catch(err => api.responseStreamErrorHandler(res, err));
 };
 
 get.apiDoc = {
@@ -121,6 +116,9 @@ get.apiDoc = {
         },
         404: {
             description: "Not Found"
+        },
+        406: {
+            description: "Requested Stream Format Unavailable"
         },
         503: {
             description: "Tuner Resource Unavailable"

@@ -73,16 +73,25 @@ definitions:
     required:
       - networkId
       - streamId
+      - streamFormat
       - channels
     properties:
       networkId:
         $ref: '#/definitions/NetworkId'
       streamId:
         $ref: '#/definitions/StreamId'
+      streamFormat:
+        $ref: '#/definitions/StreamFormat'
       channels:
         type: array
         items:
           $ref: '#/definitions/Channel'
+
+  StreamFormat:
+    type: string
+    enum:
+      - ts
+      - tlv
 
   Channel:
     type: object

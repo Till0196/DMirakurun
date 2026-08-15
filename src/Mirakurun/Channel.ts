@@ -25,6 +25,7 @@ import { JobItem } from "./Job";
 export interface StreamIDIndexItem {
     readonly networkId: number;
     readonly streamId: number;
+    streamFormat: apid.StreamFormat;
     readonly channels: Array<{
         channel: ChannelItem;
         entry: StreamEntry;
@@ -295,6 +296,7 @@ export class Channel {
                     item = {
                         networkId: entry.networkId,
                         streamId: entry.streamId,
+                        streamFormat: entry.isTlv ? "tlv" : "ts",
                         channels: []
                     };
                     streams.set(entry.streamId, item);

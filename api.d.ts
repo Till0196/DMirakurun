@@ -56,9 +56,12 @@ export type ChannelType = "GR" | "BS" | "CS" | "SKY" | "BS4K";
 
 export type ChannelRoute = "TER" | "SAT" | "CATV" | "HIKARI";
 
+export type StreamFormat = "ts" | "tlv";
+
 export interface StreamID {
     networkId: NetworkId;
     streamId: StreamId;
+    streamFormat: StreamFormat;
     channels: Channel[];
 }
 

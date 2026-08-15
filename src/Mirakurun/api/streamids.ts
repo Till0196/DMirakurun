@@ -43,6 +43,7 @@ export function serializeStreamID(item: StreamIDIndexItem): apid.StreamID {
     return {
         networkId: item.networkId,
         streamId: item.streamId,
+        streamFormat: item.streamFormat,
         channels: item.channels.map(serializeChannel)
     };
 }
