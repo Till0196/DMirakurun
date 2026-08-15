@@ -456,7 +456,7 @@ const TunersSection: React.FC<{
                 userInfoItems.push(
                     <span key="format" className="tuner-user-info-item">
                         <Icon icon="exchange" className="bp5-text-muted" size={12} />
-                        <span>Format: {streamFormat.toUpperCase()} → {outputFormat.toUpperCase()}</span>
+                        <span>{streamFormat.toUpperCase()} → {outputFormat.toUpperCase()}</span>
                     </span>
                 );
             }
