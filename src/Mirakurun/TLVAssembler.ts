@@ -225,7 +225,6 @@ export default class TLVAssembler extends EventEmitter {
     private _commitOffsets(offsets: number[]): void {
         this._offsets = offsets;
         this._offsetsApplied = false;
-        log.info("TunerDevice#%d TSMF offsets finalized: %s", this._tunerIndex, offsets.join(","));
         if (this._buffer.length) {
             this._buffer.length = 0;
         }
@@ -233,7 +232,7 @@ export default class TLVAssembler extends EventEmitter {
 
     private _probeOffsets(carriers: CarrierBucket[]): number[] | null {
         const candidates = this._buildOffsetCandidates(carriers);
-        const results: { offsets: number[]; validRatio: number; tried: number }[] = [];
+        const results: { offsets: number[]; validRatio: number }[] = [];
 
         for (let i = 0; i < candidates.length; i++) {
             if (this._closed || this._closing) {
@@ -255,7 +254,7 @@ export default class TLVAssembler extends EventEmitter {
                 stats.cidOk !== stats.cidTotal) {
                 continue;
             }
-            results.push({ offsets, validRatio: stats.validRatio, tried: i + 1 });
+            results.push({ offsets, validRatio: stats.validRatio });
         }
 
         if (results.length === 0) {
@@ -281,11 +280,6 @@ export default class TLVAssembler extends EventEmitter {
             return null;
         }
 
-        log.info(
-            "TunerDevice#%d TSMF offsets=%s (tried %d/%d)",
-            this._tunerIndex, best.offsets.join(","),
-            best.tried, candidates.length
-        );
         return best.offsets;
     }
 

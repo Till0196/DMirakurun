@@ -201,7 +201,7 @@ export default class StreamFilter extends EventEmitter {
 
         const result = this._detectStreamFormat(buffer);
         this._format = result.format;
-        log.debug("StreamFilter: detected format: %s%s (%d bytes inspected)",
+        log.debug("StreamFilter: detected format %s%s (%d bytes inspected)",
             this._format,
             result.tsmfHeader ? " (TSMF)" : "",
             buffer.length);
@@ -329,7 +329,7 @@ export default class StreamFilter extends EventEmitter {
             header.numberOfCarriers > 1 &&
             header.groupId !== 0 && header.groupId !== 255) {
             log.info(
-                "StreamFilter TSMF discovery: groupId=%d numberOfCarriers=%d → emit discovery on %s",
+                "StreamFilter: TSMF discovery detected groupId=%d numberOfCarriers=%d on %s",
                 header.groupId, header.numberOfCarriers, ch.channel
             );
             if (_.service) {
@@ -355,28 +355,27 @@ export default class StreamFilter extends EventEmitter {
 
         switch (decision.kind) {
             case "empty":
-                log.warn("StreamFilter TSMF slot map empty on %s — closing", ch.channel);
+                log.warn("StreamFilter: TSMF slot map empty on %s — closing", ch.channel);
                 this.close();
                 return;
 
             case "tsmf-tlv":
-                log.info("StreamFilter TSMF route: %s relTs=%d → tsmf-tlv on %s",
+                log.info("StreamFilter: routing %s relTs=%d to tsmf-tlv on %s",
                     decision.pinned ? "pinned" : "auto", decision.relTs, ch.channel);
                 this._initTsmfTlv(buffered, decision.relTs);
                 return;
 
             case "tsmf-ts":
-                log.info("StreamFilter TSMF route: %s relTs=%d → tsmf-ts on %s (active=[%s])",
+                log.info("StreamFilter: routing %s relTs=%d to tsmf-ts on %s",
                     decision.pinned ? "pinned" : "auto",
                     decision.relTs,
-                    ch.channel,
-                    [...decision.activeStreams].sort((a, b) => a - b).join(","));
+                    ch.channel);
                 this._initTs(buffered, new TSMFSlotFilter(decision.relTs, !opts.serviceId));
                 return;
 
             case "tsmf-scan": {
                 const hasGroupId = header.groupId !== 0 && header.groupId !== 255;
-                log.info("StreamFilter TSMF scan started: %d relTs groupId=%s on %s",
+                log.info("StreamFilter: TSMF scan started %d relTs groupId=%s on %s",
                     decision.activeStreams.size,
                     hasGroupId ? header.groupId : "none",
                     ch.channel);
@@ -517,10 +516,10 @@ export default class StreamFilter extends EventEmitter {
 
         const gotCount = this._relStreams.filter(e => e.gotServices).length;
         if (partial) {
-            log.info("StreamFilter TSMF auto-detect partial emit: %d/%d relTs, %d services on %s",
+            log.info("StreamFilter: TSMF auto-detect partial emit %d/%d relTs, %d services on %s",
                 gotCount, this._relStreams.length, merged.length, this._options.channel.channel);
         } else {
-            log.info("StreamFilter TSMF auto-detect emit: %d relTs, %d services on %s",
+            log.info("StreamFilter: TSMF auto-detect emit %d relTs, %d services on %s",
                 this._relStreams.length, merged.length, this._options.channel.channel);
         }
 
@@ -535,7 +534,7 @@ export default class StreamFilter extends EventEmitter {
         const ch = opts.channel;
 
         log.info(
-            "StreamFilter TSMF-TLV %s (tsmfRelTs=%d, groupId=%s)",
+            "StreamFilter: TSMF-TLV %s (tsmfRelTs=%d, groupId=%s)",
             opts.tsmfDiscovery ? "discovery" : "bonded scan",
             relTs,
             ch.tsmfGroupId ?? "none"
@@ -561,7 +560,7 @@ export default class StreamFilter extends EventEmitter {
                     return;
                 }
                 ch.setTsmfGroupId(groupId);
-                log.info("StreamFilter TSMF-TLV discovery: groupId=%d numberOfCarriers=%d on %s",
+                log.info("StreamFilter: TSMF-TLV discovery groupId=%d numberOfCarriers=%d on %s",
                     groupId, numberOfCarriers, ch.channel);
                 if (_.service) {
                     _.service.save();
@@ -635,7 +634,7 @@ export default class StreamFilter extends EventEmitter {
             const tsmfHeader = TSMFFilter.findFirstExtendedHeader(buffer, tsStart);
             if (tsmfHeader) {
                 log.debug(
-                    "StreamFilter TSMF header: slotMap counts %j, streamTypeBits=0x%s, groupId=%d",
+                    "StreamFilter: TSMF header slotMap counts %j, streamTypeBits=0x%s, groupId=%d",
                     TSMFFilter.countSlots(tsmfHeader.slotMap),
                     tsmfHeader.streamTypeBits.toString(16),
                     tsmfHeader.groupId

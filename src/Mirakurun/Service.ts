@@ -493,7 +493,7 @@ export class Service {
     }
 
     private async _scan(channel: ChannelItem, add: boolean, tsmfDiscovery = true): Promise<void> {
-        log.info("ChannelItem#'%s' service scan has started (tsmfDiscovery=%s)", channel.name, tsmfDiscovery);
+        log.info("ChannelItem#'%s' service scan has started", channel.name);
 
         let result: Awaited<ReturnType<typeof _.tuner.discoverServices>>;
         channel.beginStreamScan();
