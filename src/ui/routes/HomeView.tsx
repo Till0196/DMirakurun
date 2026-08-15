@@ -413,11 +413,6 @@ const TunersSection: React.FC<{
             const streamId = user.streamSetting?.streamId;
             const streamFormat = user.streamSetting?.streamFormat;
             const outputFormat = user.outputFormat ?? "ts";
-            const formatLabel = streamFormat
-                ? (streamFormat === outputFormat
-                    ? streamFormat.toUpperCase()
-                    : `${streamFormat.toUpperCase()} → ${outputFormat.toUpperCase()}`)
-                : "-";
             const channelMeta: string[] = [];
             if (channel?.route && multiRouteTypes.has(channel.type)) {
                 channelMeta.push(channel.route);
@@ -447,19 +442,24 @@ const TunersSection: React.FC<{
                         {channelMeta.length > 0 ? ` (${channelMeta.join(" | ")})` : ""}
                     </span>
                 </span>,
-                <span key="sid" className="tuner-user-info-item">
+                <span key="sid" className="tuner-user-info-item" title="Service ID">
                     <Icon icon="filter" className="bp5-text-muted" size={12} />
-                    <span>SID: {user.streamSetting?.serviceId !== undefined ? `0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}</span>
+                    <span>{user.streamSetting?.serviceId !== undefined ? `0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}</span>
                 </span>,
-                <span key="stream-id" className="tuner-user-info-item">
-                    <Icon icon="filter" className="bp5-text-muted" size={12} />
-                    <span>StreamID: {streamId !== undefined ? `0x${streamId.toString(16).toUpperCase()} (${streamId})` : "-"}</span>
-                </span>,
-                <span key="format" className="tuner-user-info-item">
-                    <Icon icon="exchange" className="bp5-text-muted" size={12} />
-                    <span>Format: {formatLabel}</span>
+                <span key="stream-id" className="tuner-user-info-item" title="Stream ID">
+                    <Icon icon="data-lineage" className="bp5-text-muted" size={12} />
+                    <span>{streamId !== undefined ? `0x${streamId.toString(16).toUpperCase()} (${streamId})` : "-"}</span>
                 </span>
             ];
+
+            if (streamFormat && streamFormat !== outputFormat) {
+                userInfoItems.push(
+                    <span key="format" className="tuner-user-info-item">
+                        <Icon icon="exchange" className="bp5-text-muted" size={12} />
+                        <span>Format: {streamFormat.toUpperCase()} → {outputFormat.toUpperCase()}</span>
+                    </span>
+                );
+            }
 
             // stream info
             if (!isEmptyStreamInfo(user.streamInfo)) {
