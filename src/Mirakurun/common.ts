@@ -37,6 +37,7 @@ interface StreamSetting {
     channels?: ChannelItem[];
     networkId?: number;
     streamId?: number;
+    streamFormat?: apid.StreamFormat;
     serviceId?: number;
     eventId?: number;
     parseNIT?: boolean;

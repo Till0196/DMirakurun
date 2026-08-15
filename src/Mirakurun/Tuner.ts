@@ -119,6 +119,7 @@ export class Tuner {
 
     initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable, tsmfRelTs?: number, altChannels?: ChannelItem[]): Promise<StreamFilter | TSFilter> {
         let networkId: number;
+        const streamEntry = channel.getStreams().get(tsmfRelTs ?? 0);
 
         const services = channel.getServices();
         if (services.length !== 0) {
@@ -130,7 +131,9 @@ export class Tuner {
             streamSetting: {
                 channel,
                 channels: altChannels && altChannels.length > 1 ? altChannels : undefined,
-                networkId,
+                networkId: streamEntry?.networkId ?? networkId,
+                streamId: streamEntry?.streamId,
+                streamFormat: streamEntry ? (streamEntry.isTlv ? "tlv" : "ts") : undefined,
                 parseEIT: true,
                 tsmfRelTs
             }
@@ -146,6 +149,7 @@ export class Tuner {
                 channels,
                 networkId,
                 streamId,
+                streamFormat: _.channel.getStreamID(networkId, streamId)?.streamFormat,
                 parseEIT: true
             }
         }, output);
@@ -162,6 +166,7 @@ export class Tuner {
                 channel: fallbackChannels[0] ?? service.channel,
                 channels: fallbackChannels.length > 0 ? fallbackChannels : undefined,
                 streamId: service.streamId,
+                streamFormat: _.channel.getStreamID(service.networkId, service.streamId)?.streamFormat,
                 serviceId: service.serviceId,
                 networkId: service.networkId,
                 parseEIT: true
@@ -181,6 +186,7 @@ export class Tuner {
                 channel: fallbackChannels[0] ?? service.channel,
                 channels: fallbackChannels.length > 0 ? fallbackChannels : undefined,
                 streamId: service.streamId,
+                streamFormat: _.channel.getStreamID(service.networkId, service.streamId)?.streamFormat,
                 serviceId: program.serviceId,
                 eventId: program.eventId,
                 networkId: program.networkId,

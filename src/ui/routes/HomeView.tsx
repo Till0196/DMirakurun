@@ -410,6 +410,14 @@ const TunersSection: React.FC<{
             const relTlv = user.streamSetting?.tsmfRelTlv;
             const relTs = user.streamSetting?.tsmfRelTs ?? channel?.tsmfRelTs;
             const groupId = channel?.tsmfGroupId;
+            const streamId = user.streamSetting?.streamId;
+            const streamFormat = user.streamSetting?.streamFormat;
+            const outputFormat = user.outputFormat ?? "ts";
+            const formatLabel = streamFormat
+                ? (streamFormat === outputFormat
+                    ? streamFormat.toUpperCase()
+                    : `${streamFormat.toUpperCase()} → ${outputFormat.toUpperCase()}`)
+                : "-";
             const channelMeta: string[] = [];
             if (channel?.route && multiRouteTypes.has(channel.type)) {
                 channelMeta.push(channel.route);
@@ -441,7 +449,15 @@ const TunersSection: React.FC<{
                 </span>,
                 <span key="sid" className="tuner-user-info-item">
                     <Icon icon="filter" className="bp5-text-muted" size={12} />
-                    <span>{user.streamSetting?.serviceId ? `0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}</span>
+                    <span>SID: {user.streamSetting?.serviceId !== undefined ? `0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}</span>
+                </span>,
+                <span key="stream-id" className="tuner-user-info-item">
+                    <Icon icon="filter" className="bp5-text-muted" size={12} />
+                    <span>StreamID: {streamId !== undefined ? `0x${streamId.toString(16).toUpperCase()} (${streamId})` : "-"}</span>
+                </span>,
+                <span key="format" className="tuner-user-info-item">
+                    <Icon icon="exchange" className="bp5-text-muted" size={12} />
+                    <span>Format: {formatLabel}</span>
                 </span>
             ];
 

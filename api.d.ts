@@ -243,6 +243,7 @@ export interface TunerUser {
     agent?: string;
     url?: string;
     disableDecoder?: boolean;
+    outputFormat?: StreamFormat;
     streamSetting?: StreamSetting;
     streamInfo?: StreamInfo;
 }
@@ -250,6 +251,8 @@ export interface TunerUser {
 interface StreamSetting {
     channel: ConfigChannelsItem;
     networkId?: number;
+    streamId?: number;
+    streamFormat?: StreamFormat;
     serviceId?: number;
     eventId?: number;
     noProvide?: boolean;

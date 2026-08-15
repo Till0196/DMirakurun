@@ -118,6 +118,7 @@ export default class TunerDevice extends EventEmitter {
                 agent: user.agent,
                 url: user.url,
                 disableDecoder: user.disableDecoder,
+                outputFormat: user.outputFormat,
                 streamSetting: ss ? {
                     channel: ss.channel ? {
                         type: ss.channel.type,
@@ -127,6 +128,8 @@ export default class TunerDevice extends EventEmitter {
                             ss.channel.tsmfGroupId !== 255 && { tsmfGroupId: ss.channel.tsmfGroupId })
                     } : undefined,
                     networkId: ss.networkId,
+                    streamId: ss.streamId,
+                    streamFormat: ss.streamFormat,
                     serviceId: ss.serviceId,
                     eventId: ss.eventId,
                     parseNIT: ss.parseNIT,

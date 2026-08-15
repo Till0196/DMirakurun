@@ -455,6 +455,8 @@ definitions:
         type: string
       disableDecoder:
         type: boolean
+      outputFormat:
+        $ref: '#/definitions/StreamFormat'
       streamSetting:
         type: object
         required:
@@ -464,6 +466,10 @@ definitions:
             $ref: '#/definitions/ConfigChannelsItem'
           networkId:
             type: integer
+          streamId:
+            type: integer
+          streamFormat:
+            $ref: '#/definitions/StreamFormat'
           serviceId:
             type: integer
           eventId:
