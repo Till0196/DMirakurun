@@ -255,7 +255,7 @@ export default class ChannelItem {
 
     getStreamForService(serviceId: number): StreamEntry | undefined {
         for (const entry of this._streams.values()) {
-            if (entry.serviceIds.has(serviceId)) {
+            if (entry.serviceIds.has(serviceId) || entry.configServiceIds.has(serviceId)) {
                 return entry;
             }
         }
@@ -317,7 +317,7 @@ export default class ChannelItem {
             route: this.route,
             ...(this._tsmfGroupId !== null && this._tsmfGroupId !== undefined && this._tsmfGroupId !== 255 && { tsmfGroupId: this._tsmfGroupId }),
             services: this.getServices().map(service => {
-                const entry = this.getStreamForService(service.serviceId);
+                const entry = this.resolveStreamForService(service);
                 const svc: apid.Service = {
                     id: service.id,
                     serviceId: service.serviceId,
@@ -327,7 +327,9 @@ export default class ChannelItem {
                     type: service.type
                 };
                 if (entry) {
-                    svc.streamId = entry.streamId;
+                    if (entry.streamId !== 0) {
+                        svc.streamId = entry.streamId;
+                    }
                     if (entry.relTs !== undefined) {
                         svc.tsmfRelTs = entry.relTs;
                     }
@@ -335,6 +337,39 @@ export default class ChannelItem {
                 return svc;
             })
         };
+    }
+
+    private resolveStreamForService(service: ServiceItem): StreamEntry | undefined {
+        const localEntry = this.getStreamForService(service.serviceId);
+        if (localEntry) {
+            return localEntry;
+        }
+
+        if (this._tsmfGroupId !== null && this._tsmfGroupId !== undefined) {
+            for (const sibling of _.channel?.items ?? []) {
+                if (sibling === this || sibling.tsmfGroupId !== this._tsmfGroupId) {
+                    continue;
+                }
+                const siblingEntry = sibling.getStreamForService(service.serviceId);
+                if (!siblingEntry || siblingEntry.relTs === undefined) {
+                    continue;
+                }
+                if (siblingEntry.networkId !== 0 &&
+                    (siblingEntry.networkId !== service.networkId || siblingEntry.streamId !== service.streamId)) {
+                    continue;
+                }
+                const groupEntry = this._streams.get(siblingEntry.relTs);
+                if (groupEntry && groupEntry.networkId === service.networkId &&
+                    groupEntry.streamId === service.streamId) {
+                    return groupEntry;
+                }
+            }
+        }
+
+        const candidates = [...this._streams.values()].filter(entry =>
+            entry.networkId === service.networkId && entry.streamId === service.streamId
+        );
+        return candidates.length === 1 ? candidates[0] : undefined;
     }
 
     private _finishStreamScan(): void {
