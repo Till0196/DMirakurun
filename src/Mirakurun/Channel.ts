@@ -193,22 +193,15 @@ export class Channel {
             if (record.streams) {
                 for (const entry of record.streams) {
                     let streamKey: number;
-                    let isTlv: boolean;
                     let relTs: number | undefined;
                     if (entry.relTs !== undefined) {
                         streamKey = entry.relTs;
-                        isTlv = false;
                         relTs = entry.relTs;
-                    } else if (entry.relTlv !== undefined) {
-                        streamKey = entry.relTlv;
-                        isTlv = true;
-                        relTs = entry.relTlv;
                     } else {
                         streamKey = 0;
-                        isTlv = false;
                         relTs = undefined;
                     }
-                    channel.setStream(streamKey, entry.streamId, entry.networkId, isTlv, relTs);
+                    channel.setStream(streamKey, entry.streamId, entry.networkId, entry.isTlv === true, relTs);
                     if (entry.serviceIds) {
                         for (const sid of entry.serviceIds) {
                             channel.addServiceId(sid, streamKey);
@@ -253,11 +246,10 @@ export class Channel {
                         networkId: info.networkId
                     };
                     if (info.relTs !== undefined) {
-                        if (info.isTlv) {
-                            entry.relTlv = info.relTs;
-                        } else {
-                            entry.relTs = info.relTs;
-                        }
+                        entry.relTs = info.relTs;
+                    }
+                    if (info.isTlv) {
+                        entry.isTlv = true;
                     }
                     if (info.serviceIds.size > 0) {
                         entry.serviceIds = [...info.serviceIds];

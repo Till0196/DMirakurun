@@ -109,8 +109,6 @@ definitions:
         $ref: '#/definitions/ChannelRoute'
       tsmfRelTs:
         type: integer
-      tsmfRelTlv:
-        type: integer
       tsmfGroupId:
         type: integer
       isMultiCarrier:
@@ -180,8 +178,6 @@ definitions:
       channel:
         $ref: '#/definitions/Channel'
       tsmfRelTs:
-        type: integer
-      tsmfRelTlv:
         type: integer
 
   # program -------------------------------------------------------------------

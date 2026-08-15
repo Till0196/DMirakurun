@@ -27,11 +27,7 @@ function serializeChannel(value: StreamIDIndexItem["channels"][number]): apid.Ch
         route: channel.route
     };
     if (entry.relTs !== undefined) {
-        if (entry.isTlv) {
-            ret.tsmfRelTlv = entry.relTs;
-        } else {
-            ret.tsmfRelTs = entry.relTs;
-        }
+        ret.tsmfRelTs = entry.relTs;
     }
     if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined && channel.tsmfGroupId !== 255) {
         ret.tsmfGroupId = channel.tsmfGroupId;

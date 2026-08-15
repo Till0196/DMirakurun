@@ -46,7 +46,6 @@ export interface Channel {
     name?: string;
     route?: ChannelRoute;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
     tsmfGroupId?: number;
     isMultiCarrier?: boolean;
     services?: Service[];
@@ -81,7 +80,6 @@ export interface Service {
     channels?: Channel[];
     channel?: Channel;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
 }
 
 export interface Program {
@@ -260,7 +258,6 @@ interface StreamSetting {
     parseSDT?: boolean;
     parseEIT?: boolean;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
 }
 
 export interface StreamInfo {

@@ -85,8 +85,7 @@ export default class StreamFilter extends EventEmitter {
 
     // Multi-relTs auto-detect scan state (TSMF scan — TS and/or TLV)
     private _relStreams: Array<{
-        relTs?: number;
-        relTlv?: number;
+        relTs: number;
         slot: TSMFSlotFilter;
         filter: TSFilter | TLVFilter;
         gotServices: boolean;
@@ -418,17 +417,13 @@ export default class StreamFilter extends EventEmitter {
             slot.on("data", (chunk: Buffer) => filter.write(chunk));
 
             const entry: (typeof this._relStreams)[number] = {
+                relTs,
                 slot,
                 filter,
                 gotServices: false,
                 gotNetwork: false,
                 services: null
             };
-            if (isTlv) {
-                entry.relTlv = relTs;
-            } else {
-                entry.relTs = relTs;
-            }
 
             filter.on("network", (net: any) => {
                 if (entry.gotNetwork) {
@@ -507,10 +502,8 @@ export default class StreamFilter extends EventEmitter {
                 }
                 seen.add(key);
                 merged.push(svc);
-                if (e.relTs !== undefined) {
-                    // fromConfig locks are honoured inside addServiceId.
-                    ch.addServiceId(svc.serviceId, e.relTs);
-                }
+                // fromConfig locks are honoured inside addServiceId.
+                ch.addServiceId(svc.serviceId, e.relTs);
             }
         }
 

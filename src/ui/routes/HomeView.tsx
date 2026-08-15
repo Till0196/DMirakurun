@@ -175,7 +175,7 @@ const ServicesSection: React.FC<{
                                     }>();
                                     for (const channel of channels) {
                                         const route = channel.route ?? channel.type;
-                                        const rel = channel.tsmfRelTs ?? channel.tsmfRelTlv;
+                                        const rel = channel.tsmfRelTs;
                                         const key = `${route}|${channel.type}|${rel ?? ""}|${channel.tsmfGroupId ?? ""}`;
                                         const group = groups.get(key);
                                         if (group) {
@@ -407,7 +407,6 @@ const TunersSection: React.FC<{
             const user = tuner.users[i];
             const isMirakurun = /Mirakurun/.test(user.id);
             const channel = user.streamSetting?.channel;
-            const relTlv = user.streamSetting?.tsmfRelTlv;
             const relTs = user.streamSetting?.tsmfRelTs ?? channel?.tsmfRelTs;
             const groupId = channel?.tsmfGroupId;
             const streamId = user.streamSetting?.streamId;
@@ -417,9 +416,7 @@ const TunersSection: React.FC<{
             if (channel?.route && multiRouteTypes.has(channel.type)) {
                 channelMeta.push(channel.route);
             }
-            if (relTlv !== undefined) {
-                channelMeta.push(`RelTlv=${relTlv}`);
-            } else if (relTs !== undefined) {
+            if (relTs !== undefined) {
                 channelMeta.push(`RelTs=${relTs}`);
             }
             if (groupId !== undefined) {

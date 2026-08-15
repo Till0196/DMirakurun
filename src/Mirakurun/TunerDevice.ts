@@ -135,8 +135,7 @@ export default class TunerDevice extends EventEmitter {
                     parseNIT: ss.parseNIT,
                     parseSDT: ss.parseSDT,
                     parseEIT: ss.parseEIT,
-                    ...(ss.tsmfRelTs !== undefined && { tsmfRelTs: ss.tsmfRelTs }),
-                    ...(ss.tsmfRelTlv !== undefined && { tsmfRelTlv: ss.tsmfRelTlv })
+                    ...(ss.tsmfRelTs !== undefined && { tsmfRelTs: ss.tsmfRelTs })
                 } : undefined,
                 streamInfo: user.streamInfo
             };

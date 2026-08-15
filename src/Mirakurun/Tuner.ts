@@ -495,7 +495,7 @@ export class Tuner {
      * TSMFFilter does not lock onto stale DVR contents.
      */
     private _resolveTsmfSlot(setting: common.User["streamSetting"], pickedChannel: ChannelItem): void {
-        if (setting.tsmfRelTs === undefined && setting.tsmfRelTlv === undefined) {
+        if (setting.tsmfRelTs === undefined) {
             let entry = setting.serviceId !== undefined && setting.serviceId !== null
                 ? pickedChannel.getStreamForService(setting.serviceId)
                 : undefined;
@@ -508,16 +508,11 @@ export class Tuner {
                 entry = pickedChannel.getStreams().get(pickedChannel.tsmfRelTs);
             }
             if (entry?.relTs !== undefined) {
-                if (entry.isTlv) {
-                    setting.tsmfRelTlv = entry.relTs;
-                } else {
-                    setting.tsmfRelTs = entry.relTs;
-                }
+                setting.tsmfRelTs = entry.relTs;
             }
         }
 
-        if (setting.drainBytes === undefined &&
-            (setting.tsmfRelTs !== undefined || setting.tsmfRelTlv !== undefined)) {
+        if (setting.drainBytes === undefined && setting.tsmfRelTs !== undefined) {
             setting.drainBytes = STALE_DVR_DRAIN_BYTES;
         }
     }

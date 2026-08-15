@@ -329,11 +329,7 @@ export default class ChannelItem {
                 if (entry) {
                     svc.streamId = entry.streamId;
                     if (entry.relTs !== undefined) {
-                        if (entry.isTlv) {
-                            svc.tsmfRelTlv = entry.relTs;
-                        } else {
-                            svc.tsmfRelTs = entry.relTs;
-                        }
+                        svc.tsmfRelTs = entry.relTs;
                     }
                 }
                 return svc;

@@ -214,11 +214,7 @@ export default class ServiceItem {
                 route: ch.route
             };
             if (entry?.relTs !== undefined) {
-                if (entry.isTlv) {
-                    c.tsmfRelTlv = entry.relTs;
-                } else {
-                    c.tsmfRelTs = entry.relTs;
-                }
+                c.tsmfRelTs = entry.relTs;
             }
             if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && ch.tsmfGroupId !== 255) {
                 c.tsmfGroupId = ch.tsmfGroupId;

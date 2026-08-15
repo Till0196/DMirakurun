@@ -298,11 +298,9 @@ export class TSMFCarrierBonding {
                 const tsFilter = sourceStream as unknown as TSFilter;
 
                 let carrierRelTs: number | undefined;
-                let carrierIsTlv = false;
                 for (const e of channel.getStreams().values()) {
                     if (e.relTs !== undefined) {
                         carrierRelTs = e.relTs;
-                        carrierIsTlv = e.isTlv;
                         break;
                     }
                 }
@@ -313,9 +311,7 @@ export class TSMFCarrierBonding {
                     disableDecoder: true,
                     streamSetting: {
                         channel,
-                        ...(carrierRelTs !== undefined && (carrierIsTlv
-                            ? { tsmfRelTlv: carrierRelTs }
-                            : { tsmfRelTs: carrierRelTs }))
+                        ...(carrierRelTs !== undefined && { tsmfRelTs: carrierRelTs })
                     }
                 };
                 return { device, channel, demuxerInput, sourceStream, tsFilter, user };

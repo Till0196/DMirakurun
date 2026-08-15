@@ -44,7 +44,6 @@ interface StreamSetting {
     parseSDT?: boolean;
     parseEIT?: boolean;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
     tsmfDiscovery?: boolean;
     drainBytes?: number;
 }
