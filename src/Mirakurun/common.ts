@@ -36,6 +36,7 @@ interface StreamSetting {
     channel: ChannelItem;
     channels?: ChannelItem[];
     networkId?: number;
+    streamId?: number;
     serviceId?: number;
     eventId?: number;
     parseNIT?: boolean;

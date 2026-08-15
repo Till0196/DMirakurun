@@ -138,12 +138,16 @@ export class Tuner {
     }
 
     initServiceStream(service: ServiceItem, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
-        const channels = _.channel.findByService(service.networkId, service.serviceId);
+        const channels = _.channel.findByStreamId(service.networkId, service.streamId);
+        const fallbackChannels = channels.length > 0
+            ? channels
+            : _.channel.findByService(service.networkId, service.serviceId);
         return this._initTS({
             ...userReq,
             streamSetting: {
-                channel: channels[0] ?? service.channel,
-                channels: channels.length > 0 ? channels : undefined,
+                channel: fallbackChannels[0] ?? service.channel,
+                channels: fallbackChannels.length > 0 ? fallbackChannels : undefined,
+                streamId: service.streamId,
                 serviceId: service.serviceId,
                 networkId: service.networkId,
                 parseEIT: true
@@ -153,12 +157,16 @@ export class Tuner {
 
     initProgramStream(program: apid.Program, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
         const service = _.service.get(program.networkId, program.serviceId);
-        const channels = _.channel.findByService(service.networkId, service.serviceId);
+        const channels = _.channel.findByStreamId(service.networkId, service.streamId);
+        const fallbackChannels = channels.length > 0
+            ? channels
+            : _.channel.findByService(service.networkId, service.serviceId);
         return this._initTS({
             ...userReq,
             streamSetting: {
-                channel: channels[0] ?? service.channel,
-                channels: channels.length > 0 ? channels : undefined,
+                channel: fallbackChannels[0] ?? service.channel,
+                channels: fallbackChannels.length > 0 ? fallbackChannels : undefined,
+                streamId: service.streamId,
                 serviceId: program.serviceId,
                 eventId: program.eventId,
                 networkId: program.networkId,
@@ -471,6 +479,11 @@ export class Tuner {
             let entry = setting.serviceId !== undefined && setting.serviceId !== null
                 ? pickedChannel.getStreamForService(setting.serviceId)
                 : undefined;
+            if (!entry && setting.networkId !== undefined && setting.streamId !== undefined) {
+                entry = [...pickedChannel.getStreams().values()].find(stream =>
+                    stream.networkId === setting.networkId && stream.streamId === setting.streamId
+                );
+            }
             if (!entry && pickedChannel.tsmfRelTs !== undefined && pickedChannel.tsmfRelTs !== null) {
                 entry = pickedChannel.getStreams().get(pickedChannel.tsmfRelTs);
             }
