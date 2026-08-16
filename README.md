@@ -49,6 +49,7 @@ MPEG-TSで伝送されるロゴについて、ロゴ配信サービス（ESS）�
 ## tuners.ymlの例
 
 ```yaml
+# ISDB-T、ISDB-S、ISDB-S3、フレッツ・テレビ（ITU-T J.83 Annex B）用
 - name: PT4K-0
   types:
     - GR
@@ -66,6 +67,7 @@ MPEG-TSで伝送されるロゴについて、ロゴ配信サービス（ESS）�
   tlvToTsDecoder: dantto4k - -
   # tlvToTsDecoder: dantto4k - - --smartCardReaderName="Generic USB2.0-CRW [Smart Card Reader Interface] (20070818000000000) 00 00" --disableADTSConversion
 
+# ISDB-T、ISDB-S、ISDB-S3、フレッツ・テレビ（ITU-T J.83 Annex B）用
 - name: PT4K-1
   types:
     - GR
@@ -82,6 +84,7 @@ MPEG-TSで伝送されるロゴについて、ロゴ配信サービス（ESS）�
   tlvDecoder: arib-b61-stream-test
   tlvToTsDecoder: dantto4k - -
 
+# ISDB-T、ISDB-C用
 - name: TBS6205SE-1
   types:
     - GR
@@ -98,7 +101,9 @@ MPEG-TSで伝送されるロゴについて、ロゴ配信サービス（ESS）�
   tlvToTsDecoder: dantto4k - -
 ```
 
-`<route>`は、選択された経路に応じて小文字の`ter`、`sat`、`catv`、`hikari`のいずれかに置き換えられます。PT4Kでは3経路、TBS6205SEの例では`TER`と`CATV`を候補とし、対応する`dvbv5_channels_<route>.conf`を使って選局します。PT4Kによる`HIKARI`経路の受信も動作確認済みです。
+`<route>`は、選択された経路に応じて小文字の`ter`、`sat`、`catv`、`hikari`のいずれかに置き換えられます。この例では、TBS6205SEを`TER`経路のISDB-Tと`CATV`経路のISDB-Cに使用します。PT4Kは、`TER`経路のISDB-T、`SAT`経路のISDB-SおよびISDB-S3、`HIKARI`経路のフレッツ・テレビ（ITU-T J.83 Annex B）に使用します。それぞれ対応する`dvbv5_channels_<route>.conf`を使って選局します。PT4Kによる`HIKARI`経路の受信も動作確認済みです。
+
+`types`は受信したサービスをMirakurun上で分類するチャンネルタイプ、`routes`はチューナーが利用できる物理的な受信経路です。そのため、ISDB-Cやフレッツ・テレビで衛星放送の再放送を受信するチューナーには、`BS`、`SKY`、`BS4K`など、実際に扱うサービスのタイプも指定します。
 
 PT4Kをこの構成で使用する場合は、[Till0196/tbs6812_drv](https://github.com/Till0196/tbs6812_drv)を利用できます。このドライバはPT4KをLinuxのDVBデバイスとして扱い、ISDB-T、ISDB-S（ISDB-S3を含む）、ISDB-C、DVB-S、ITU-T J.83 Annex Bの受信に対応しています。
 
