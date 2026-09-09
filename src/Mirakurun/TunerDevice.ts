@@ -45,6 +45,7 @@ interface User extends common.User {
 interface StartStreamOptions {
     suppressGroupCombine?: boolean;
     drainBytes?: number;
+    streamFormat?: apid.StreamFormat;
 }
 
 export interface TunerDeviceStatus {
@@ -64,6 +65,7 @@ export interface TunerDeviceStatus {
 
 export default class TunerDevice extends EventEmitter {
     private _channel: ChannelItem = null;
+    private _streamFormat: apid.StreamFormat = null;
     private _command: string = null;
     private _process: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
@@ -234,6 +236,13 @@ export default class TunerDevice extends EventEmitter {
             throw new Error(util.format("TunerDevice#%d has not stream", this._index));
         }
 
+        // The source format is a property of the stream, not of the channel
+        // type: it is what the scan found on this carrier.
+        const spawnOptions: StartStreamOptions = {
+            ...options,
+            streamFormat: options?.streamFormat ?? user.streamSetting?.streamFormat
+        };
+
         if (channel) {
             if (this._config.types.includes(channel.type) === false) {
                 throw new Error(util.format("TunerDevice#%d is not supported for channel type `%s`", this._index, channel.type));
@@ -247,10 +256,10 @@ export default class TunerDevice extends EventEmitter {
                     }
 
                     await this._kill(true);
-                    this._spawn(channel, options);
+                    this._spawn(channel, spawnOptions);
                 }
             } else {
-                this._spawn(channel, options);
+                this._spawn(channel, spawnOptions);
             }
         }
 
@@ -320,6 +329,9 @@ export default class TunerDevice extends EventEmitter {
 
         let cmd: string;
 
+        const streamFormat = options?.streamFormat ?? this._streamFormat;
+        this._streamFormat = streamFormat ?? null;
+
         if (this._isRemote === true) {
             cmd = "node lib/remote";
             cmd += " " + this._config.remoteMirakurunHost;
@@ -328,6 +340,22 @@ export default class TunerDevice extends EventEmitter {
             cmd += " " + ch.channel;
             if (this._config.remoteMirakurunDecoder === true) {
                 cmd += " decode";
+            }
+            // **A relay must pull the richest form the stream has.** TLV can
+            // be turned into TS downstream (`tlvToTsDecoder`), TS can never be
+            // turned back into TLV, so asking the upstream for TS makes
+            // `?format=tlv` impossible for every caller of this tuner.
+            if (streamFormat === "tlv") {
+                cmd += " tlv";
+            }
+            // **Ask the upstream for TLV where the type carries it.** What
+            // arrives here is the most any caller downstream can be given,
+            // and this is the one direction that cannot be undone: TLV
+            // becomes TS on the way out through `tlvToTsDecoder`, TS never
+            // becomes TLV again. Pulling TS made `?format=tlv` answer 200
+            // with a transport stream in it.
+            if (ch.type === "BS4K") {
+                cmd += " tlv";
             }
         } else {
             cmd = this._config.command;
@@ -639,6 +667,7 @@ export default class TunerDevice extends EventEmitter {
 
         this._fatalCount = 0;
         this._channel = null;
+        this._streamFormat = null;
         this._tsmfFilter = null;
         this._tsmfBonding = null;
         this._users.clear();

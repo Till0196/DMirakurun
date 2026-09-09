@@ -307,12 +307,13 @@ export class Client {
         }, { priority, signal });
     }
 
-    async getChannelStream(opt: { type: apid.ChannelType, channel: string, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
-    async getChannelStream(type: apid.ChannelType, channel: string, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getChannelStream(opt: { type: apid.ChannelType, channel: string, decode?: boolean, format?: apid.StreamFormat, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getChannelStream(type: apid.ChannelType, channel: string, decode?: boolean, priority?: number, format?: apid.StreamFormat): Promise<http.IncomingMessage>;
     async getChannelStream(...args: any[]): Promise<http.IncomingMessage> {
         let type: apid.ChannelType;
         let channel: string;
         let decode: boolean;
+        let format: apid.StreamFormat;
         let priority: number;
         let signal: AbortSignal;
 
@@ -321,6 +322,7 @@ export class Client {
             type = opt.type;
             channel = opt.channel;
             decode = opt.decode;
+            format = opt.format;
             priority = opt.priority;
             signal = opt.signal;
         } else {
@@ -328,12 +330,16 @@ export class Client {
             channel = args[1];
             decode = args[2];
             priority = args[3];
+            format = args[4];
         }
 
         return this.call("getChannelStream", {
             type,
             channel,
-            decode: decode ? 1 : 0
+            decode: decode ? 1 : 0,
+            // Only sent when it is asked for: an upstream that has no such
+            // parameter must not be given one.
+            ...(format ? { format } : {})
         }, { priority, signal });
     }
 
