@@ -141,22 +141,31 @@ export class Channel {
      * Resolve the channels that can tune a given service.
      *
      * Returns channels whose stream entries include `serviceId` under the
-     * matching `networkId`. Unscanned channels (empty streams map) are
-     * included for backward compatibility with fresh installs.
+     * matching `networkId`, first. Unscanned channels (empty streams map)
+     * follow, for backward compatibility with fresh installs: they say
+     * nothing about what they carry, so they stay candidates, but they must
+     * not displace a channel that does.
+     *
+     * Callers tune the head of this list (`Tuner.initServiceStream`), so an
+     * unscanned channel there is a tune of something else entirely. Seen in
+     * the field: a request for a premium service picked an unrelated 4K
+     * carrier that no tuner could lock, and spent the whole retry budget —
+     * about twelve seconds — before failing.
      */
     findByService(networkId: number, serviceId: number): ChannelItem[] {
-        const results: ChannelItem[] = [];
+        const carrying: ChannelItem[] = [];
+        const unscanned: ChannelItem[] = [];
         for (const channel of this._items) {
             if (channel.getStreams().size === 0) {
-                results.push(channel);
+                unscanned.push(channel);
                 continue;
             }
             const entry = channel.getStreamForService(serviceId);
             if (entry && entry.networkId === networkId) {
-                results.push(channel);
+                carrying.push(channel);
             }
         }
-        return results;
+        return [...carrying, ...unscanned];
     }
 
     /**
