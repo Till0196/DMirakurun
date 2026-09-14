@@ -18,6 +18,23 @@ import * as yieldableJSON from "yieldable-json";
 const stringifyAsync = promisify(yieldableJSON.stringifyAsync);
 import * as express from "express";
 
+import { OutputFormat } from "./common";
+
+/**
+ * Decide what a stream request gets when it does not say `format`.
+ *
+ * The stream is handed out in the form it has: TLV stays TLV, TS stays TS.
+ * Only an explicit `format=ts` on a TLV stream turns on `tlvToTsDecoder`.
+ * (`format=tlv` on a TS stream is refused by the caller before this.)
+ */
+export function resolveStreamFormat(requested: unknown, streamIsTlv: boolean): { outputFormat: OutputFormat; contentType: string } {
+    const outputFormat: OutputFormat = (requested === "tlv" || requested === "ts") ? requested : (streamIsTlv ? "tlv" : "ts");
+    return {
+        outputFormat,
+        contentType: outputFormat === "tlv" ? "application/octet-stream" : "video/MP2T"
+    };
+}
+
 export interface Error {
     readonly code: number;
     readonly reason: string;

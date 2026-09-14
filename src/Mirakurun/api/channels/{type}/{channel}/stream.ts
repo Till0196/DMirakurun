@@ -16,7 +16,7 @@
 import { Operation } from "express-openapi";
 import * as api from "../../../../api";
 import * as apid from "../../../../../../api";
-import { channelTypes, OutputFormat } from "../../../../common";
+import { channelTypes } from "../../../../common";
 import _ from "../../../../_";
 
 export const parameters = [
@@ -80,8 +80,7 @@ export const get: Operation = (req, res) => {
         return;
     }
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
-    const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
-    const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
+    const { outputFormat, contentType } = api.resolveStreamFormat(req.query.format, streamEntry?.isTlv === true);
     if (req.method === "HEAD") {
         res.setHeader("Content-Type", contentType);
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);

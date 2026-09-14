@@ -15,7 +15,6 @@
 */
 import { Operation } from "express-openapi";
 import * as api from "../../../api";
-import { OutputFormat } from "../../../common";
 import _ from "../../../_";
 
 export const parameters = [
@@ -62,8 +61,7 @@ export const get: Operation = (req, res) => {
     }
 
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
-    const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
-    const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
+    const { outputFormat, contentType } = api.resolveStreamFormat(req.query.format, streamID?.streamFormat === "tlv");
 
     if (req.method === "HEAD") {
         res.setHeader("Content-Type", contentType);
