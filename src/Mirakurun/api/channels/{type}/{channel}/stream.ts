@@ -18,6 +18,7 @@ import * as api from "../../../../api";
 import * as apid from "../../../../../../api";
 import { channelTypes } from "../../../../common";
 import _ from "../../../../_";
+import { streamFormatOf } from "../../../../Channel";
 
 export const parameters = [
     {
@@ -75,14 +76,14 @@ export const get: Operation = (req, res) => {
     const streamEntry = tsmfRelTs !== undefined
         ? channel.getStreams().get(tsmfRelTs)
         : channel.getStreams().get(0);
-    if (req.query.format === "tlv" && streamEntry && !streamEntry.isTlv) {
+    if (req.query.format === "tlv" && streamEntry?.isTlv === false) {
         api.responseError(res, 406, "Requested Stream Format Unavailable");
         return;
     }
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
-    const { outputFormat, contentType } = api.resolveStreamFormat(req.query.format, streamEntry?.isTlv === true, _.config.server.defaultTlvStreamFormat);
+    const outputFormat = api.requestedStreamFormat(req.query.format);
     if (req.method === "HEAD") {
-        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Type", api.streamContentType(outputFormat ?? streamFormatOf(streamEntry?.isTlv)));
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
@@ -103,9 +104,7 @@ export const get: Operation = (req, res) => {
             return tsFilter.close();
         }
         req.once("close", () => tsFilter.close());
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
-        res.status(200);
+        api.respondStream(res, tsFilter, userId);
     }).catch(err => api.responseStreamErrorHandler(res, err));
 };
 

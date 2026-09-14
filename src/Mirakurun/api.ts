@@ -20,20 +20,51 @@ import * as express from "express";
 
 import { OutputFormat } from "./common";
 
+/** The `format` query as a stream format, or `undefined` when it did not say. */
+export function requestedStreamFormat(query: unknown): OutputFormat | undefined {
+    return query === "tlv" || query === "ts" ? query : undefined;
+}
+
+export function streamContentType(format: OutputFormat | undefined): string {
+    return format === "tlv" ? "application/octet-stream" : "video/MP2T";
+}
+
 /**
- * Decide what a stream request gets when it does not say `format`.
- *
- * A TS stream is always TS. A TLV stream is handed out as `tlvDefault`
- * (server.yml `defaultTlvStreamFormat`), and `format=ts` turns on
- * `tlvToTsDecoder` regardless. (`format=tlv` on a TS stream is refused by
- * the caller before this.)
+ * Answer a stream request with what the tuner turned out to deliver. The
+ * Content-Type follows the container the filter emits, which is known only
+ * after the input has been seen; a TS input that was asked for as TLV ends in
+ * 406 instead of a transport stream under the wrong label.
  */
-export function resolveStreamFormat(requested: unknown, streamIsTlv: boolean, tlvDefault: OutputFormat = "tlv"): { outputFormat: OutputFormat; contentType: string } {
-    const outputFormat: OutputFormat = (requested === "tlv" || requested === "ts") ? requested : (streamIsTlv ? tlvDefault : "ts");
-    return {
-        outputFormat,
-        contentType: outputFormat === "tlv" ? "application/octet-stream" : "video/MP2T"
+/** What respondStream needs from the filter; StreamFilter provides it. */
+export interface StreamSink {
+    readonly outputFormat?: OutputFormat | null;
+    once(event: string, listener: (...args: any[]) => void): unknown;
+}
+
+export function respondStream(res: express.Response, filter: StreamSink, userId: string): void {
+    const start = (format: OutputFormat) => {
+        if (res.headersSent) {
+            return;
+        }
+        res.setHeader("Content-Type", streamContentType(format));
+        res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
+        res.status(200);
     };
+    if (filter.outputFormat) {
+        start(filter.outputFormat);
+        return;
+    }
+    if (filter.outputFormat === undefined) {
+        // A sink without detection only ever carries TS.
+        start("ts");
+        return;
+    }
+    filter.once("outputFormat", start);
+    filter.once("unavailable", (reason: string) => {
+        if (!res.headersSent) {
+            responseError(res, 406, reason);
+        }
+    });
 }
 
 export interface Error {

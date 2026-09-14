@@ -22,10 +22,18 @@ import status from "./status";
 import ChannelItem, { StreamEntry } from "./ChannelItem";
 import { JobItem } from "./Job";
 
+export function streamFormatOf(isTlv: boolean | undefined): apid.StreamFormat | undefined {
+    if (isTlv === undefined) {
+        return undefined;
+    }
+    return isTlv ? "tlv" : "ts";
+}
+
 export interface StreamIDIndexItem {
     readonly networkId: number;
     readonly streamId: number;
-    streamFormat: apid.StreamFormat;
+    /** `undefined` until the stream has been seen once. */
+    streamFormat?: apid.StreamFormat;
     readonly channels: Array<{
         channel: ChannelItem;
         entry: StreamEntry;
@@ -210,7 +218,7 @@ export class Channel {
                         streamKey = 0;
                         relTs = undefined;
                     }
-                    channel.setStream(streamKey, entry.streamId, entry.networkId, entry.isTlv === true, relTs);
+                    channel.setStream(streamKey, entry.streamId, entry.networkId, entry.isTlv, relTs);
                     if (entry.serviceIds) {
                         for (const sid of entry.serviceIds) {
                             channel.addServiceId(sid, streamKey);
@@ -257,8 +265,8 @@ export class Channel {
                     if (info.relTs !== undefined) {
                         entry.relTs = info.relTs;
                     }
-                    if (info.isTlv) {
-                        entry.isTlv = true;
+                    if (info.isTlv !== undefined) {
+                        entry.isTlv = info.isTlv;
                     }
                     if (info.serviceIds.size > 0) {
                         entry.serviceIds = [...info.serviceIds];
@@ -297,7 +305,7 @@ export class Channel {
                     item = {
                         networkId: entry.networkId,
                         streamId: entry.streamId,
-                        streamFormat: entry.isTlv ? "tlv" : "ts",
+                        streamFormat: streamFormatOf(entry.isTlv),
                         channels: []
                     };
                     streams.set(entry.streamId, item);

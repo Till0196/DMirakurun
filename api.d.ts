@@ -60,7 +60,7 @@ export type StreamFormat = "ts" | "tlv";
 export interface StreamID {
     networkId: NetworkId;
     streamId: StreamId;
-    streamFormat: StreamFormat;
+    streamFormat?: StreamFormat;
     channels: Channel[];
 }
 

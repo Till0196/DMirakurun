@@ -73,7 +73,6 @@ definitions:
     required:
       - networkId
       - streamId
-      - streamFormat
       - channels
     properties:
       networkId:

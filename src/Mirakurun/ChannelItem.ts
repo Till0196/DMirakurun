@@ -203,7 +203,7 @@ export default class ChannelItem {
         return this.tsmfRelTs;
     }
 
-    setStream(streamKey: number, streamId: number, networkId: number, isTlv: boolean, relTs?: number): void {
+    setStream(streamKey: number, streamId: number, networkId: number, isTlv: boolean | undefined, relTs?: number): void {
         if (streamId === 0xFFFF) {
             return;
         }
@@ -218,7 +218,7 @@ export default class ChannelItem {
             }
         } else if (streamKey === 0) {
             const existing = this._streams.get(0);
-            if (existing && existing.isTlv !== isTlv) {
+            if (existing && existing.isTlv !== undefined && isTlv !== undefined && existing.isTlv !== isTlv) {
                 this._streams.delete(0);
                 updated = true;
             }
@@ -247,6 +247,22 @@ export default class ChannelItem {
             });
         }
         _.channel?.invalidateStreamIDIndex();
+    }
+
+    /**
+     * Record the container the tuner delivered for this stream slot as soon
+     * as it is detected, before the stream id is known. A stale `channels.json`
+     * from before TLV detection otherwise keeps saying "ts" until an SDT is
+     * parsed, and `format=tlv` requests are refused in the meantime.
+     */
+    setStreamFormat(streamKey: number, isTlv: boolean): void {
+        const entry = this._streams.get(streamKey);
+        if (!entry || entry.isTlv === isTlv) {
+            return;
+        }
+        entry.isTlv = isTlv;
+        _.channel?.invalidateStreamIDIndex();
+        _.channel?.save();
     }
 
     getStreams(): ReadonlyMap<number, StreamEntry> {

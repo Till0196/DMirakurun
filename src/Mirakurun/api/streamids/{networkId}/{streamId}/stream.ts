@@ -70,9 +70,9 @@ export const get: Operation = (req, res) => {
         return;
     }
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
-    const { outputFormat, contentType } = api.resolveStreamFormat(req.query.format, streamID.streamFormat === "tlv", _.config.server.defaultTlvStreamFormat);
+    const outputFormat = api.requestedStreamFormat(req.query.format);
     if (req.method === "HEAD") {
-        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Type", api.streamContentType(outputFormat ?? streamID.streamFormat));
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
@@ -93,9 +93,7 @@ export const get: Operation = (req, res) => {
             return streamFilter.close();
         }
         req.once("close", () => streamFilter.close());
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
-        res.status(200);
+        api.respondStream(res, streamFilter, userId);
     }).catch(err => api.responseStreamErrorHandler(res, err));
 };
 

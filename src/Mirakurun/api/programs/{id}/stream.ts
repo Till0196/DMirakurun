@@ -63,9 +63,9 @@ export const get: Operation = (req, res) => {
     }
 
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
-    const { outputFormat, contentType } = api.resolveStreamFormat(req.query.format, streamID?.streamFormat === "tlv", _.config.server.defaultTlvStreamFormat);
+    const outputFormat = api.requestedStreamFormat(req.query.format);
     if (req.method === "HEAD") {
-        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Type", api.streamContentType(outputFormat ?? streamID?.streamFormat));
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
@@ -86,9 +86,7 @@ export const get: Operation = (req, res) => {
             return tsFilter.close();
         }
         req.once("close", () => tsFilter.close());
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
-        res.status(200);
+        api.respondStream(res, tsFilter, userId);
         req.setTimeout(1000 * 60 * 10);
     }).catch(err => api.responseStreamErrorHandler(res, err));
 };

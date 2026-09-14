@@ -75,6 +75,7 @@ export default class StreamFilter extends EventEmitter {
     private _closed = false;
     private _detected = false;
     private _format: StreamFormat | null = null;
+    private _outputFormat: OutputFormat | null = null;
     private _options: StreamFilterOptions;
     private _innerFilter: TSFilter | TLVFilter = null;
     private _tsmfFilter: TSMFFilter = null;
@@ -107,6 +108,15 @@ export default class StreamFilter extends EventEmitter {
 
     get detectedFormat(): StreamFormat | null {
         return this._format;
+    }
+
+    /**
+     * The container the caller receives on `output`. Known once the input has
+     * been detected and the sink chosen, before the first byte is written;
+     * "outputFormat" is emitted at that moment.
+     */
+    get outputFormat(): OutputFormat | null {
+        return this._outputFormat;
     }
 
     get tsmfFilter(): TSMFFilter | null {
@@ -189,6 +199,14 @@ export default class StreamFilter extends EventEmitter {
         this._tsmfBonding?.releaseCarriers();
     }
 
+    private _setOutputFormat(format: OutputFormat): void {
+        if (this._outputFormat !== null || !this._options.output) {
+            return;
+        }
+        this._outputFormat = format;
+        this.emit("outputFormat", format);
+    }
+
     private _detect(): void {
         if (this._detected) {
             return;
@@ -240,10 +258,14 @@ export default class StreamFilter extends EventEmitter {
 
     private _createTlvFilter(): TLVFilter {
         const opts = this._options;
+        // A request that did not say picks up server.yml `defaultTlvStreamFormat`.
+        // TLV only becomes TS when there is a `tlvToTsDecoder` to do it.
+        const wanted: OutputFormat = opts.outputFormat ?? _.config.server.defaultTlvStreamFormat ?? "tlv";
+        this._setOutputFormat(wanted === "ts" && opts.tlvToTsDecoder ? "ts" : "tlv");
         return new TLVFilter({
             output: TLVDecoder.create({
                 output: opts.output,
-                outputFormat: opts.outputFormat,
+                outputFormat: wanted,
                 tlvDecoder: opts.tlvDecoder,
                 tlvToTsDecoder: opts.tlvToTsDecoder,
                 disableDecoder: opts.disableDecoder
@@ -259,6 +281,14 @@ export default class StreamFilter extends EventEmitter {
     }
 
     private _initTs(buffered: Buffer, slot?: TSMFSlotFilter): void {
+        if (this._options.output && this._options.outputFormat === "tlv") {
+            // TS never becomes TLV. Tell the caller before anything is written.
+            log.warn("StreamFilter: %s delivers TS but TLV was requested", this._options.channel.channel);
+            this.emit("unavailable", "Requested Stream Format Unavailable");
+            this.close();
+            return;
+        }
+        this._setOutputFormat("ts");
         const tsFilter = this._createTsFilter();
         this._innerFilter = tsFilter;
         this._proxyEvents(tsFilter);
@@ -266,6 +296,7 @@ export default class StreamFilter extends EventEmitter {
         if (!slot) {
             const ch = this._options.channel;
             const streamKey = 0;
+            ch.setStreamFormat(streamKey, false);
             tsFilter.once("streamInfo", ({ tsid, networkId }: { tsid: number; networkId: number }) => {
                 ch.setStream(streamKey, tsid, networkId, false);
             });
@@ -299,6 +330,7 @@ export default class StreamFilter extends EventEmitter {
             ch.tsmfRelTs !== undefined && ch.tsmfRelTs !== null
             ? ch.tsmfRelTs
             : 0;
+        ch.setStreamFormat(streamKey, true);
         tlvFilter.once("streamInfo", ({ streamId, networkId }: { streamId: number; networkId: number }) => {
             ch.setStream(streamKey, streamId, networkId, true, streamKey >= 1 ? streamKey : undefined);
         });

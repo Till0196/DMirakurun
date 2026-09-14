@@ -23,6 +23,7 @@ import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
 import StreamFilter, { DiscoveryResult } from "./StreamFilter";
+import { streamFormatOf } from "./Channel";
 // Discard the first N bytes of cat/dvbv5-zap stdout to skip stale DVB DVR
 // ring contents from the previous tune. Empirically ≤ 7 KiB on TBS6205SE.
 const STALE_DVR_DRAIN_BYTES = 32 * 1024;
@@ -133,7 +134,7 @@ export class Tuner {
                 channels: altChannels && altChannels.length > 1 ? altChannels : undefined,
                 networkId: streamEntry?.networkId ?? networkId,
                 streamId: streamEntry?.streamId,
-                streamFormat: streamEntry ? (streamEntry.isTlv ? "tlv" : "ts") : undefined,
+                streamFormat: streamFormatOf(streamEntry?.isTlv),
                 parseEIT: true,
                 tsmfRelTs
             }
