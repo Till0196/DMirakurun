@@ -43,7 +43,7 @@ MPEG-TSで伝送されるロゴについて、ロゴ配信サービス（ESS）�
 
 - `/api/streamids`、`/api/streamids/{networkId}`、`/api/streamids/{networkId}/{streamId}`、`/api/streamids/{networkId}/{streamId}/stream`を追加しています。
 - チャンネル、放送サービスを`networkId`と`streamId`に関連付け、TS、TSMF内のTS、TLVを共通の方法で検索・配信します。
-- チャンネル、サービス、番組のストリームAPIで`format=ts|tlv`を選択できます。省略時はストリームの形のまま（TLVのチャンネルはTLV、TSのチャンネルはTS）出力し、TLVのチャンネルに`format=ts`を指定したときだけ`tlvToTsDecoder`でTSへ変換します。TSストリームをTLVへ変換する機能ではないため、TSに対する`format=tlv`の要求には対応しません。
+- チャンネル、サービス、番組のストリームAPIで`format=ts|tlv`を選択できます。省略時、TSのチャンネルはTS、TLVのチャンネルはserver.ymlの`defaultTlvStreamFormat`（既定`tlv`）で出力します。TLVからTSへの変換は`tlvToTsDecoder`で行います。TSストリームをTLVへ変換する機能ではないため、TSに対する`format=tlv`の要求には対応しません。
 - `ChannelType`に`BS4K`、API型に`StreamId`、`StreamFormat`、`ChannelRoute`を追加しています。
 
 ## tuners.ymlの例

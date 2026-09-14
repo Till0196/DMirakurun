@@ -336,6 +336,7 @@ export interface ConfigServer {
     allowOrigins: string[];
     allowPNA: boolean;
     tsplayEndpoint: string;
+    defaultTlvStreamFormat?: StreamFormat;
 }
 
 /**

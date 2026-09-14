@@ -23,12 +23,13 @@ import { OutputFormat } from "./common";
 /**
  * Decide what a stream request gets when it does not say `format`.
  *
- * The stream is handed out in the form it has: TLV stays TLV, TS stays TS.
- * Only an explicit `format=ts` on a TLV stream turns on `tlvToTsDecoder`.
- * (`format=tlv` on a TS stream is refused by the caller before this.)
+ * A TS stream is always TS. A TLV stream is handed out as `tlvDefault`
+ * (server.yml `defaultTlvStreamFormat`), and `format=ts` turns on
+ * `tlvToTsDecoder` regardless. (`format=tlv` on a TS stream is refused by
+ * the caller before this.)
  */
-export function resolveStreamFormat(requested: unknown, streamIsTlv: boolean): { outputFormat: OutputFormat; contentType: string } {
-    const outputFormat: OutputFormat = (requested === "tlv" || requested === "ts") ? requested : (streamIsTlv ? "tlv" : "ts");
+export function resolveStreamFormat(requested: unknown, streamIsTlv: boolean, tlvDefault: OutputFormat = "tlv"): { outputFormat: OutputFormat; contentType: string } {
+    const outputFormat: OutputFormat = (requested === "tlv" || requested === "ts") ? requested : (streamIsTlv ? tlvDefault : "ts");
     return {
         outputFormat,
         contentType: outputFormat === "tlv" ? "application/octet-stream" : "video/MP2T"

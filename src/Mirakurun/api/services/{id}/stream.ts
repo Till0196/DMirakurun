@@ -61,7 +61,7 @@ export const get: Operation = (req, res) => {
     }
 
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
-    const { outputFormat, contentType } = api.resolveStreamFormat(req.query.format, streamID?.streamFormat === "tlv");
+    const { outputFormat, contentType } = api.resolveStreamFormat(req.query.format, streamID?.streamFormat === "tlv", _.config.server.defaultTlvStreamFormat);
 
     if (req.method === "HEAD") {
         res.setHeader("Content-Type", contentType);

@@ -669,6 +669,11 @@ definitions:
         type: array
         items:
           type: string
+      defaultTlvStreamFormat:
+        type: string
+        enum:
+          - ts
+          - tlv
 
   ConfigTuners:
     type: array
