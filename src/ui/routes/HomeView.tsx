@@ -411,7 +411,7 @@ const TunersSection: React.FC<{
             const groupId = channel?.tsmfGroupId;
             const streamId = user.streamSetting?.streamId;
             const streamFormat = user.streamSetting?.streamFormat;
-            const outputFormat = user.outputFormat ?? "ts";
+            const outputFormat = user.outputFormat;
             const channelMeta: string[] = [];
             if (channel?.route && multiRouteTypes.has(channel.type)) {
                 channelMeta.push(channel.route);
@@ -449,7 +449,7 @@ const TunersSection: React.FC<{
                 </span>
             ];
 
-            if (streamFormat && streamFormat !== outputFormat) {
+            if (streamFormat && outputFormat && streamFormat !== outputFormat) {
                 userInfoItems.push(
                     <span key="format" className="tuner-user-info-item">
                         <Icon icon="exchange" className="bp5-text-muted" size={12} />

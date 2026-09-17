@@ -463,6 +463,14 @@ export class Tuner {
                 Object.defineProperty(user, "streamInfo", {
                     get: () => streamFilter.streamInfo
                 });
+                // `/api/tuners` reports what is actually being delivered. A
+                // request without `format` resolves through
+                // `defaultTlvStreamFormat` inside the filter, so the value
+                // is only known once the input has been seen.
+                const requestedOutputFormat = user.outputFormat;
+                Object.defineProperty(user, "outputFormat", {
+                    get: () => streamFilter.outputFormat ?? requestedOutputFormat
+                });
 
                 try {
                     await device.startStream(user, streamFilter, pickedChannel, {
