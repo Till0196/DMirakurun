@@ -125,19 +125,27 @@ export interface ProgramVideo {
 
 export type ProgramVideoType = "mpeg2" | "h.264" | "h.265";
 
+/** ARIB STD-B60 Table 7-48 video_resolution + video_scan_flag */
 export type ProgramVideoResolution = (
+    "180i" |
+    "180p" |
+    "240i" |
     "240p" |
     "480i" |
     "480p" |
+    "720i" |
     "720p" |
     "1080i" |
     "1080p" |
+    "2160i" |
     "2160p" |
+    "4320i" |
     "4320p"
 );
 
 /** ARIB STD-B60 Table 7-50 video_frame_rate */
 export type ProgramVideoFrameRate = (
+    "15" |
     "23.976" |
     "24" |
     "25" |
@@ -146,6 +154,7 @@ export type ProgramVideoFrameRate = (
     "50" |
     "59.94" |
     "60" |
+    "100" |
     "119.88" |
     "120"
 );

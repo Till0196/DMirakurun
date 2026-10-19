@@ -2,7 +2,7 @@ import * as stream from "stream";
 import EventEmitter = require("eventemitter3");
 import * as log from "./log";
 import _ from "./_";
-import { OutputFormat, StreamInfo } from "./common";
+import { OutputFormat, StreamInfo, isValidTsmfGroupId } from "./common";
 import ChannelItem from "./ChannelItem";
 import TLVDecoder from "./TLVDecoder";
 import TLVFilter from "./TLVFilter";
@@ -347,7 +347,7 @@ export default class StreamFilter extends EventEmitter {
         const opts = this._options;
         const ch = opts.channel;
 
-        ch.setTsmfGroupId(header.groupId !== 0 && header.groupId !== 255 ? header.groupId : undefined);
+        ch.setTsmfGroupId(header.groupId);
 
         for (const relTs of TSMFFilter.getActiveRelTs(header)) {
             const isTlv = TSMFFilter.isTLVStream(header.streamTypeBits, relTs);
@@ -358,7 +358,7 @@ export default class StreamFilter extends EventEmitter {
         // bonded scan instead of stalling on a single-carrier TLVFilter.
         if (opts.tsmfDiscovery &&
             header.numberOfCarriers > 1 &&
-            header.groupId !== 0 && header.groupId !== 255) {
+            isValidTsmfGroupId(header.groupId)) {
             log.info(
                 "StreamFilter: TSMF discovery detected groupId=%d numberOfCarriers=%d on %s",
                 header.groupId, header.numberOfCarriers, ch.channel
@@ -405,7 +405,7 @@ export default class StreamFilter extends EventEmitter {
                 return;
 
             case "tsmf-scan": {
-                const hasGroupId = header.groupId !== 0 && header.groupId !== 255;
+                const hasGroupId = isValidTsmfGroupId(header.groupId);
                 log.info("StreamFilter: TSMF scan started %d relTs groupId=%s on %s",
                     decision.activeStreams.size,
                     hasGroupId ? header.groupId : "none",

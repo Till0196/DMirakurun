@@ -216,7 +216,7 @@ export default class ServiceItem {
             if (entry?.relTs !== undefined) {
                 c.tsmfRelTs = entry.relTs;
             }
-            if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && ch.tsmfGroupId !== 255) {
+            if (common.isValidTsmfGroupId(ch.tsmfGroupId)) {
                 c.tsmfGroupId = ch.tsmfGroupId;
             }
             return c;

@@ -2,6 +2,7 @@ import * as stream from "stream";
 import EventEmitter = require("eventemitter3");
 import { TsCrc32 } from "@chinachu/aribts";
 import * as log from "./log";
+import { isValidTsmfGroupId } from "./common";
 import TLVAssembler from "./TLVAssembler";
 
 // TS / TSMF constants
@@ -12,6 +13,10 @@ const TSMF_PID = 0x2f;
 const SLOT_COUNT = 52 as const;
 const TSMF_SYNC_A = 0x1a86;
 const TSMF_SYNC_B = 0x0579;
+// single-carrier stream sends frame_type=0x2 with number_of_carriers=1
+const MIN_CARRIERS = 1;
+const MAX_CARRIERS = 255;
+const MAX_FRAMES = 15;
 
 // Requires two consecutive CC values before trusting frames (skips stale DVR data).
 export class TsmfCCChecker {
@@ -59,13 +64,14 @@ export function extractGroupIdFromPacket(packet: Buffer, offset = 0): number {
         return -1;
     }
     const groupId = packet[offset + 127];
-    return groupId !== 255 ? groupId : -1;
+    return isValidTsmfGroupId(groupId) ? groupId : -1;
 }
 
 export interface CarrierFrame {
     framePosition: number;
     numberOfFrames: number;
-    slots: Buffer[];
+    // indexed by slot position (0..51); null for non-target slots
+    slots: (Buffer | null)[];
     targetSlots: boolean[];
 }
 
@@ -81,8 +87,8 @@ export interface TSMFHeaderInfo {
     streamTypeBits: number;   // 15 bits, MSB = relative stream 1
     streamIds: number[];      // 15 entries, stream_id per relative stream
     originalNetworkIds: number[]; // 15 entries, original_network_id per relative stream
-    groupId: number;          // 0..254, 255 = undefined
-    numberOfCarriers: number; // 1..16
+    groupId: number;          // 1..255, 0 = no carrier group
+    numberOfCarriers: number; // 1..255 (1 unless frame_type=0x2)
     carrierSequence: number;  // 1..numberOfCarriers
     framePosition: number;
     numberOfFrames: number;
@@ -107,6 +113,8 @@ interface SourceState {
     packet: Buffer;
     offset: number;
     currentFrame?: CarrierFrame;
+    // slot position in the current frame (0 = right after the header)
+    slotCursor: number;
     headerLocked: boolean;
     activeHeaderCRC: number;
     targetSlotsCache: boolean[];
@@ -115,21 +123,15 @@ interface SourceState {
 
 export default class TSMFFilter extends EventEmitter {
 
-    // Validates AFC, frame_sync, CRC32. frame_type=0x1 → single-carrier, 0x2 → bonded.
+    // Validates packet header, frame_sync, CRC32. frame_type=0x1 → single-carrier, 0x2 → bonded.
     static parseTSMFHeader(packet: Buffer): TSMFHeaderInfo | null {
         if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
             return null;
         }
-        // AFC 0x01: payload only; AFC 0x03: adaptation field + payload
-        const afc = (packet[3] & 0x30) >> 4;
-        if (afc !== 0x01 && afc !== 0x03) {
+        if ((packet[1] & 0xe0) !== 0x00 || (packet[3] & 0xf0) !== 0x10) {
             return null;
         }
-        const base = afc === 0x03 ? 5 + packet[4] : 4;
-        if (base + 184 > PACKET_SIZE) {
-            return null;
-        }
-        const payload = packet.subarray(base, base + 184);
+        const payload = packet.subarray(4, 4 + 184);
 
         const frameSync = ((payload[0] << 8) | payload[1]) & 0x1fff;
         if (frameSync !== TSMF_SYNC_A && frameSync !== TSMF_SYNC_B) {
@@ -149,7 +151,7 @@ export default class TSMFFilter extends EventEmitter {
         if (isMultiCarrier) {
             numberOfCarriers = payload[124];
             carrierSequence = payload[125];
-            if (numberOfCarriers < 1 || numberOfCarriers > 16 ||
+            if (numberOfCarriers < MIN_CARRIERS || numberOfCarriers > MAX_CARRIERS ||
                 carrierSequence < 1 || carrierSequence > numberOfCarriers) {
                 return null;
             }
@@ -353,6 +355,7 @@ export default class TSMFFilter extends EventEmitter {
             sourceId,
             packet: Buffer.allocUnsafeSlow(PACKET_SIZE).fill(0),
             offset: -1,
+            slotCursor: SLOT_COUNT,
             headerLocked: false,
             activeHeaderCRC: -1,
             targetSlotsCache: new Array(SLOT_COUNT).fill(true),
@@ -442,7 +445,7 @@ export default class TSMFFilter extends EventEmitter {
         if (!source) {
             return;
         }
-        if (source.currentFrame?.slots.length && source.carrierSequence) {
+        if (source.currentFrame && source.carrierSequence) {
             const carrier = this._carrierStates.get(source.carrierSequence);
             if (carrier) {
                 this._addBlock(carrier, source.currentFrame);
@@ -471,10 +474,16 @@ export default class TSMFFilter extends EventEmitter {
             const pid = ((packet[1] & 0x1f) << 8) | packet[2];
             if (pid === TSMF_PID) {
                 this._onTSMF(source, packet);
+                continue;
             }
 
-            if (pid === TLV_PID && source.currentFrame && source.currentFrame.slots.length < SLOT_COUNT) {
-                source.currentFrame.slots.push(Buffer.from(packet));
+            const frame = source.currentFrame;
+            if (!frame || source.slotCursor >= SLOT_COUNT) {
+                continue;
+            }
+            const slot = source.slotCursor++;
+            if (pid === TLV_PID && frame.targetSlots[slot]) {
+                frame.slots[slot] = Buffer.from(packet);
             }
         }
     }
@@ -499,7 +508,7 @@ export default class TSMFFilter extends EventEmitter {
             return;
         }
 
-        if (this._detectedGroupId === null && info.groupId !== 255) {
+        if (this._detectedGroupId === null && isValidTsmfGroupId(info.groupId)) {
             this._detectedGroupId = info.groupId;
             this.emit("groupId", info.groupId, info.numberOfCarriers);
         }
@@ -541,16 +550,18 @@ export default class TSMFFilter extends EventEmitter {
             this._applyTSMFHeader(source, info.slotMap, info.streamTypeBits, info.headerCRC);
         }
 
-        if (source.currentFrame && source.currentFrame.slots.length > 0) {
+        // Keep frames without target slots too; superframes need contiguous framePositions.
+        if (source.currentFrame) {
             this._addBlock(carrierState, source.currentFrame);
         }
 
         source.currentFrame = {
             framePosition: info.framePosition,
             numberOfFrames: info.numberOfFrames,
-            slots: [],
+            slots: new Array(SLOT_COUNT).fill(null),
             targetSlots: source.targetSlotsCache
         };
+        source.slotCursor = 0;
     }
 
     private _applyTSMFHeader(source: SourceState, slotMap: number[], streamTypeBits: number, headerCRC: number): void {
@@ -568,6 +579,12 @@ export default class TSMFFilter extends EventEmitter {
             this._assembler.setNumberOfCarriers(numberOfCarriers);
             log.info("TunerDevice#%d TSMF confirmed %d carriers (from source%d)",
                 this._tunerIndex, numberOfCarriers, source.sourceId);
+        }
+
+        // Drop frames inconsistent with the confirmed carrier count; accepting
+        // them would stall output waiting for a carrier that never comes.
+        if (carrierSequence > this._numberOfCarriers) {
+            return null;
         }
 
         source.carrierSequence = carrierSequence;
@@ -588,7 +605,7 @@ export default class TSMFFilter extends EventEmitter {
 
     private _addBlock(carrier: CarrierState, frame: CarrierFrame): void {
         const n = frame.numberOfFrames;
-        if (n <= 0 || n > 15) {
+        if (n <= 0 || n > MAX_FRAMES) {
             return;
         }
         carrier.blocks.push(frame);
@@ -607,7 +624,7 @@ export default class TSMFFilter extends EventEmitter {
         let i = 0;
         while (i < blocks.length) {
             const n = blocks[i].numberOfFrames;
-            if (blocks[i].framePosition !== 0 || n <= 0 || n > 15) {
+            if (blocks[i].framePosition !== 0 || n <= 0 || n > MAX_FRAMES) {
                 i++;
                 continue;
             }

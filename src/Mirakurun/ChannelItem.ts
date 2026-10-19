@@ -66,8 +66,8 @@ export default class ChannelItem {
         // channels.yml は tsmfRelTs に統一。TS/TLV の区別は runtime の auto-detect で扱う。
         this._tsmfRelTs = config.tsmfRelTs;
         this._configTsmfRelTs = config.tsmfRelTs !== null && config.tsmfRelTs !== undefined;
-        this._tsmfGroupId = config.tsmfGroupId;
-        this._configTsmfGroupId = config.tsmfGroupId !== null && config.tsmfGroupId !== undefined;
+        this._tsmfGroupId = common.isValidTsmfGroupId(config.tsmfGroupId) ? config.tsmfGroupId : undefined;
+        this._configTsmfGroupId = this._tsmfGroupId !== undefined;
         this.commandVars = config.commandVars;
     }
 
@@ -98,10 +98,11 @@ export default class ChannelItem {
         if (this._streamScanSnapshot) {
             this._scanGroupIdObserved = true;
         }
-        if (this._configTsmfGroupId || groupId === this._tsmfGroupId) {
+        const normalized = common.isValidTsmfGroupId(groupId) ? groupId : undefined;
+        if (this._configTsmfGroupId || normalized === this._tsmfGroupId) {
             return;
         }
-        this._tsmfGroupId = groupId;
+        this._tsmfGroupId = normalized;
     }
 
     beginStreamScan(): void {
@@ -331,7 +332,7 @@ export default class ChannelItem {
             channel: this.channel,
             name: this.name,
             route: this.route,
-            ...(this._tsmfGroupId !== null && this._tsmfGroupId !== undefined && this._tsmfGroupId !== 255 && { tsmfGroupId: this._tsmfGroupId }),
+            ...(common.isValidTsmfGroupId(this._tsmfGroupId) && { tsmfGroupId: this._tsmfGroupId }),
             services: this.getServices().map(service => {
                 const entry = this.resolveStreamForService(service);
                 const svc: apid.Service = {

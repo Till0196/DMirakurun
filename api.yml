@@ -311,18 +311,25 @@ definitions:
   ProgramVideoResolution:
     type: string
     enum:
+      - 180i
+      - 180p
+      - 240i
       - 240p
       - 480i
       - 480p
+      - 720i
       - 720p
       - 1080i
       - 1080p
+      - 2160i
       - 2160p
+      - 4320i
       - 4320p
 
   ProgramVideoFrameRate:
     type: string
     enum:
+      - '15'
       - '23.976'
       - '24'
       - '25'
@@ -331,6 +338,7 @@ definitions:
       - '50'
       - '59.94'
       - '60'
+      - '100'
       - '119.88'
       - '120'
 

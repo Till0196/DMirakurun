@@ -126,8 +126,8 @@ export default class TunerDevice extends EventEmitter {
                         type: ss.channel.type,
                         channel: ss.channel.channel,
                         route: ss.channel.route,
-                        ...(ss.channel.tsmfGroupId !== null && ss.channel.tsmfGroupId !== undefined &&
-                            ss.channel.tsmfGroupId !== 255 && { tsmfGroupId: ss.channel.tsmfGroupId })
+                        ...(common.isValidTsmfGroupId(ss.channel.tsmfGroupId) &&
+                            { tsmfGroupId: ss.channel.tsmfGroupId })
                     } : undefined,
                     networkId: ss.networkId,
                     streamId: ss.streamId,
