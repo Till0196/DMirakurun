@@ -18,12 +18,21 @@ import sift from "sift";
 import * as api from "../api";
 import * as apid from "../../../api";
 import _ from "../_";
-import { channelTypes } from "../common";
+import { channelTypes, rejectWhere, WhereQueryError } from "../common";
 
 export const get: Operation = (req, res) => {
-    const channels: apid.Channel[] = _.channel.items.map(channel => channel.toJSON()).filter(sift(req.query));
+    try {
+        rejectWhere(req.query);
 
-    api.responseJSON(res, channels);
+        const channels: apid.Channel[] = _.channel.items.map(channel => channel.toJSON()).filter(sift(req.query));
+
+        api.responseJSON(res, channels);
+    } catch (err) {
+        if (err instanceof WhereQueryError) {
+            return api.responseError(res, 400);
+        }
+        throw err;
+    }
 };
 
 get.apiDoc = {
