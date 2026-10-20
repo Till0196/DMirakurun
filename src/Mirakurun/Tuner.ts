@@ -278,7 +278,7 @@ export class Tuner {
             let discoveryResult: DiscoveryResult = null;
 
             // bonded scan waits for every carrier
-            const timeoutMs = !tsmfDiscovery && channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined ? 45000 : 20000;
+            const timeoutMs = !tsmfDiscovery && common.isValidTsmfGroupId(channel.tsmfGroupId) ? 45000 : 20000;
             setTimeout(() => tsFilter.close(), timeoutMs);
 
             tsFilter.once("discovery", (result: DiscoveryResult) => {

@@ -20,47 +20,47 @@ import * as apid from "../../api";
 import _ from "./_";
 import { MHContentDescriptorItem, MHExtendedEventItem } from "arib-mmt-tlv-ts/mmt-si-descriptor.js";
 import { MHEventInformationTable, MMT_SI_TABLE_MH_EIT_PF } from "arib-mmt-tlv-ts/mmt-si.js";
-import { bcdTimeToSeconds, mjdBCDToUnixEpoch } from "arib-mmt-tlv-ts/utils.js";
+import { bcdTimeToSeconds, mjdBCDToUnixEpoch, mjdToUnixEpoch } from "arib-mmt-tlv-ts/utils.js";
+
+// MMT-SI times are in JST (UTC+9)
+const JST_OFFSET_SECONDS = 3600 * 9;
 
 const textDecoder = new TextDecoder();
 function decodeUTF8(buffer: Uint8Array): string {
     return textDecoder.decode(buffer, { stream: false });
 }
 
-// ARIB STD-B60 Table 7-48 video_resolution (progressive variants; interlaced resolved via videoScanFlag)
-const VIDEO_RESOLUTION_P: Record<number, apid.ProgramVideoResolution> = {
-    0: "240p",
-    1: "480p",
-    2: "480p",
-    3: "720p",
-    4: "720p",
-    5: "1080p",
-    6: "2160p",
-    7: "4320p"
+// ARIB STD-B60 Table 7-48 video_resolution (lines only; p/i resolved via videoScanFlag)
+const VIDEO_RESOLUTION_LINES: Record<number, string> = {
+    1: "180",
+    2: "240",
+    3: "480",
+    4: "720",
+    5: "1080",
+    6: "2160",
+    7: "4320"
 };
-const VIDEO_RESOLUTION_I: Record<number, apid.ProgramVideoResolution> = {
-    0: "240p",
-    1: "480i",
-    2: "480i",
-    3: "720p",
-    4: "720p",
-    5: "1080i",
-    6: "2160p",
-    7: "4320p"
-};
+
+function resolveVideoResolution(code: number, progressive: boolean): apid.ProgramVideoResolution | null {
+    const lines = VIDEO_RESOLUTION_LINES[code];
+    if (!lines) {
+        return null;
+    }
+    return `${lines}${progressive ? "p" : "i"}` as apid.ProgramVideoResolution;
+}
 
 // ARIB STD-B60 Table 7-50 video_frame_rate
 const VIDEO_FRAME_RATE: Record<number, apid.ProgramVideoFrameRate> = {
-    1: "23.976",
-    2: "24",
-    3: "25",
-    4: "29.97",
+    1: "15",
+    2: "23.976",
+    3: "24",
+    4: "25",
     5: "29.97",
     6: "30",
     7: "50",
     8: "59.94",
     9: "60",
-    10: "119.88",
+    10: "100",
     11: "119.88",
     12: "120"
 };
@@ -283,12 +283,11 @@ export default class MHEPG {
                         }
                         state.component.version[eit.tableIdNumber] = eit.versionNumber;
 
-                        const resolutionMap = d.videoScanFlag ? VIDEO_RESOLUTION_P : VIDEO_RESOLUTION_I;
                         _.program.set(state.programId, {
                             video: {
                                 // MH-EIT has no stream_content; normalize as generic video (0x01)
                                 type: "mpeg2",
-                                resolution: resolutionMap[d.videoResolution] || null,
+                                resolution: resolveVideoResolution(d.videoResolution, !!d.videoScanFlag),
                                 streamContent: 0x01,
                                 componentType: d.componentTag,
                                 frameRate: VIDEO_FRAME_RATE[d.videoFrameRate] || undefined,
@@ -356,8 +355,9 @@ export default class MHEPG {
                                 id: d.seriesId,
                                 repeat: d.repeatLabel,
                                 pattern: d.programPattern,
+                                // expire_date is plain MJD (not MJD+BCD), at 00:00 JST
                                 expiresAt: d.expireDateValidFlag ?
-                                    mjdBCDToUnixEpoch(d.expireDate) * 1000 :
+                                    (mjdToUnixEpoch(d.expireDate) - JST_OFFSET_SECONDS) * 1000 :
                                     -1,
                                 episode: d.episodeNumber,
                                 lastEpisode: d.lastEpisodeNumber,

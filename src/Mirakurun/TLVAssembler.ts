@@ -33,6 +33,9 @@ const OFFSET_MAX_PROBE_FAILURES = 3;
 const OFFSET_MAX_KEEP = 600;
 const READY_MIN_SUPERFRAMES = 2;
 const OUTPUT_MIN_BUFFER_SFS = 2;
+// reset the alignment when a carrier runs this far ahead
+const OFFSET_MAX_AHEAD = OFFSET_RETRY_SFS;
+const SUBFRAMES_PER_SUPERFRAME = 53;
 
 interface CarrierBucket {
     carrierSequence: number;
@@ -71,13 +74,27 @@ export default class TLVAssembler extends EventEmitter {
         return -1;
     }
 
-    // PUSI=1: skip pointer field
     private static _extractTlvPayload(packet: Buffer): Buffer | null {
         if (packet.length !== PACKET_SIZE || packet[0] !== TS_SYNC_BYTE) {
             return null;
         }
+        // TEI=1: uncorrectable error
+        if ((packet[1] & 0x80) !== 0) {
+            return null;
+        }
         const pusi = (packet[1] & 0x40) !== 0;
         return packet.subarray(pusi ? 4 : 3);
+    }
+
+    // the pointer base is ambiguous; accept whichever lands on a TLV sync byte
+    private static _alignToFirstTlv(packet: Buffer, chunk: Buffer): Buffer {
+        const pointer = packet[3];
+        for (const start of [pointer, pointer - 1]) {
+            if (start >= 0 && start < chunk.length && chunk[start] === TLV_SYNC_BYTE) {
+                return chunk.subarray(start);
+            }
+        }
+        return chunk;
     }
 
     private _tunerIndex: number;
@@ -93,6 +110,7 @@ export default class TLVAssembler extends EventEmitter {
     private _probeFailures = 0;
 
     private _buffer: Buffer[] = [];
+    private _tlvStarted = false;
     private _pendingOutput: Buffer = Buffer.alloc(0);
     private _ready = false;
     private _closed = false;
@@ -134,6 +152,7 @@ export default class TLVAssembler extends EventEmitter {
         this._nextProbeThreshold = 0;
         this._outputSuperframeCount = 0;
         this._probeFailures = 0;
+        this._tlvStarted = false;
     }
 
     pushSuperframe(carrierSequence: number, sf: CarrierSuperframe): void {
@@ -218,6 +237,14 @@ export default class TLVAssembler extends EventEmitter {
         if (this._buffer.length) {
             this._buffer.length = 0;
         }
+        this._tlvStarted = false;
+    }
+
+    // _probeFailures is kept so a carrier that never recovers still closes the stream
+    private _resetOffsets(): void {
+        this._offsets = null;
+        this._offsetsApplied = false;
+        this._nextProbeThreshold = 0;
     }
 
     private _probeOffsets(carriers: CarrierBucket[]): number[] | null {
@@ -363,8 +390,15 @@ export default class TLVAssembler extends EventEmitter {
         superframes: CarrierSuperframe[],
         callback: (packet: Buffer) => void
     ): void {
-        for (let sub = 0; sub < 53; sub++) {
-            for (let sp = 0; sp < 4; sp++) {
+        let maxSlotPosition = 0;
+        for (const sf of superframes) {
+            if (sf.numberOfFrames > maxSlotPosition) {
+                maxSlotPosition = sf.numberOfFrames;
+            }
+        }
+
+        for (let sub = 0; sub < SUBFRAMES_PER_SUPERFRAME; sub++) {
+            for (let sp = 0; sp < maxSlotPosition; sp++) {
                 for (let c = 0; c < superframes.length; c++) {
                     const sf = superframes[c];
                     const n = sf.numberOfFrames;
@@ -372,8 +406,8 @@ export default class TLVAssembler extends EventEmitter {
                         continue;
                     }
                     const slotIndex = sub * n + sp;
-                    const framePosition = Math.floor(slotIndex / 53);
-                    const slotInFrame = slotIndex % 53;
+                    const framePosition = Math.floor(slotIndex / SUBFRAMES_PER_SUPERFRAME);
+                    const slotInFrame = slotIndex % SUBFRAMES_PER_SUPERFRAME;
                     if (framePosition >= n || slotInFrame === 0) {
                         continue;
                     }
@@ -446,6 +480,13 @@ export default class TLVAssembler extends EventEmitter {
         }
 
         const readyCount = Math.min(...carriers.map(c => c.superframes.length));
+        const furthest = Math.max(...carriers.map(c => c.superframes.length));
+        if (furthest > readyCount + OFFSET_MAX_AHEAD) {
+            log.warn("TunerDevice#%d TSMF carrier has stalled, retrying offset detection (behind=%d)", this._tunerIndex, furthest - readyCount);
+            this._resetOffsets();
+            return;
+        }
+
         const drainCount = readyCount - OUTPUT_MIN_BUFFER_SFS;
         if (drainCount <= 0) {
             return;
@@ -479,9 +520,12 @@ export default class TLVAssembler extends EventEmitter {
                 this._flushPartialBuffer();
                 this._writePending();
             }
-            this._buffer.push(Buffer.from(tlvChunk));
+            const chunk = this._tlvStarted ? tlvChunk : TLVAssembler._alignToFirstTlv(packet, tlvChunk);
+            this._tlvStarted = true;
+            this._buffer.push(Buffer.from(chunk));
         } else {
-            if (this._buffer.length === 0) {
+            // Drop the tail of a TLV packet whose start was not seen.
+            if (!this._tlvStarted) {
                 return;
             }
             this._buffer.push(tlvChunk);

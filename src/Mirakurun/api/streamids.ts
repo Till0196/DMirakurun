@@ -17,6 +17,7 @@ import { Operation } from "express-openapi";
 import * as api from "../api";
 import * as apid from "../../../api";
 import { StreamIDIndexItem } from "../Channel";
+import { isValidTsmfGroupId } from "../common";
 import _ from "../_";
 
 function serializeChannel(value: StreamIDIndexItem["channels"][number]): apid.Channel {
@@ -29,7 +30,7 @@ function serializeChannel(value: StreamIDIndexItem["channels"][number]): apid.Ch
     if (entry.relTs !== undefined) {
         ret.tsmfRelTs = entry.relTs;
     }
-    if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined && channel.tsmfGroupId !== 255) {
+    if (isValidTsmfGroupId(channel.tsmfGroupId)) {
         ret.tsmfGroupId = channel.tsmfGroupId;
     }
     return ret;

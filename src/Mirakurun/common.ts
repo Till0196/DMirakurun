@@ -71,6 +71,10 @@ export function defaultRouteForType(type: apid.ChannelType): apid.ChannelRoute {
     }
 }
 
+export function isValidTsmfGroupId(groupId: number | null | undefined): boolean {
+    return typeof groupId === "number" && Number.isInteger(groupId) && groupId >= 1 && groupId <= 255;
+}
+
 export class WhereQueryError extends Error {
     readonly code = "WHERE_QUERY";
     readonly status = 400;

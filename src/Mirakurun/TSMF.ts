@@ -15,8 +15,6 @@ const PACKET_SIZE = 188;
 const TS_SYNC_BYTE = 0x47;
 const TSMF_PID = 0x2f;
 const SLOT_COUNT = 52 as const;
-const TSMF_SYNC_A = 0x1a86;
-const TSMF_SYNC_B = 0x0579;
 
 export class TSMFSlotFilter extends stream.Transform {
 
@@ -94,8 +92,9 @@ export class TSMFSlotFilter extends stream.Transform {
         const pid = ((packet[1] & 0x1f) << 8) | packet[2];
 
         if (pid === TSMF_PID) {
-            const sync = ((packet[4] << 8) | packet[5]) & 0x1fff;
-            if (sync === TSMF_SYNC_A || sync === TSMF_SYNC_B) {
+            // Validate header and CRC32 so a corrupt slot map is not adopted.
+            const info = TSMFFilter.parseTSMFHeader(packet);
+            if (info) {
                 const cc = packet[3] & 0x0f;
                 const wasSynced = this._ccChecker.synced;
                 if (!this._ccChecker.check(cc)) {
@@ -106,20 +105,13 @@ export class TSMFSlotFilter extends stream.Transform {
                     log.debug("TSMFSlotFilter CC synced after skipping stale frame(s)");
                 }
 
-                this._slotMap = [];
-                for (let i = 0; i < 26; i++) {
-                    this._slotMap.push((packet[73 + i] & 0xf0) >> 4);
-                    this._slotMap.push(packet[73 + i] & 0x0f);
-                }
+                this._slotMap = info.slotMap.slice();
                 this._slotCounter = 0;
 
                 if (this._detectMode) {
                     // group_id meaningful only for Extended TSMF (frame_type=0x2)
-                    const frameType = packet[6] & 0x0f;
-                    const groupId = frameType === 0x02 ? packet[127] : null;
-                    // streamTypeBits: 15 bits at TS packet 125..126
-                    const streamTypeBits = (packet[125] << 7) | (packet[126] >> 1);
-                    this.emit("slotMap", this._slotMap.slice(), groupId, streamTypeBits);
+                    const groupId = common.isValidTsmfGroupId(info.groupId) ? info.groupId : null;
+                    this.emit("slotMap", this._slotMap.slice(), groupId, info.streamTypeBits);
                 }
             }
             if (this._passHeader && !this._slotMapOnly) {

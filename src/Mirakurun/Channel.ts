@@ -210,8 +210,7 @@ export class Channel {
             };
             let hasData = false;
 
-            if (channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined &&
-                channel.tsmfGroupId !== 255 && !channel.hasConfigTsmfGroupId) {
+            if (common.isValidTsmfGroupId(channel.tsmfGroupId) && !channel.hasConfigTsmfGroupId) {
                 record.groupId = channel.tsmfGroupId;
                 hasData = true;
             }
