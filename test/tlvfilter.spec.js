@@ -39,10 +39,10 @@ function sdt() {
   };
 }
 
-function run(options) {
+function run(options, serviceIds = [101]) {
   const filter = new TLVFilter({ channelItem, ...options });
   // eslint-disable-next-line no-underscore-dangle
-  filter._serviceIds = new Set([101]);
+  filter._serviceIds = new Set(serviceIds);
   const events = [];
   for (const name of ["network", "streamInfo", "services"]) {
     filter.on(name, payload => events.push({ name, payload }));
@@ -76,5 +76,10 @@ describe("[tlvfilter.spec] TLVFilter: NIT / SDT follow parseNIT / parseSDT like 
     const events = run({ parseSDT: true });
     assert.deepStrictEqual(events.map(e => e.name), ["streamInfo", "services"]);
     assert.strictEqual(events[1].payload[0].remoteControlKeyId, undefined);
+  });
+
+  it("ignores SDT until PLT is received", () => {
+    const events = run({ parseNIT: true, parseSDT: true }, []);
+    assert.deepStrictEqual(events.map(e => e.name), ["network"]);
   });
 });

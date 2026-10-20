@@ -371,6 +371,10 @@ export default class TLVFilter extends EventEmitter {
         if (this._parseNIT && this._remoteControlKeyIdMap === null) {
             return;
         }
+        // wait for PLT so that services are not dropped
+        if (this._serviceIds.size === 0) {
+            return;
+        }
 
         if (sdt.tableId !== "SDT[actual]") {
             return;
