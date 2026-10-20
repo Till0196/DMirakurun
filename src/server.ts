@@ -53,6 +53,7 @@ setEnv("TUNERS_CONFIG_PATH", "/usr/local/etc/mirakurun/tuners.yml");
 setEnv("CHANNELS_CONFIG_PATH", "/usr/local/etc/mirakurun/channels.yml");
 setEnv("SERVICES_DB_PATH", "/usr/local/var/db/mirakurun/services.json");
 setEnv("PROGRAMS_DB_PATH", "/usr/local/var/db/mirakurun/programs.json");
+setEnv("CHANNELS_DB_PATH", "/usr/local/var/db/mirakurun/channels.json");
 setEnv("LOGO_DATA_DIR_PATH", "/usr/local/var/db/mirakurun/logo-data");
 
 import _ from "./Mirakurun/_";
@@ -87,7 +88,8 @@ import * as log from "./Mirakurun/log";
     _.service = new Service();
     _.program = new Program();
     _.server = new Server();
-
+    // before services so groupId / relTs mappings are in place
+    await _.channel.load();
     await _.service.load();
     await _.program.load();
 

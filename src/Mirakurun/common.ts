@@ -17,12 +17,15 @@ import rfdc from "rfdc";
 import ChannelItem from "./ChannelItem";
 import * as apid from "../../api";
 
+export type OutputFormat = "ts" | "tlv";
+
 export interface User {
     readonly id: string;
     readonly priority: number;
     readonly agent?: string;
     readonly url?: string;
     readonly disableDecoder?: boolean;
+    readonly outputFormat?: OutputFormat;
     readonly streamSetting?: StreamSetting;
     readonly streamInfo?: StreamInfo;
 }
@@ -31,12 +34,17 @@ export type UserRequest = Omit<User, "streamSetting">;
 
 interface StreamSetting {
     channel: ChannelItem;
+    channels?: ChannelItem[];
     networkId?: number;
     serviceId?: number;
     eventId?: number;
     parseNIT?: boolean;
     parseSDT?: boolean;
     parseEIT?: boolean;
+    tsmfRelTs?: number;
+    tsmfRelTlv?: number;
+    tsmfDiscovery?: boolean;
+    drainBytes?: number;
 }
 
 export interface StreamInfo {
@@ -47,6 +55,20 @@ export interface StreamInfo {
 }
 
 export const channelTypes: apid.ChannelType[] = ["GR", "BS", "CS", "SKY", "BS4K"];
+
+export const channelRoutes: apid.ChannelRoute[] = ["TER", "SAT", "CATV", "HIKARI"];
+
+export function defaultRouteForType(type: apid.ChannelType): apid.ChannelRoute {
+    switch (type) {
+        case "GR":
+            return "TER";
+        case "BS":
+        case "CS":
+        case "SKY":
+        case "BS4K":
+            return "SAT";
+    }
+}
 
 export const deepClone = rfdc();
 

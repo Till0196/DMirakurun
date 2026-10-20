@@ -18,8 +18,9 @@ import * as common from "./common";
 import _ from "./_";
 import * as apid from "../../api";
 import Event from "./Event";
-import ChannelItem from "./ChannelItem";
+import ChannelItem, { StreamEntry } from "./ChannelItem";
 import TSFilter from "./TSFilter";
+import StreamFilter from "./StreamFilter";
 
 export default class ServiceItem {
     static getId(networkId: number, serviceId: number): number {
@@ -29,7 +30,7 @@ export default class ServiceItem {
     private _id: number;
 
     constructor(
-        private _channel: ChannelItem,
+        private _streamId: number,
         private _networkId: number,
         private _serviceId: number,
         private _name?: string,
@@ -52,6 +53,10 @@ export default class ServiceItem {
 
     get serviceId(): number {
         return this._serviceId;
+    }
+
+    get streamId(): number {
+        return this._streamId;
     }
 
     get name(): string {
@@ -132,8 +137,12 @@ export default class ServiceItem {
         }
     }
 
-    get channel(): ChannelItem {
-        return this._channel;
+    get channel(): ChannelItem | undefined {
+        return _.channel?.findByStreamId(this._networkId, this._streamId)[0];
+    }
+
+    get channels(): ChannelItem[] {
+        return _.channel?.findByStreamId(this._networkId, this._streamId) ?? [];
     }
 
     export(): apid.Service {
@@ -141,29 +150,66 @@ export default class ServiceItem {
             id: this._id,
             serviceId: this._serviceId,
             networkId: this._networkId,
+            streamId: this._streamId,
             name: this._name || "",
             type: this._type,
             logoId: this._logoId,
             remoteControlKeyId: this._remoteControlKeyId,
             epgReady: this._epgReady,
-            epgUpdatedAt: this._epgUpdatedAt,
-            channel: {
-                type: this._channel.type,
-                channel: this._channel.channel
-            }
+            epgUpdatedAt: this._epgUpdatedAt
         };
+
+        const serialize = (ch: ChannelItem): apid.Channel => {
+            let entry: StreamEntry | undefined;
+            for (const e of ch.getStreams().values()) {
+                if (e.streamId === this._streamId && e.networkId === this._networkId) {
+                    entry = e;
+                    break;
+                }
+            }
+            const c: apid.Channel = {
+                type: ch.type,
+                channel: ch.channel,
+                route: ch.route
+            };
+            if (entry?.relTs !== undefined) {
+                if (entry.isTlv) {
+                    c.tsmfRelTlv = entry.relTs;
+                } else {
+                    c.tsmfRelTs = entry.relTs;
+                }
+            }
+            if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && ch.tsmfGroupId !== 255) {
+                c.tsmfGroupId = ch.tsmfGroupId;
+            }
+            return c;
+        };
+
+        const all = this.channels;
+        if (all.length > 0) {
+            // streamId as channel string keeps the primary identifier stable
+            // across route changes for clients that store one channel per service.
+            ret.channel = {
+                type: all[0].type,
+                channel: String(this._streamId)
+            };
+        }
+        if (all.length >= 2) {
+            ret.channels = all.map(serialize);
+        }
 
         return ret;
     }
 
-    getStream(userRequest: common.UserRequest, output: stream.Writable): Promise<TSFilter> {
+    getStream(userRequest: common.UserRequest, output: stream.Writable): Promise<TSFilter | StreamFilter> {
         return _.tuner.initServiceStream(this, userRequest, output);
     }
 
     getOrder(): number {
+        const channel = this.channel;
         let order: string;
 
-        switch (this._channel.type) {
+        switch (channel?.type) {
             case "GR":
                 order = "1";
                 break;
@@ -178,6 +224,9 @@ export default class ServiceItem {
                 break;
             case "BS4K":
                 order = "5";
+                break;
+            default:
+                order = "9";
                 break;
         }
 

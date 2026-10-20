@@ -15,6 +15,7 @@
 */
 import { Operation } from "express-openapi";
 import * as api from "../../../api";
+import { OutputFormat } from "../../../common";
 import _ from "../../../_";
 
 export const parameters = [
@@ -38,6 +39,12 @@ export const parameters = [
         type: "integer",
         minimum: 0,
         maximum: 1
+    },
+    {
+        in: "query",
+        name: "format",
+        type: "string",
+        enum: ["ts", "tlv"]
     }
 ];
 
@@ -51,9 +58,12 @@ export const get: Operation = (req, res) => {
 
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
 
+    const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
+    const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
+
     // HEAD request support
     if (req.method === "HEAD") {
-        res.setHeader("Content-Type", "video/MP2T");
+        res.setHeader("Content-Type", contentType);
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
@@ -70,7 +80,8 @@ export const get: Operation = (req, res) => {
         priority: parseInt(req.get("X-Mirakurun-Priority"), 10) || 0,
         agent: req.get("User-Agent"),
         url: req.url,
-        disableDecoder: (<number> <any> req.query.decode === 0)
+        disableDecoder: (<number> <any> req.query.decode === 0),
+        outputFormat
     }, res)
         .then(tsFilter => {
             if (requestAborted === true || req.aborted === true) {
@@ -79,7 +90,7 @@ export const get: Operation = (req, res) => {
 
             req.once("close", () => tsFilter.close());
 
-            res.setHeader("Content-Type", "video/MP2T");
+            res.setHeader("Content-Type", contentType);
             res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
             res.status(200);
 

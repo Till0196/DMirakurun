@@ -17,7 +17,7 @@ import { Operation } from "express-openapi";
 import * as api from "../../../api";
 import * as apid from "../../../../../api";
 import _ from "../../../_";
-import { deepClone, channelTypes } from "../../../common";
+import { channelTypes } from "../../../common";
 
 export const parameters = [
     {
@@ -43,17 +43,7 @@ export const get: Operation = (req, res) => {
         return;
     }
 
-    const body: apid.Channel = deepClone(channel);
-
-    body.services = channel.getServices().map(service => ({
-        id: service.id,
-        serviceId: service.serviceId,
-        networkId: service.networkId,
-        name: service.name,
-        type: service.type
-    }));
-
-    api.responseJSON(res, body);
+    api.responseJSON(res, channel.toJSON());
 };
 
 get.apiDoc = {

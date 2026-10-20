@@ -21,7 +21,6 @@ import Channel from "./Channel";
 import Service from "./Service";
 import Program from "./Program";
 import Server from "./Server";
-
 interface Shared {
     readonly config: {
         server?: apid.ConfigServer;

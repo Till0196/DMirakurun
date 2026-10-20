@@ -29,7 +29,7 @@ export function getProgramItemId(networkId: number, serviceId: number, eventId: 
 export class Program {
     private _itemMap = new Map<number, db.Program>();
     private _itemMapDeleted = new Map<number, db.Program>();
-    private _saveTimerId: NodeJS.Timeout;
+    private _saveTimerId: NodeJS.Timeout | null = null;
     private _emitTimerId: NodeJS.Timeout;
     private _emitRunning = false;
     private _emitPrograms = new Map<db.Program, apid.EventType>();
@@ -211,8 +211,13 @@ export class Program {
     save(): void {
         clearTimeout(this._emitTimerId);
         this._emitTimerId = setTimeout(() => this._emit(), 1000);
-        clearTimeout(this._saveTimerId);
-        this._saveTimerId = setTimeout(() => this._save(), 1000 * 30);
+        // leading edge: a trailing edge never fires under continuous EPG gathering
+        if (this._saveTimerId === null) {
+            this._saveTimerId = setTimeout(() => {
+                this._saveTimerId = null;
+                this._save();
+            }, 1000 * 30);
+        }
     }
 
     async load(): Promise<void> {

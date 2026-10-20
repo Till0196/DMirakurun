@@ -24,9 +24,17 @@ import Queue from "promise-queue";
 import * as apid from "../../api";
 import * as log from "./log";
 
-interface Service extends apid.Service {
-    /** @deprecated */
-    logoData?: string; // base64
+interface Service {
+    id: number;
+    serviceId: number;
+    networkId: number;
+    streamId: number;
+    name: string;
+    type: number;
+    logoId?: number;
+    remoteControlKeyId?: number;
+    epgReady?: boolean;
+    epgUpdatedAt?: number;
 }
 
 export interface Program extends apid.Program {
@@ -34,6 +42,22 @@ export interface Program extends apid.Program {
     _pf?: true; // for compatibility
     _isPresent?: true;
     _isFollowing?: true;
+}
+
+export interface ChannelStreamEntry {
+    streamId: number;
+    networkId: number;
+    relTs?: number;
+    relTlv?: number;
+    serviceIds?: number[];
+}
+
+export interface ChannelRecord {
+    type: apid.ChannelType;
+    channel: string;
+    route?: apid.ChannelRoute;
+    groupId?: number;
+    streams?: ChannelStreamEntry[];
 }
 
 export async function loadServices(integrity: string, sync = false): Promise<Service[]> {
@@ -50,6 +74,14 @@ export async function loadPrograms(integrity: string, sync = false): Promise<Pro
 
 export async function savePrograms(data: Program[], integrity: string): Promise<void> {
     return save(process.env.PROGRAMS_DB_PATH, data, integrity);
+}
+
+export async function loadChannels(integrity: string, sync = false): Promise<ChannelRecord[]> {
+    return load(process.env.CHANNELS_DB_PATH, integrity, sync);
+}
+
+export async function saveChannels(data: ChannelRecord[], integrity: string): Promise<void> {
+    return save(process.env.CHANNELS_DB_PATH, data, integrity);
 }
 
 // use queue because async fs ops is not thread safe

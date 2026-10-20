@@ -39,7 +39,7 @@ import {
     MessageBarType
 } from "@fluentui/react";
 import { UIState } from "../index";
-import { ConfigChannels, ChannelType } from "../../../api";
+import { ConfigChannels, ChannelType, ChannelRoute } from "../../../api";
 
 const configAPI = "/api/config/channels";
 
@@ -48,6 +48,7 @@ interface Item {
     enable: JSX.Element;
     name: JSX.Element;
     type: JSX.Element;
+    route: JSX.Element;
     channel: JSX.Element;
     options: JSX.Element;
     controls: JSX.Element;
@@ -72,8 +73,15 @@ const columns: IColumn[] = [
         key: "col-type",
         name: "Type",
         fieldName: "type",
-        minWidth: 65,
-        maxWidth: 65
+        minWidth: 70,
+        maxWidth: 70
+    },
+    {
+        key: "col-route",
+        name: "Route",
+        fieldName: "route",
+        minWidth: 80,
+        maxWidth: 80
     },
     {
         key: "col-channel",
@@ -363,6 +371,28 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                     }}
                 />
             ),
+            route: (
+                <Dropdown
+                    label="Route"
+                    options={[
+                        { key: "", text: "(default)" },
+                        { key: "TER", text: "TER" },
+                        { key: "SAT", text: "SAT" },
+                        { key: "CATV", text: "CATV" },
+                        { key: "HIKARI", text: "HIKARI" }
+                    ]}
+                    selectedKey={ch.route ?? ""}
+                    onChange={(ev, option) => {
+                        const v = option.key as string;
+                        if (v === "") {
+                            delete ch.route;
+                        } else {
+                            ch.route = v as ChannelRoute;
+                        }
+                        setEditing([...editing]);
+                    }}
+                />
+            ),
             channel: (
                 <TextField
                     label="Channel"
@@ -408,6 +438,20 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                                 } else if (/^[0-9]+$/.test(newValue)) {
                                     const tsmfRelTs = parseInt(newValue, 10);
                                     ch.tsmfRelTs = tsmfRelTs;
+                                }
+                                setEditing([...editing]);
+                            }}
+                        />
+                        <TextField
+                            style={{ width: 70 }}
+                            label="TsmfGroupId"
+                            value={`${ch.tsmfGroupId != null ? ch.tsmfGroupId : ""}`}
+                            onChange={(ev, newValue) => {
+                                if (newValue === "") {
+                                    delete ch.tsmfGroupId;
+                                } else if (/^[0-9]+$/.test(newValue)) {
+                                    const tsmfGroupId = parseInt(newValue, 10);
+                                    ch.tsmfGroupId = tsmfGroupId;
                                 }
                                 setEditing([...editing]);
                             }}

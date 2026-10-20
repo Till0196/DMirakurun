@@ -42,15 +42,23 @@ export interface Channel {
     type: ChannelType;
     channel: string;
     name?: string;
+    route?: ChannelRoute;
+    tsmfRelTs?: number;
+    tsmfRelTlv?: number;
+    tsmfGroupId?: number;
+    isMultiCarrier?: boolean;
     services?: Service[];
 }
 
 export type ChannelType = "GR" | "BS" | "CS" | "SKY" | "BS4K";
 
+export type ChannelRoute = "TER" | "SAT" | "CATV" | "HIKARI";
+
 export interface Service {
     id: ServiceItemId;
     serviceId: ServiceId;
     networkId: NetworkId;
+    streamId?: number;
     name: string;
     type: number;
     logoId?: number;
@@ -58,7 +66,10 @@ export interface Service {
     remoteControlKeyId?: number;
     epgReady?: boolean;
     epgUpdatedAt?: number;
+    channels?: Channel[];
     channel?: Channel;
+    tsmfRelTs?: number;
+    tsmfRelTlv?: number;
 }
 
 export interface Program {
@@ -78,6 +89,8 @@ export interface Program {
         resolution: ProgramVideoResolution;
         streamContent: number;
         componentType: number;
+        frameRate?: ProgramVideoFrameRate;
+        transferCharacteristics?: ProgramVideoTransferCharacteristics;
     }
     audios?: ProgramAudio[];
 
@@ -108,6 +121,29 @@ export type ProgramVideoResolution = (
     "1080p" |
     "2160p" |
     "4320p"
+);
+
+/** ARIB STD-B60 Table 7-50 video_frame_rate */
+export type ProgramVideoFrameRate = (
+    "23.976" |
+    "24" |
+    "25" |
+    "29.97" |
+    "30" |
+    "50" |
+    "59.94" |
+    "60" |
+    "119.88" |
+    "120"
+);
+
+/** ARIB STD-B60 Table 7-51 video_transfer_characteristics */
+export type ProgramVideoTransferCharacteristics = (
+    "bt709" |
+    "iec61966" |
+    "bt2020" |
+    "bt2100-pq" |
+    "bt2100-hlg"
 );
 
 export interface ProgramAudio {
@@ -174,6 +210,7 @@ export interface TunerDevice {
     index: number;
     name: string;
     types: ChannelType[];
+    routes?: ChannelRoute[];
     command: string;
     pid: number;
     users: TunerUser[];
@@ -203,6 +240,8 @@ interface StreamSetting {
     parseNIT?: boolean;
     parseSDT?: boolean;
     parseEIT?: boolean;
+    tsmfRelTs?: number;
+    tsmfRelTlv?: number;
 }
 
 export interface StreamInfo {
@@ -299,6 +338,7 @@ export interface ConfigTunersItem {
     name: string;
     /** channel type. */
     types: ChannelType[];
+    routes?: ChannelRoute[];
     /** [chardev][dvb] command to get TS. */
     command?: string;
     /** [dvb] dvr adapter device path */
@@ -311,7 +351,10 @@ export interface ConfigTunersItem {
     remoteMirakurunDecoder?: boolean;
     /** CAS processor command if needed. */
     decoder?: string;
-    mmtsDecoder?: string;
+    /** TLV→TLV descrambler command. */
+    tlvDecoder?: string;
+    /** TLV→TS converter command (e.g., dantto4k). */
+    tlvToTsDecoder?: string;
     /** `true` to **disable** this tuner. */
     isDisabled?: boolean;
 }
@@ -321,11 +364,14 @@ export type ConfigChannels = ConfigChannelsItem[];
 export interface ConfigChannelsItem {
     name: string;
     type: ChannelType;
+    route?: ChannelRoute;
     /** passed to tuning command */
     channel: string;
     serviceId?: number;
     /** TSMF (MPEG-TS Multi Frame) relative TS number config for CATV */
     tsmfRelTs?: number;
+    /** TSMF group_id for multi-carrier streams */
+    tsmfGroupId?: number;
     /**
      * passed to tuning command variables.
      * @example { "freq": 123456, "polarity": "H", "space": 6, "extra-args": "..." }

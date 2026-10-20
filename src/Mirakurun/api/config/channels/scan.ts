@@ -17,6 +17,7 @@ import { Operation } from "express-openapi";
 import * as api from "../../../api";
 import * as apid from "../../../../../api";
 import * as config from "../../../config";
+import ChannelItem from "../../../ChannelItem";
 import _ from "../../../_";
 
 /**
@@ -620,10 +621,12 @@ async function runChannelScan(
             let services: apid.Service[];
             try {
                 // Get services from the tuner
-                services = await _.tuner.getServices(<any> {
+                const scanChannelItem = new ChannelItem({
+                    name: `scan:${type}:${channel}`,
                     type,
                     channel
-                }, {
+                });
+                services = await _.tuner.getServices(scanChannelItem, {
                     id: "Mirakurun:API:channelScan",
                     priority: 1
                 });
