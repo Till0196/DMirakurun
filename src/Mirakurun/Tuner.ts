@@ -24,15 +24,9 @@ import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
 import StreamFilter, { DiscoveryResult } from "./StreamFilter";
 import { streamFormatOf } from "./Channel";
-// Discard the first N bytes of cat/dvbv5-zap stdout to skip stale DVB DVR
-// ring contents from the previous tune. Empirically ≤ 7 KiB on TBS6205SE.
+// skip stale DVR ring contents from the previous tune
 const STALE_DVR_DRAIN_BYTES = 32 * 1024;
 
-/**
- * Pick result from `_pickTunerDevice`. The picked `channel` is the candidate
- * whose `route` matches the picked `device`, so the caller can hand it to
- * `StreamFilter` / `TunerDevice.startStream` without re-resolving the route.
- */
 interface TunerPickResult {
     device: TunerDevice;
     channel: ChannelItem;
@@ -72,7 +66,6 @@ export class Tuner {
         }
 
         while (true) {
-            // Count free devices (excluding already-picked ones)
             const freeDevices = devices.filter(d =>
                 d.isFree && !this._readyForJobPickedDeviceSet.has(d)
             );
@@ -85,7 +78,6 @@ export class Tuner {
             const available = freeDevices.length + joinableDevices.length;
 
             if (available >= requiredCount) {
-                // Pick one device to reserve
                 const picked = this._pickTunerDevice(devices, channel, -1);
                 if (picked && !this._readyForJobPickedDeviceSet.has(picked.device)) {
                     const device = picked.device;
@@ -242,9 +234,6 @@ export class Tuner {
     }
 
     async getServices(channel: ChannelItem, user: Partial<common.User> = {}): Promise<apid.Service[]> {
-        // Upstream-shape: full pipeline, no TSMF discovery early-bail. Always
-        // returns Service[] (or rejects). For the deferred TSMF discovery
-        // flow, callers should use `discoverServices` instead.
         const result = await this.discoverServices(channel, { ...user, tsmfDiscovery: false });
         if (!Array.isArray(result)) {
             throw new Error("getServices unexpectedly returned a discovery result; use discoverServices for the deferred TSMF flow");
@@ -252,12 +241,6 @@ export class Tuner {
         return result;
     }
 
-    /**
-     * Scan a channel and return either the parsed service list or, when
-     * `tsmfDiscovery` is true (the default for initial scans), a
-     * `DiscoveryResult` for multi-carrier TSMF channels that need a separate
-     * bonded scan to complete.
-     */
     async discoverServices(
         channel: ChannelItem,
         options: Partial<common.User> & {
@@ -294,8 +277,6 @@ export class Tuner {
             let services: apid.Service[] = null;
             let discoveryResult: DiscoveryResult = null;
 
-            // discovery: bails on Extended header (~ms). bonded scan: needs
-            // carrier bonding + TLV-NIT/SDT (~25-35s).
             const timeoutMs = tsmfDiscovery ? 20000 : 45000;
             setTimeout(() => tsFilter.close(), timeoutMs);
 
@@ -436,8 +417,6 @@ export class Tuner {
             } else {
                 const { device, channel: pickedChannel } = picked;
 
-                // Commit the picked channel so downstream code (StreamFilter,
-                // TunerDevice command template) uses the correct route.
                 setting.channel = pickedChannel;
                 this._resolveTsmfSlot(setting, pickedChannel);
 
@@ -463,10 +442,7 @@ export class Tuner {
                 Object.defineProperty(user, "streamInfo", {
                     get: () => streamFilter.streamInfo
                 });
-                // `/api/tuners` reports what is actually being delivered. A
-                // request without `format` resolves through
-                // `defaultTlvStreamFormat` inside the filter, so the value
-                // is only known once the input has been seen.
+                // known only once the input has been seen
                 const requestedOutputFormat = user.outputFormat;
                 Object.defineProperty(user, "outputFormat", {
                     get: () => streamFilter.outputFormat ?? requestedOutputFormat
@@ -485,12 +461,6 @@ export class Tuner {
         }
     }
 
-    /**
-     * Build the ordered list of candidate channels for `_initTS`. When the
-     * caller passed `setting.channels` (multi-route service streaming) it is
-     * used as-is; otherwise we fall back to the single `setting.channel`.
-     * An empty list falls back to `[setting.channel]` for backward compat.
-     */
     private _resolveCandidateChannels(setting: common.User["streamSetting"]): ChannelItem[] {
         const channels = setting.channels && setting.channels.length > 0
             ? setting.channels.filter(ch => ch)
@@ -498,11 +468,6 @@ export class Tuner {
         return channels.length > 0 ? channels : [setting.channel];
     }
 
-    /**
-     * Resolve the route-dependent TSMF slot for `pickedChannel` in-place on
-     * `setting`. TSMF carriers also need `drainBytes` so the downstream
-     * TSMFFilter does not lock onto stale DVR contents.
-     */
     private _resolveTsmfSlot(setting: common.User["streamSetting"], pickedChannel: ChannelItem): void {
         if (setting.tsmfRelTs === undefined) {
             let entry = setting.serviceId !== undefined && setting.serviceId !== null
@@ -556,10 +521,6 @@ export class Tuner {
 
     /**
      * チューナーデバイス探索
-     *
-     * 複数ルート候補 (`ChannelItem[]`) を受け、picked device の route に
-     * 一致する candidate を `channel` として返す。呼び出し側は `StreamFilter`
-     * / `TunerDevice.startStream` にそのまま渡すだけでよい。
      */
     private _pickTunerDevice(
         devices: TunerDevice[],
@@ -615,8 +576,7 @@ export class Tuner {
             }
         }
 
-        // 4. takeover existing (prefer single-carrier first, then multi-carrier parent)
-        // Killing a multi-carrier parent automatically frees all its carrier tuners.
+        // 4. takeover existing
         if (priority >= 0) {
             const candidates = devices
                 .filter(d => d.isUsing === true && !d.isAdditionalCarrier && d.getPriority() < priority);
@@ -642,10 +602,6 @@ export class Tuner {
 
     /**
      * 対応チューナーデバイス一覧
-     *
-     * `routes` が単一 route なら単純 filter、配列なら指定順に追加 (重複除去)。
-     * `undefined` の場合は route 非絞り込み。`routes` を持たない tuner 設定は
-     * 全 route にマッチする (旧 tuners.yml 互換)。
      */
     private _getDevicesByType(
         type: apid.ChannelType,

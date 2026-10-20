@@ -22,10 +22,7 @@ import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
 import StreamFilter from "./StreamFilter";
 
-/**
- * One MPEG-TS or TLV stream carried by a channel. Keyed by `streamKey`:
- * `0` = non-TSMF (plain TS or direct-TLV), `1..15` = TSMF slot (== relTs).
- */
+// streamKey: 0 = non-TSMF, 1..15 = TSMF relTs
 export interface StreamEntry {
     streamId: number;
     networkId: number;
@@ -63,7 +60,6 @@ export default class ChannelItem {
         this.type = config.type;
         this.route = config.route ?? defaultRouteForType(config.type);
         this.channel = config.channel;
-        // channels.yml は tsmfRelTs に統一。TS/TLV の区別は runtime の auto-detect で扱う。
         this._tsmfRelTs = config.tsmfRelTs;
         this._configTsmfRelTs = config.tsmfRelTs !== null && config.tsmfRelTs !== undefined;
         this._tsmfGroupId = common.isValidTsmfGroupId(config.tsmfGroupId) ? config.tsmfGroupId : undefined;
@@ -154,8 +150,7 @@ export default class ChannelItem {
     }
 
     addServiceId(serviceId: number, streamKey: number, fromConfig = false): void {
-        // Skip a config-loaded streamKey=0 entry on a channel that has TSMF
-        // slot entries — likely a missing `tsmfRelTs:` in channels.yml.
+        // likely a missing tsmfRelTs in channels.yml
         if (fromConfig && streamKey === 0) {
             for (const key of this._streams.keys()) {
                 if (key >= 1) {
@@ -250,12 +245,6 @@ export default class ChannelItem {
         _.channel?.invalidateStreamIDIndex();
     }
 
-    /**
-     * Record the container the tuner delivered for this stream slot as soon
-     * as it is detected, before the stream id is known. A stale `channels.json`
-     * from before TLV detection otherwise keeps saying "ts" until an SDT is
-     * parsed, and `format=tlv` requests are refused in the meantime.
-     */
     setStreamFormat(streamKey: number, isTlv: boolean): void {
         const entry = this._streams.get(streamKey);
         if (!entry || entry.isTlv === isTlv) {
@@ -283,11 +272,7 @@ export default class ChannelItem {
         return _.service.findByChannel(this);
     }
 
-    /**
-     * Same TSMF bonded multiplex (groupId match + slot-stream tuples match).
-     * Slot-stream check guards against 8-bit groupId collisions between
-     * unrelated CATV systems. Optimistic when either side has no slot data.
-     */
+    // the slot-stream check guards against groupId collisions
     isSameTsmfGroup(other: ChannelItem | null | undefined): boolean {
         if (!other) {
             return false;

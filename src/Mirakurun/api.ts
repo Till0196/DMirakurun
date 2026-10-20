@@ -20,7 +20,6 @@ import * as express from "express";
 
 import { OutputFormat } from "./common";
 
-/** The `format` query as a stream format, or `undefined` when it did not say. */
 export function requestedStreamFormat(query: unknown): OutputFormat | undefined {
     return query === "tlv" || query === "ts" ? query : undefined;
 }
@@ -29,13 +28,6 @@ export function streamContentType(format: OutputFormat | undefined): string {
     return format === "tlv" ? "application/octet-stream" : "video/MP2T";
 }
 
-/**
- * Answer a stream request with what the tuner turned out to deliver. The
- * Content-Type follows the container the filter emits, which is known only
- * after the input has been seen; a TS input that was asked for as TLV ends in
- * 406 instead of a transport stream under the wrong label.
- */
-/** What respondStream needs from the filter; StreamFilter provides it. */
 export interface StreamSink {
     readonly outputFormat?: OutputFormat | null;
     once(event: string, listener: (...args: any[]) => void): unknown;

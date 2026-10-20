@@ -28,15 +28,10 @@ const TLV_VALID_TYPES = new Set([
     TLV_TYPE_NULL
 ]);
 
-// Stream format detection parameters
-// TSMF frames are 52 TS packets (9776 bytes). Need at least 1 full frame
-// plus margin for sync alignment.
 const DETECT_MIN_BYTES = PACKET_SIZE * 53 * 2; // ~20KB, guarantees 2 TSMF frames
-// Minimum consecutive TS sync bytes at PACKET_SIZE stride to declare the
-// buffer TS-aligned. 8 packets is enough to rule out chance 0x47 matches.
+// rules out chance 0x47 matches
 const TS_MIN_CONSECUTIVE = 8;
 
-// TSMF is a sub-classification of TS, encoded by `tsmfHeader` not by format.
 export type StreamFormat = "ts" | "tlv";
 
 export interface DiscoveryResult {
@@ -110,11 +105,6 @@ export default class StreamFilter extends EventEmitter {
         return this._format;
     }
 
-    /**
-     * The container the caller receives on `output`. Known once the input has
-     * been detected and the sink chosen, before the first byte is written;
-     * "outputFormat" is emitted at that moment.
-     */
     get outputFormat(): OutputFormat | null {
         return this._outputFormat;
     }
@@ -137,7 +127,6 @@ export default class StreamFilter extends EventEmitter {
             return;
         }
 
-        // Buffer data for format detection
         this._detectChunks.push(chunk);
         this._detectLen += chunk.length;
 
@@ -164,8 +153,6 @@ export default class StreamFilter extends EventEmitter {
                 clearTimeout(this._aggregationTimer);
                 this._aggregationTimer = null;
             }
-            // Flush whatever we've collected so Tuner.getServices still
-            // receives a services event before the close fires.
             if (!this._emittedServices) {
                 this._emitMergedServices(true);
             }
@@ -258,8 +245,6 @@ export default class StreamFilter extends EventEmitter {
 
     private _createTlvFilter(): TLVFilter {
         const opts = this._options;
-        // A request that did not say picks up server.yml `defaultTlvStreamFormat`.
-        // TLV only becomes TS when there is a `tlvToTsDecoder` to do it.
         const wanted: OutputFormat = opts.outputFormat ?? _.config.server.defaultTlvStreamFormat ?? "tlv";
         this._setOutputFormat(wanted === "ts" && opts.tlvToTsDecoder ? "ts" : "tlv");
         return new TLVFilter({
@@ -324,8 +309,7 @@ export default class StreamFilter extends EventEmitter {
         this._proxyEvents(tlvFilter);
 
         const ch = this._options.channel;
-        // Write to the tsmfRelTs-keyed entry on bonded channels so we don't
-        // create a parallel slot 0 entry that would duplicate services.
+        // bonded channels use the tsmfRelTs-keyed entry
         const streamKey = ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined &&
             ch.tsmfRelTs !== undefined && ch.tsmfRelTs !== null
             ? ch.tsmfRelTs
@@ -354,8 +338,6 @@ export default class StreamFilter extends EventEmitter {
             ch.setStream(relTs, header.streamIds[relTs - 1], header.originalNetworkIds[relTs - 1], isTlv, relTs);
         }
 
-        // Multi-carrier: bail with DiscoveryResult so the caller queues a
-        // bonded scan instead of stalling on a single-carrier TLVFilter.
         if (opts.tsmfDiscovery &&
             header.numberOfCarriers > 1 &&
             isValidTsmfGroupId(header.groupId)) {
@@ -374,10 +356,7 @@ export default class StreamFilter extends EventEmitter {
             return;
         }
 
-        // Skip the channel-level fallback in scan mode — it may point at a
-        // non-service slot (e.g. data carousel) left over from an earlier
-        // insertion order and would pin the scan away from the real NIT/SDT
-        // slot. Scan mode (parseSDT=true) resolves via the full fan-out.
+        // scan mode resolves the slot via the full fan-out
         const requestedRelTs = opts.tsmfRelTs
             ?? (opts.serviceId ? ch.getRelTs(opts.serviceId) : undefined)
             ?? (opts.parseSDT ? undefined : ch.tsmfRelTs);
@@ -482,7 +461,6 @@ export default class StreamFilter extends EventEmitter {
             this._relStreams.push(entry);
         }
 
-        // Replay buffered bytes through each slot filter.
         for (const e of this._relStreams) {
             e.slot.write(buffered);
         }
@@ -503,7 +481,6 @@ export default class StreamFilter extends EventEmitter {
             this._emitMergedServices(true);
         }, 15000);
 
-        // Proxy streamInfo from the first entry.
         Object.defineProperty(this, "streamInfo", {
             get: () => this._relStreams[0]?.filter.streamInfo ?? {},
             configurable: true
@@ -534,7 +511,6 @@ export default class StreamFilter extends EventEmitter {
                 }
                 seen.add(key);
                 merged.push(svc);
-                // fromConfig locks are honoured inside addServiceId.
                 ch.addServiceId(svc.serviceId, e.relTs);
             }
         }
@@ -669,13 +645,10 @@ export default class StreamFilter extends EventEmitter {
             return { format: "ts" };
         }
 
-        // Not TS-family — try TLV.
         if (this._isTlvBuffer(buffer)) {
             return { format: "tlv" };
         }
 
-        // Neither TS sync nor a valid TLV chain found. Fall back to plain TS;
-        // the inner filter will close the session if the bytes are unusable.
         return { format: "ts" };
     }
 

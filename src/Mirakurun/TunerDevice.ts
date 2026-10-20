@@ -108,8 +108,7 @@ export default class TunerDevice extends EventEmitter {
     }
 
     get users(): common.User[] {
-        // ChannelItem must be flattened to a plain object — yieldable-json
-        // does not call toJSON() on class instances.
+        // yieldable-json does not call toJSON() on class instances
         return [...this._users].map(user => {
             const ss = user.streamSetting;
             return {
@@ -333,8 +332,7 @@ export default class TunerDevice extends EventEmitter {
             cmd = this._config.command;
         }
 
-        // Multi-carrier groups always tune the primary channel; other
-        // carriers are added by TSMFCarrierBonding.setupCarriers.
+        // multi-carrier groups always tune the primary channel
         let tuneCh = ch;
         if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && !options?.suppressGroupCombine) {
             const groupChannels = _.channel.items.filter(item =>
@@ -386,14 +384,10 @@ export default class TunerDevice extends EventEmitter {
             inputStream = this._process.stdout;
         }
 
-        // Drain stale DVR ring bytes from the head of the input stream.
-        // Counter-based (consumed in `_streamOnData`) instead of a Transform:
-        // piping a Transform before the consumer is wired causes cat to EPIPE.
+        // a counter, not a Transform: piping a Transform first makes cat EPIPE
         this._drainRemaining = options?.drainBytes ?? 0;
 
-        // TSMF-TLV bonding pipeline (only when target relTs is already known).
-        // Bonded scans run without this — they're the operation that
-        // discovers relTs in the first place.
+        // bonded scans run without this; they are what discovers relTs
         let targetRelTs: number | undefined =
             tuneCh.tsmfRelTs !== null && tuneCh.tsmfRelTs !== undefined ? tuneCh.tsmfRelTs : undefined;
         if (targetRelTs === undefined &&
@@ -406,8 +400,6 @@ export default class TunerDevice extends EventEmitter {
                 targetRelTs = sibling.tsmfRelTs;
                 log.debug("TunerDevice#%d resolved tsmfRelTs=%d from sibling channel %s for %s",
                     this._index, targetRelTs, sibling.channel, tuneCh.channel);
-                // Persist on the channel so StreamFilter._initTlv can route
-                // serviceIds to the right stream entry key.
                 tuneCh.setTsmfRelTs(targetRelTs);
             }
         }
@@ -429,7 +421,6 @@ export default class TunerDevice extends EventEmitter {
             const primaryInput = this._tsmfFilter.createInput();
             this._tsmfBonding.setupCarriers(tuneCh);
 
-            // Writable sink that broadcasts TLV output to all users
             const broadcastSink = new stream.Writable({
                 highWaterMark: 8 * 1024 * 1024,
                 write: (chunk: Buffer, _encoding: string, callback: () => void) => {
@@ -438,8 +429,7 @@ export default class TunerDevice extends EventEmitter {
                 }
             });
 
-            // Set output after ready to avoid flushing accumulated TLV buffer
-            // in one synchronous burst (would block event loop → DVR overflow).
+            // avoid flushing the accumulated TLV in one burst (DVR overflow)
             this._tsmfFilter.once("ready", () => {
                 this._tsmfFilter.setOutput(broadcastSink);
             });
@@ -454,7 +444,6 @@ export default class TunerDevice extends EventEmitter {
             // Set _stream to a dummy so _streamOnData doesn't receive raw data
             this._stream = new stream.PassThrough();
         } else {
-            // Raw stream — format detection and filtering is done by StreamFilter
             this._stream = inputStream;
         }
 
@@ -514,10 +503,7 @@ export default class TunerDevice extends EventEmitter {
             try {
                 user._stream.write(chunk);
             } catch (err: any) {
-                // A newly joined consumer can fail while detecting/parsing a
-                // stream that is already in progress. Keep that failure from
-                // turning into an error on the shared TSMF broadcast sink,
-                // which would otherwise close every user and kill the tuner.
+                // keep a joining consumer's failure off the shared sink
                 log.warn(
                     "TunerDevice#%d stream write failed for user `%s`: %s",
                     this._index, user.id, err?.message || err
@@ -572,8 +558,7 @@ export default class TunerDevice extends EventEmitter {
         this._isAvailable = false;
         this._closing = close;
 
-        // Release carrier links immediately so additional tuners are freed
-        // at the same time as the primary (not delayed by _release timeout)
+        // free carrier tuners together with the primary
         this._tsmfBonding?.releaseCarriers();
         for (const user of this._users) {
             user._stream?.releaseTsmfCarriers?.();

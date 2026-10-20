@@ -141,8 +141,7 @@ export default class TSMFFilter extends EventEmitter {
             return null;
         }
 
-        // frame_type: lower 4 bits of payload[2] (= TS packet byte 6).
-        // Layout: payload[2] = version_number(3) | rel_stream_mode(1) | frame_type(4)
+        // payload[2] = version_number(3) | rel_stream_mode(1) | frame_type(4)
         const frameType = payload[2] & 0x0f;
         const isMultiCarrier = frameType === 0x02;
 
@@ -156,16 +155,12 @@ export default class TSMFFilter extends EventEmitter {
                 return null;
             }
         } else {
-            // frame_type=0x1: TS-only multiplexing. Bonding fields are unused
-            // and frequently filled with 0xFF, so we cannot trust them; treat
-            // the multiplex as a single carrier.
+            // bonding fields are unused (often 0xFF) for frame_type=0x1
             numberOfCarriers = 1;
             carrierSequence = 1;
         }
 
-        // Parse stream_id[0..14] and original_network_id[0..14] from
-        // 識別子/相対ストリーム番号対応情報 (payload[5..64], 480 bits).
-        // Each entry: stream_id(16) + original_network_id(16) = 4 bytes.
+        // stream_id(16) + original_network_id(16) x 15
         const streamIds: number[] = new Array(15);
         const originalNetworkIds: number[] = new Array(15);
         for (let i = 0; i < 15; i++) {
@@ -259,19 +254,13 @@ export default class TSMFFilter extends EventEmitter {
             };
         }
 
-        // Prefer TLV regardless of mode. The TLV pipeline (TSMFFilter →
-        // TLVFilter) is required to demux TLV bytes from TSMF correctly;
-        // routing TLV slots through `tsmf-scan` (TSMFSlotFilter → TLVFilter)
-        // hands raw TS packets to TLVFilter which only catches occasional
-        // PLT fragments and never gets a clean NIT/SDT.
+        // TLV must go through TSMFFilter, not TSMFSlotFilter
         for (let n = 1; n <= 15; n++) {
             if (activeStreams.has(n) && TSMFFilter.isTLVStream(header.streamTypeBits, n)) {
                 return { kind: "tsmf-tlv", relTs: n, pinned: false, activeStreams };
             }
         }
 
-        // Pure TS multiplex: scan mode fans out per-relTs TSFilters; streaming
-        // picks the smallest active relTs.
         if (parseSDT) {
             return { kind: "tsmf-scan", activeStreams, streamTypeBits: header.streamTypeBits };
         }
@@ -403,7 +392,6 @@ export default class TSMFFilter extends EventEmitter {
         const packets: Buffer[] = [];
         let offset = 0;
 
-        // Drain partial packet from previous chunk, if any.
         if (source.offset > 0) {
             const need = PACKET_SIZE - source.offset;
             if (length < need) {
@@ -455,8 +443,7 @@ export default class TSMFFilter extends EventEmitter {
     }
 
     private _close(): void {
-        // `_closing` guards against re-entry. `_closed` alone may already be
-        // true (releaseCarriers sets it before close() calls _close).
+        // _closed may already be set by releaseCarriers
         if (this._closing) {
             return;
         }
@@ -513,12 +500,7 @@ export default class TSMFFilter extends EventEmitter {
             this.emit("groupId", info.groupId, info.numberOfCarriers);
         }
 
-        // Record / verify streamIds[] from the Extended TSMF header.
-        // The first frame seen (typically from the primary carrier) sets the
-        // expected streamIds; any later frame — from the primary itself OR
-        // from an additional bonding carrier — whose streamIds differ is
-        // dropped and logged once. This catches the case where two CATV
-        // systems reuse the same groupId for different bonding groups.
+        // reject carriers whose stream_id list differs (groupId collision)
         if (this._detectedStreamIds === null) {
             this._detectedStreamIds = info.streamIds.slice();
         } else {
@@ -543,8 +525,7 @@ export default class TSMFFilter extends EventEmitter {
             return;
         }
 
-        // Lock/re-lock header at frame boundaries (frame_position=0)
-        // Skip when CRC matches the currently locked header.
+        // lock the header at frame_position=0
         if (info.framePosition === 0 &&
             !(source.headerLocked && info.headerCRC === source.activeHeaderCRC)) {
             this._applyTSMFHeader(source, info.slotMap, info.streamTypeBits, info.headerCRC);
@@ -581,8 +562,7 @@ export default class TSMFFilter extends EventEmitter {
                 this._tunerIndex, numberOfCarriers, source.sourceId);
         }
 
-        // Drop frames inconsistent with the confirmed carrier count; accepting
-        // them would stall output waiting for a carrier that never comes.
+        // would stall waiting for a carrier that never comes
         if (carrierSequence > this._numberOfCarriers) {
             return null;
         }
@@ -610,10 +590,7 @@ export default class TSMFFilter extends EventEmitter {
         }
         carrier.blocks.push(frame);
         this._packFrames(carrier);
-        // _packFrames can only splice contiguous framePosition=0..n-1 runs;
-        // stray blocks (framePosition!=0 at head, or numberOfFrames mismatch)
-        // stay behind. Cap at 32 (> max superframe length 15) to bound memory
-        // under noisy reception.
+        // bound stray blocks under noisy reception
         if (carrier.blocks.length > 32) {
             carrier.blocks.splice(0, carrier.blocks.length - 32);
         }
@@ -628,7 +605,6 @@ export default class TSMFFilter extends EventEmitter {
                 i++;
                 continue;
             }
-            // Verify n contiguous blocks at framePosition 0..n-1 with the same n.
             let ok = true;
             for (let fp = 0; fp < n; fp++) {
                 const b = blocks[i + fp];

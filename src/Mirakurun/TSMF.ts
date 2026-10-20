@@ -258,8 +258,7 @@ export class TSMFCarrierBonding {
                 return;
             }
 
-            // Mirrors `Tuner._initTS` retry loop (50 × 250ms) so tuners in
-            // the kill→release transition window become visible.
+            // same retry as Tuner._initTS
             let selected: TunerDevice[] = [];
             let tryCount = 50;
             while (tryCount > 0) {
@@ -371,8 +370,7 @@ export class TSMFCarrierBonding {
             return [];
         }
 
-        // Includes remote tuners; bonding correctness is post-verified by
-        // TSMFFilter.streamIds[]. Tuners without `routes` accept any route.
+        // tuners without `routes` accept any route
         const all = _.tuner.devices
             .map(d => _.tuner.get(d.index))
             .filter((d): d is TunerDevice => {

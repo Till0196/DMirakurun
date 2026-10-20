@@ -26,25 +26,14 @@ const CID_TYPE_NO_COMPRESSED_HEADER = 0x61;
 const OFFSET_MIN_SFS = 10;
 const OFFSET_RETRY_SFS = 60;
 const OFFSET_MIN_CID_PACKETS = 16;
-// Sanity backstop only — rejects candidates that are clearly broken.
-// Disambiguation between surviving candidates is done by margin below, not
-// by how close this floor is to 1.0 (the tail of the probe window is nearly
-// always a truncated TLV packet, so even a correct candidate rarely reaches
-// exactly 1.0).
 const OFFSET_VALID_RATIO_FLOOR = 0.9;
-// The best candidate must beat the runner-up by at least this much, or the
-// probe is inconclusive and retried later with more accumulated data.
 const OFFSET_VALID_RATIO_MARGIN = 0.02;
 const OFFSET_MAX_PROBE_FAILURES = 3;
-// Upper bound on per-carrier superframes kept while offset detection is still
-// pending. At ~15 frames × 52 × 188B ≈ 146KB/SF × 3 carriers, 600 SFs caps the
-// pending state at ~260MB — enough for retries but prevents OOM if detection
-// never commits (e.g. one carrier never arrives).
+// bounds memory while offset detection is pending
 const OFFSET_MAX_KEEP = 600;
 const READY_MIN_SUPERFRAMES = 2;
 const OUTPUT_MIN_BUFFER_SFS = 2;
-// Max superframes one carrier may run ahead of the slowest once aligned.
-// Beyond this the alignment is reset so per-carrier queues stay bounded.
+// reset the alignment when a carrier runs this far ahead
 const OFFSET_MAX_AHEAD = OFFSET_RETRY_SFS;
 const SUBFRAMES_PER_SUPERFRAME = 53;
 
@@ -97,9 +86,7 @@ export default class TLVAssembler extends EventEmitter {
         return packet.subarray(pusi ? 4 : 3);
     }
 
-    // Align to the first TLV packet using the pointer byte. Its base offset is
-    // ambiguous, so accept whichever lands on a TLV sync byte; otherwise pass
-    // the chunk as-is and let the downstream resync handle it.
+    // the pointer base is ambiguous; accept whichever lands on a TLV sync byte
     private static _alignToFirstTlv(packet: Buffer, chunk: Buffer): Buffer {
         const pointer = packet[3];
         for (const start of [pointer, pointer - 1]) {
@@ -250,12 +237,10 @@ export default class TLVAssembler extends EventEmitter {
         if (this._buffer.length) {
             this._buffer.length = 0;
         }
-        // Resync on the next TLV packet start indicator.
         this._tlvStarted = false;
     }
 
-    // Redo offset detection. `_probeFailures` is kept so a carrier that never
-    // recovers still closes the stream eventually.
+    // _probeFailures is kept so a carrier that never recovers still closes the stream
     private _resetOffsets(): void {
         this._offsets = null;
         this._offsetsApplied = false;
@@ -294,14 +279,7 @@ export default class TLVAssembler extends EventEmitter {
         }
         results.sort((a, b) => b.validRatio - a.validRatio);
         const [best, runnerUp] = results;
-        // The margin check exists to disambiguate competing cross-carrier
-        // skew hypotheses. With a single carrier there is no such
-        // competition: each candidate offset only differs in how many
-        // leading superframes are trimmed, and a tie in valid ratio just
-        // means the trimmed superframes weren't needed — the stable sort
-        // above already keeps the smallest (least-trimmed) offset first, so
-        // it's always the right pick. Applying the margin check here would
-        // instead flag every clean single-carrier probe as ambiguous.
+        // the margin only disambiguates skew between carriers
         if (carriers.length > 1 && runnerUp && best.validRatio - runnerUp.validRatio < OFFSET_VALID_RATIO_MARGIN) {
             log.debug(
                 "TunerDevice#%d TSMF offset probe ambiguous: best=%s (valid=%s%%) vs runner-up=%s (valid=%s%%) — retrying with more data",
@@ -323,18 +301,7 @@ export default class TLVAssembler extends EventEmitter {
         const seen = new Set<string>();
         const candidates: number[][] = [];
 
-        // With 2+ carriers, only the *relative* offsets between carriers
-        // (their pairwise skew) represent a distinct alignment hypothesis —
-        // shifting every carrier by the same amount re-tests the exact same
-        // skew against a different window of buffered superframes (e.g.
-        // base=[0,0] vs the matching-sign two-axis candidate [1,1]).
-        // Keeping both feeds _probeOffsets two near-identical-quality
-        // "competing" candidates, which can spuriously trip the runner-up
-        // margin check below. Dedupe on that relative signature instead of
-        // the absolute one so only genuinely different skews are tried.
-        // With a single carrier there is no cross-carrier skew, so every
-        // absolute shift is its own hypothesis (e.g. skipping a corrupted
-        // leading superframe) and must stay distinguishable.
+        // dedupe on the relative skew between carriers (absolute shift for a single carrier)
         const keyOf = (offsets: number[]): string =>
             carriers.length > 1 ? offsets.map(v => v - offsets[0]).join(",") : offsets.join(",");
 
@@ -423,7 +390,6 @@ export default class TLVAssembler extends EventEmitter {
         superframes: CarrierSuperframe[],
         callback: (packet: Buffer) => void
     ): void {
-        // Slots per subframe follow each carrier's number_of_frames.
         let maxSlotPosition = 0;
         for (const sf of superframes) {
             if (sf.numberOfFrames > maxSlotPosition) {
@@ -532,12 +498,7 @@ export default class TLVAssembler extends EventEmitter {
             this._outputSuperframeCount++;
         }
 
-        // Write any pending output to the sink WITHOUT flushing the partial
-        // _buffer (which is still accumulating bytes for the in-progress TLV
-        // packet — its bytes will arrive in the next drain batch via non-PUSI
-        // slots, and `_buffer` is only flushed when the next PUSI arrives in
-        // `_onTLV`). Flushing it here would write an incomplete TLV packet
-        // and leave the next batch's continuation bytes orphaned.
+        // keep the partial _buffer until the next PUSI
         this._writePending();
         for (const carrier of carriers) {
             carrier.superframes.splice(0, drainCount);
@@ -555,8 +516,6 @@ export default class TLVAssembler extends EventEmitter {
 
         const pusi = (packet[1] & 0x40) !== 0;
         if (pusi) {
-            // PUSI marks the start of a new TLV packet, so the previous
-            // partial buffer (if any) is now complete and can be flushed.
             if (this._buffer.length > 0) {
                 this._flushPartialBuffer();
                 this._writePending();
@@ -573,7 +532,6 @@ export default class TLVAssembler extends EventEmitter {
         }
     }
 
-    // flush _buffer into _pendingOutput (caller must invoke at PUSI=1 boundary)
     private _flushPartialBuffer(): void {
         if (this._sinkClosed || this._buffer.length === 0) {
             return;
@@ -643,13 +601,10 @@ export default class TLVAssembler extends EventEmitter {
         if (this._offsets) {
             this._drainFrames();
         }
-        // On close, force-flush whatever's in `_buffer` even though it may
-        // be a partial TLV packet — no more bytes will arrive to complete it.
         this._flushPartialBuffer();
         this._writePending();
         this._sinkClosed = true;
 
-        // Last-ditch write for data that couldn't be flushed (e.g., not ready)
         if (this._buffer.length && this._output && !this._output.destroyed) {
             try {
                 this._output.write(Buffer.concat(this._buffer));

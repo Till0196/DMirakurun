@@ -153,9 +153,6 @@ export class Service {
         return this.get(id, serviceId) !== null;
     }
 
-    // Match on `(networkId, streamId)` via the channel's stream entries so
-    // that services reachable via multiple routes (e.g. SAT + CATV) are
-    // found regardless of which route was registered first.
     findByChannel(channel: ChannelItem): ServiceItem[] {
         const items: ServiceItem[] = [];
         for (const entry of channel.getStreams().values()) {
@@ -284,8 +281,7 @@ export class Service {
                     this._queueScanToAdd(channel);
                 }
 
-                // Fallback: after all initial scans finish, queue bonded scans for
-                // groups that were discovered but never got enough carriers.
+                // queue bonded scans for groups that never got enough carriers
                 _.job.add({
                     key: "Service.Add.BondedScan.Fallback",
                     name: "Service Add Bonded Scan [Fallback]",
@@ -507,7 +503,6 @@ export class Service {
 
         if (isDiscoveryResult(result)) {
             channel.commitStreamScan(false);
-            // Multi-carrier: groupId saved by StreamFilter, check group completeness
             const { groupId, numberOfCarriers } = result;
             log.info("ChannelItem#'%s' discovered groupId=%d numberOfCarriers=%d",
                 channel.name, groupId, numberOfCarriers);
@@ -525,8 +520,7 @@ export class Service {
         channel.commitStreamScan(true);
         this._applyScannedServices(channel, result, add);
 
-        // After bonded scan completes, propagate groupId to sibling channels
-        // and abort their individual scan jobs. Also save to persist groupId.
+        // propagate groupId to sibling channels
         if (!tsmfDiscovery && channel.tsmfGroupId !== null && channel.tsmfGroupId !== undefined) {
             const groupChannels = _.channel.items.filter(item =>
                 item.type === channel.type &&
@@ -557,8 +551,7 @@ export class Service {
             name: `Service Add Bonded Scan group${groupId} (${carrierCount} carriers)`,
             fn: async () => this._scan(primaryChannel, true, false),
             readyFn: async () => {
-                // Wait for all initial scan jobs to finish first,
-                // so all tuners are free for multi-carrier bonding.
+                // wait until all tuners are free for bonding
                 while (_.job.jobs.some(j =>
                     j.status !== "finished" &&
                     j.key.startsWith("Service.Add.Scan.") &&
@@ -596,10 +589,6 @@ export class Service {
                 }
                 item.remoteControlKeyId = service.remoteControlKeyId;
             } else if (add === true) {
-                // Resolve streamId from the channel's _streams entry that
-                // contains this serviceId. The PAT/SDT/TSMF detection runs
-                // before service emit (TSFilter._onSDT now emits streamInfo
-                // first, then services), so the entry should be present.
                 const streamEntry = channel.getStreamForService(service.serviceId);
                 if (!streamEntry || streamEntry.streamId === 0) {
                     log.warn("ChannelItem#'%s' service serviceId=%d has no streamId yet — skipping",

@@ -11,14 +11,6 @@ interface TLVDecoderOptions {
     readonly startupTimeout?: number;
 }
 
-/**
- * Factory options for selecting an appropriate TLV-side sink for a session.
- * The intent of each field:
- * - `tlvDecoder`     : TLV→TLV decoder command (e.g. a descrambler/normaliser)
- * - `tlvToTsDecoder` : TLV→TS decoder command (e.g. dantto4k)
- * - `outputFormat`   : what the caller wants on `output` ("ts" by default, or "tlv")
- * - `disableDecoder` : bypass TLV decoding, but keep TLV→TS format conversion
- */
 export interface TLVDecoderFactoryOptions {
     readonly output: stream.Writable;
     readonly outputFormat?: OutputFormat;
@@ -33,27 +25,8 @@ let idCounter = 0;
 
 export default class TLVDecoder extends stream.Writable {
 
-    /**
-     * Pick the right TLV sink for this session.
-     *
-     * Resolution rules (centralised here so callers don't repeat them):
-     *   1. no `output`                 → parsing-only; do not spawn a decoder
-     *   2. `outputFormat === "tlv"`    → caller wants TLV out
-     *        - `disableDecoder`        → return `output` directly (raw TLV)
-     *        - `tlvDecoder` set        → spawn TLV→TLV decoder
-     *        - else                    → return `output` directly (raw TLV)
-     *   3. otherwise (TS output)       → caller wants TS out
-     *        - `disableDecoder`        → bypass `tlvDecoder`, keep TLV→TS conversion
-     *        - both set                → TLV→TLV decoder, then TLV→TS decoder
-     *        - `tlvToTsDecoder` set    → spawn TLV→TS decoder
-     *        - else `tlvDecoder` set   → spawn that as a fallback
-     *        - else                    → return `output` directly (raw TLV)
-     */
     static create(opts: TLVDecoderFactoryOptions): stream.Writable {
-        // Internal consumers such as EPG gathering only parse the TLV stream
-        // and intentionally have no output sink. `disableDecoder` on an HTTP
-        // TS request still has an output (the response), so it continues to
-        // use tlvToTsDecoder for format conversion below.
+        // parsing only (e.g. EPG gathering)
         if (!opts.output) {
             return opts.output;
         }

@@ -108,16 +108,6 @@ export class Channel {
         return items;
     }
 
-    /**
-     * Resolve the channel(s) that carry a logical multiplex identified by
-     * `(networkId, streamId)`. May return multiple ChannelItems when the
-     * same logical service is reachable via more than one route — e.g. a
-     * BS channel listed once with `route: SAT, channel: BS13_1` and again
-     * with `route: CATV, channel: CATV_13`.
-     *
-     * Used by `ServiceItem.channel` (lazy lookup) and by `Service.load()`
-     * to skip orphaned services after channels.yml is edited.
-     */
     findByStreamId(networkId: number, streamId: number): ChannelItem[] {
         const item = this.getStreamID(networkId, streamId);
         return item ? item.channels.map(value => value.channel) : [];
@@ -145,21 +135,6 @@ export class Channel {
         this._streamIDIndexDirty = true;
     }
 
-    /**
-     * Resolve the channels that can tune a given service.
-     *
-     * Returns channels whose stream entries include `serviceId` under the
-     * matching `networkId`, first. Unscanned channels (empty streams map)
-     * follow, for backward compatibility with fresh installs: they say
-     * nothing about what they carry, so they stay candidates, but they must
-     * not displace a channel that does.
-     *
-     * Callers tune the head of this list (`Tuner.initServiceStream`), so an
-     * unscanned channel there is a tune of something else entirely. Seen in
-     * the field: a request for a premium service picked an unrelated MMT
-     * carrier that no tuner could lock, and spent the whole retry budget —
-     * about twelve seconds — before failing.
-     */
     findByService(networkId: number, serviceId: number): ChannelItem[] {
         const carrying: ChannelItem[] = [];
         const unscanned: ChannelItem[] = [];
@@ -176,24 +151,11 @@ export class Channel {
         return [...carrying, ...unscanned];
     }
 
-    /**
-     * Debounced save of `channels.json` — the per-ChannelItem auto-detected
-     * stream metadata (TSMF / non-TSMF TS / direct-TLV unified). Multiple
-     * calls during a scan or detection burst collapse into a single disk
-     * write. Mirrors the `Service.save()` style.
-     */
     save(): void {
         clearTimeout(this._saveTimerId);
         this._saveTimerId = setTimeout(() => this._save(), 500);
     }
 
-    /**
-     * Read `channels.json` and apply each record to the matching ChannelItem.
-     * Restores TSMF groupId, the unified streams map, and per-service relTs
-     * mappings so a fresh process can serve content without re-scanning.
-     *
-     * Called once at startup from `server.ts` after `_.channel` is constructed.
-     */
     async load(): Promise<void> {
         log.debug("loading channels db...");
 
@@ -408,7 +370,6 @@ export class Channel {
                 return;
             }
 
-            // channels.yml は tsmfRelTs に統一。runtime は TS/TLV を auto-detect。
             const configRelSlot = channel.tsmfRelTs;
             const existing = this.get(channel.type, channel.channel);
             if (existing) {
@@ -434,9 +395,7 @@ export class Channel {
             this._startup = false;
         }
 
-        // Wait here (in the parent EPG.Gatherer fn body) — not in the
-        // per-network children's readyFn — to avoid filling standby/running
-        // slots and deadlocking BondedScan.
+        // wait here, not in readyFn, to avoid deadlocking BondedScan
         const hasPendingBondedScan = () => _.job.jobs.some(job =>
             job.status !== "finished" && job.key.startsWith("Service.Add.BondedScan.")
         );
@@ -447,8 +406,7 @@ export class Channel {
             }
         }
 
-        // MMT/TLV networks: MH-EIT is self-stream only (ARIB STD-B60 7.3.3.9)
-        // so EPG must be gathered per-channel, handled by the second loop.
+        // MH-EIT carries only its own stream, so MMT EPG is gathered per channel
         const MMT_NETWORK_IDS = new Set([0x0B, 0x0C]);
 
         const networkIds = [...new Set(_.service.items.map(item => item.networkId))];
@@ -463,9 +421,6 @@ export class Channel {
             }
             const service = services[0];
 
-            // Distinct ChannelItems carrying this networkId, in channels.yml
-            // order (= implicit priority). Falls through routes on getEPG
-            // failure so EPG gathering picks whichever tuner is free.
             const candidateChannels: ChannelItem[] = [];
             const seen = new Set<ChannelItem>();
             for (const svc of services) {
@@ -546,9 +501,6 @@ export class Channel {
             });
         }
 
-        // MMT per-channel EPG gathering. MH-EIT is self-stream only, so each
-        // MMT channel needs its own job; multi-carrier groups consolidate to
-        // a single primary channel.
         const seenGroups = new Set<number>();
         for (const channel of _.channel.items) {
             const services = channel.getServices();

@@ -337,8 +337,7 @@ export class Client {
             type,
             channel,
             decode: decode ? 1 : 0,
-            // Only sent when it is asked for: an upstream that has no such
-            // parameter must not be given one.
+            // only when given; older servers lack this parameter
             ...(format ? { format } : {})
         }, { priority, signal });
     }

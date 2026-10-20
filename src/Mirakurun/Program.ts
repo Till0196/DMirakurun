@@ -212,8 +212,7 @@ export class Program {
     save(): void {
         clearTimeout(this._emitTimerId);
         this._emitTimerId = setTimeout(() => this._emit(), 1000);
-        // Leading-edge schedule: trailing-edge would never fire under
-        // continuous EPG gather (every add() resets the timer).
+        // leading edge: a trailing edge never fires under continuous EPG gathering
         if (this._saveTimerId === null) {
             this._saveTimerId = setTimeout(() => {
                 this._saveTimerId = null;

@@ -285,10 +285,7 @@ export default class MHEPG {
 
                         _.program.set(state.programId, {
                             video: {
-                                // ARIB STD-B60 の MH-EIT Video Component Descriptor には、
-                                // STD-B10 の Component Descriptor にある stream_content が存在しない。
-                                // コーデックを推定せず、従来 API との互換性を保つため、
-                                // 汎用映像を表す stream_content=0x01 相当として正規化する。
+                                // MH-EIT has no stream_content; normalize as generic video (0x01)
                                 type: "mpeg2",
                                 resolution: resolveVideoResolution(d.videoResolution, !!d.videoScanFlag),
                                 streamContent: 0x01,

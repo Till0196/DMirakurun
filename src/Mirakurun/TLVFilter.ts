@@ -271,7 +271,6 @@ export default class TLVFilter extends EventEmitter {
             }
         }
 
-        // Only log and update when PLT content changes
         if (this._serviceIds.size === newServiceIds.size &&
             [...newServiceIds].every(id => this._serviceIds.has(id))) {
             return;
@@ -324,10 +323,6 @@ export default class TLVFilter extends EventEmitter {
             channel: `${s}`
         }));
         this.emit("networkStreams", channels);
-        // streamInfo is emitted from `_onSDT` using `SDT[actual].tlvStreamId`,
-        // which uniquely identifies the currently received stream. The NIT's
-        // `tlvStreams[]` is a network-wide list and `[0]` is not necessarily
-        // the current stream.
 
         // Extract carrier bonding info (groupId per frequency/channel)
         for (const tlvStream of nit.tlvStreams) {
@@ -381,7 +376,6 @@ export default class TLVFilter extends EventEmitter {
             return;
         }
 
-        // SDT[actual] uniquely identifies the currently received TLV stream.
         if (this._parseSDT && !this._streamInfoEmitted) {
             this._streamInfoEmitted = true;
             this.emit("streamInfo", {

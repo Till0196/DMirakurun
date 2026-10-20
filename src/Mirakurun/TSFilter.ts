@@ -133,11 +133,6 @@ export default class TSFilter extends EventEmitter {
     private _providePids: Set<number> = null; // `null` to provides all
     private _parsePids = new Set<number>();
     private _tsid = -1;
-    /**
-     * Set once the first SDT for the current PAT-confirmed `_tsid` has been
-     * processed, signalling that we have emitted the `streamInfo` event with
-     * `{tsid, networkId}`. Subsequent SDTs do not re-emit.
-     */
     private _streamInfoEmitted = false;
     private _serviceIds = new Set<number>();
     private _parseServiceIds = new Set<number>();
@@ -542,7 +537,6 @@ export default class TSFilter extends EventEmitter {
             essServiceIds: []
         };
 
-        // Parse network descriptors (Network Name, etc.)
         if (data.network_descriptors) {
             for (const desc of data.network_descriptors) {
                 if (desc.descriptor_tag === 0x40) {
@@ -552,7 +546,6 @@ export default class TSFilter extends EventEmitter {
         }
         _network.name = this._networkName;
 
-        // Parse transport descriptors (Area Code, Remote Control Key ID, ESS Service IDs)
         if (data.transport_streams) {
             if (this._tsid !== -1) {
                 const targetTS = data.transport_streams.find(ts => ts.transport_stream_id === this._tsid);
@@ -631,15 +624,7 @@ export default class TSFilter extends EventEmitter {
             }
         }
 
-        // Emit a one-shot streamInfo event BEFORE the services event so the
-        // StreamFilter listener has time to write the (streamId, networkId)
-        // entry into ChannelItem._streams[0]. Downstream code (Service
-        // ._applyScannedServices) reads `channel.getStreamForService(serviceId)
-        // ?.streamId` to derive the persisted streamId for the new schema —
-        // if streamInfo emitted AFTER services, that lookup would race with
-        // the listener and return 0. The TSID comes from PAT (`_tsid`); the
-        // networkId comes from this SDT (`original_network_id`). Both must
-        // be valid before we emit.
+        // streamInfo must precede services; Service reads the streamId from it
         if (!this._streamInfoEmitted && this._tsid !== -1) {
             this._streamInfoEmitted = true;
             this.emit("streamInfo", {

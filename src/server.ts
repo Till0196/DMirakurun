@@ -88,8 +88,7 @@ import * as log from "./Mirakurun/log";
     _.service = new Service();
     _.program = new Program();
     _.server = new Server();
-    // Load auto-detected channel stream state before services so multi-carrier
-    // groupId and per-service relTs mappings are in place when services boot.
+    // before services so groupId / relTs mappings are in place
     await _.channel.load();
     await _.service.load();
     await _.program.load();
