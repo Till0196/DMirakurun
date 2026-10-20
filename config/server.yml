@@ -12,6 +12,6 @@ path: /var/run/mirakurun.sock
 port: 40772
 
 # defaultTlvStreamFormat: <string> ("tlv" or "ts")
-# What a stream API request without `format` gets for a TLV (BS4K) channel.
+# What a stream API request without `format` gets for a TLV (MMT) channel.
 # "ts" converts through the tuner's `tlvToTsDecoder`.
 # defaultTlvStreamFormat: tlv

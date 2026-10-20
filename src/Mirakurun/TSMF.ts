@@ -270,7 +270,7 @@ export class TSMFCarrierBonding {
                 }
                 tryCount--;
                 if (tryCount <= 0) {
-                    log.error("TunerDevice#%d failed to find %d BS4K tuners for multi-carrier, only %d available",
+                    log.error("TunerDevice#%d failed to find %d tuners for multi-carrier, only %d available",
                         this._tunerIndex, required, selected.length);
                     this._demuxer.close();
                     return;

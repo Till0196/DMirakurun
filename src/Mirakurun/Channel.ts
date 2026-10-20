@@ -156,7 +156,7 @@ export class Channel {
      *
      * Callers tune the head of this list (`Tuner.initServiceStream`), so an
      * unscanned channel there is a tune of something else entirely. Seen in
-     * the field: a request for a premium service picked an unrelated 4K
+     * the field: a request for a premium service picked an unrelated MMT
      * carrier that no tuner could lock, and spent the whole retry budget —
      * about twelve seconds — before failing.
      */
@@ -547,7 +547,7 @@ export class Channel {
         }
 
         // MMT per-channel EPG gathering. MH-EIT is self-stream only, so each
-        // BS4K channel needs its own job; multi-carrier groups consolidate to
+        // MMT channel needs its own job; multi-carrier groups consolidate to
         // a single primary channel.
         const seenGroups = new Set<number>();
         for (const channel of _.channel.items) {
