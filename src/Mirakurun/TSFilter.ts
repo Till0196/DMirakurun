@@ -57,6 +57,18 @@ const DSMCC_BLOCK_SIZE = 4066; // ARIB TR-B15
 
 const LOGO_DATA_NAME_BS = Buffer.from("LOGO-05"); // ARIB STD-B21, ARIB TR-B15
 const LOGO_DATA_NAME_CS = Buffer.from("CS_LOGO-05"); // ARIB STD-B21, ARIB TR-B15
+const LOGO_DATA_NAME_CATV = Buffer.from("CATV_LOGO-05"); // ..? J:COM
+const LOGO_DATA_NAME_JCHITS = Buffer.from("JCHITS_LOGO-05"); // ...? JC-HITS and JCC ACAS
+
+// Cable Television Network IDs (ARIB STD-B10)
+const catvNetworkIds = [
+    65527, // Advanced cable independent network (JCC ACAS, J:COM etc.)
+    65529, // Advanced JC-HITS (JCC ACAS)
+    65530, // Digital broadcasting advanced ReMUX
+    65533, // JC-HITS Trans-Modulation (JC-HITS)
+    65534, // Digital broadcasting ReMUX (J:COM etc.)
+    65535  // Kagoshima Cable Television
+];
 
 interface BasicExtState {
     basic: {
@@ -133,9 +145,24 @@ export default class TSFilter extends EventEmitter {
     private _pmtPid = -1;
     private _pmtTimer: NodeJS.Timeout;
     private _streamTime: number = null;
+    private _patMap = new Map<number, number>(); // <serviceId, pmtPid>
     private _essMap = new Map<number, number>(); // <serviceId, pid>
     private _essEsPids = new Set<number>();
+    private _networkName = "";
     private _dlDataMap = new Map<number, DownloadData>();
+    private _cdtDataMap = new Map<string, {
+        networkId: number;
+        logoId: number;
+        preferredLogoType: number; // Highest quality logo type seen (0x05 or 0x07)
+        savedLogoType: number | null; // Logo type already saved (null if not saved yet)
+        receivingData: Map<string, { // key: `${downloadDataId}_${logoType}`
+            logoType: number;
+            lastSectionNumber: number;
+            receivedSections: Set<number>;
+            sections: Map<number, Buffer>;
+        }>;
+    }>(); // key: `${networkId}_${logoId}`
+    private _logoDataReady = false;
     private _logoDataTimer: NodeJS.Timeout;
     private _provideEventLastDetectedAt = -1;
     private _provideEventTimeout: NodeJS.Timeout = null;
@@ -207,8 +234,9 @@ export default class TSFilter extends EventEmitter {
         }
 
         if (this._targetNetworkId) {
-            if (this._targetNetworkId === 4) { // ARIB TR-B15 (BS/CS)
+            if (this._targetNetworkId === 4 || catvNetworkIds.includes(this._targetNetworkId)) { // ARIB TR-B15 (BS/CS or CATV)
                 this._enableParseDSMCC = true;
+                this._parseNIT = true;
             } else {
                 this._enableParseCDT = true;
             }
@@ -407,6 +435,7 @@ export default class TSFilter extends EventEmitter {
 
     private _onPAT(pid: number, data: any): void {
         this._tsid = data.transport_stream_id;
+        this._patMap = new Map<number, number>();
         this._serviceIds = new Set();
         this._parseServiceIds = new Set();
 
@@ -424,18 +453,8 @@ export default class TSFilter extends EventEmitter {
                 continue;
             }
 
-            // detect ESS PMT PID
-            if (
-                // for future use
-                // (this._targetNetworkId !== 4 && serviceId >= 0xFFF0 && serviceId <= 0xFFF5) || // ARIB TR-B14 (GR)
-                (this._targetNetworkId === 4 && serviceId === 929) // ARIB TR-B15 (BS/CS)
-            ) {
-                const essPmtPid = program.program_map_PID;
-                this._essMap.set(serviceId, essPmtPid);
-
-                log.debug("TSFilter#_onPAT: detected ESS PMT PID=%d as serviceId=%d", essPmtPid, serviceId);
-                continue;
-            }
+            // for detecting ESS PMT PID
+            this._patMap.set(serviceId, program.program_map_PID);
 
             this._serviceIds.add(serviceId);
 
@@ -502,6 +521,16 @@ export default class TSFilter extends EventEmitter {
                 this._parsePids.add(0x11);
             }
         }
+
+        if (this._enableParseDSMCC) {
+            for (const [serviceId, pmtPid] of this._patMap) {
+                const item = this._targetNetworkId !== null && _.service.get(this._targetNetworkId, serviceId);
+                if (!item && !this._essMap.has(serviceId)) {
+                    this._essMap.set(serviceId, pmtPid);
+                    this._parsePids.add(pmtPid);
+                }
+            }
+        }
     }
 
     private _onPMT(pid: number, data: any): void {
@@ -510,7 +539,7 @@ export default class TSFilter extends EventEmitter {
                 for (const descriptor of stream.ES_info) {
                     if (descriptor.descriptor_tag === 0x52) { // stream identifier descriptor
                         if (
-                            descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS)
+                            descriptor.component_tag === 0x79 || // ARIB TR-B15 (BS, CATV)
                             descriptor.component_tag === 0x7A // ...? (CS)
                         ) {
                             this._parsePids.add(stream.elementary_PID);
@@ -522,6 +551,7 @@ export default class TSFilter extends EventEmitter {
                     }
                 }
             }
+
             this._parsePids.delete(pid);
             return;
         }
@@ -554,24 +584,49 @@ export default class TSFilter extends EventEmitter {
     private _onNIT(pid: number, data: any): void {
         const _network = {
             networkId: data.network_id,
+            name: "",
             areaCode: -1,
-            remoteControlKeyId: -1
+            remoteControlKeyId: -1,
+            essServiceIds: []
         };
 
-        if (data.transport_streams[0]) {
-            for (const desc of data.transport_streams[0].transport_descriptors) {
-                switch (desc.descriptor_tag) {
-                    case 0xFA:
-                        _network.areaCode = desc.area_code;
-                        break;
-                    case 0xCD:
-                        _network.remoteControlKeyId = desc.remote_control_key_id;
-                        break;
+        if (data.network_descriptors) {
+            for (const desc of data.network_descriptors) {
+                if (desc.descriptor_tag === 0x40) {
+                    this._networkName = new TsChar(desc.network_name_char).decode();
+                }
+            }
+        }
+        _network.name = this._networkName;
+
+        if (data.transport_streams) {
+            if (this._tsid !== -1) {
+                const targetTS = data.transport_streams.find(ts => ts.transport_stream_id === this._tsid);
+                if (targetTS?.transport_descriptors) {
+                    for (const desc of targetTS.transport_descriptors) {
+                        switch (desc.descriptor_tag) {
+                            case 0xFA:
+                                _network.areaCode = desc.area_code;
+                                break;
+                            case 0xCD:
+                                _network.remoteControlKeyId = desc.remote_control_key_id;
+                                break;
+                            case 0x41:
+                                for (const service of desc.services) {
+                                    if (service.service_type === 0xA4) {
+                                        _network.essServiceIds.push(service.service_id);
+                                    }
+                                }
+                                break;
+                        }
+                    }
                 }
             }
         }
 
         this.emit("network", _network);
+
+        this._resolveEssServices(_network.essServiceIds, _network.name);
 
         if (this._parsePids.has(pid)) {
             this._parsePids.delete(pid);
@@ -669,6 +724,7 @@ export default class TSFilter extends EventEmitter {
                 this._epg = new EPG();
 
                 // Logo
+                this._logoDataReady = true;
                 this._standbyLogoData();
             }
 
@@ -686,19 +742,114 @@ export default class TSFilter extends EventEmitter {
         this._streamTime = getTimeFromMJD(data.JST_time);
     }
 
-    private _onCDT(pid: number, data: any): void {
-        if (data.data_type === 0x01) {
-            // Logo
-            const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
-            if (dataModule.logo_type !== 0x05) {
-                return;
-            }
-
-            log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d)", data.original_network_id, dataModule.logo_id);
-
-            const logoData = TsLogo.decode(dataModule.data_byte);
-            Service.saveLogoData(data.original_network_id, dataModule.logo_id, logoData);
+    private async _onCDT(pid: number, data: any): Promise<void> {
+        if (data.data_type !== 0x01) {
+            return;
         }
+
+        // Logo - each section has its own logo_type header
+        const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
+        const logoType: number = dataModule.logo_type;
+
+        // Accept logo_type 0x05 (64x36) and 0x07 (256x144)
+        if (logoType !== 0x05 && logoType !== 0x07) {
+            return;
+        }
+
+        const networkId: number = data.original_network_id;
+        const logoId: number = dataModule.logo_id;
+        const logoKey = `${networkId}_${logoId}`;
+        const downloadDataId: number = data.download_data_id;
+        const sectionNumber: number = data.section_number;
+        const lastSectionNumber: number = data.last_section_number;
+
+        let logoData = this._cdtDataMap.get(logoKey);
+        if (!logoData) {
+            logoData = {
+                networkId,
+                logoId,
+                preferredLogoType: logoType,
+                savedLogoType: null,
+                receivingData: new Map()
+            };
+            this._cdtDataMap.set(logoKey, logoData);
+        }
+
+        // Update preferred logo type if we found higher quality
+        if (logoType > logoData.preferredLogoType) {
+            for (const [key, receiving] of logoData.receivingData.entries()) {
+                if (receiving.logoType < logoType) {
+                    logoData.receivingData.delete(key);
+                    log.debug("TSFilter#_onCDT: discarding lower quality logo data (networkId=%d, logoId=%d, logoType=0x%s) in favor of 0x%s",
+                        networkId, logoId, receiving.logoType.toString(16).padStart(2, "0"), logoType.toString(16).padStart(2, "0"));
+                }
+            }
+            logoData.preferredLogoType = logoType;
+        }
+
+        if (logoType < logoData.preferredLogoType) {
+            return;
+        }
+
+        if (logoData.savedLogoType !== null && logoData.savedLogoType >= logoType) {
+            return;
+        }
+
+        // On first check, verify existing logo file on disk
+        if (logoData.savedLogoType === null) {
+            const existingLogoType = await Service.getLogoType(networkId, logoId);
+            if (existingLogoType !== null) {
+                logoData.savedLogoType = existingLogoType;
+                if (existingLogoType >= logoType) {
+                    log.debug("TSFilter#_onCDT: skipping logo data save, existing file has same or better quality (networkId=%d, logoId=%d, existing=0x%s, current=0x%s)",
+                        networkId, logoId, existingLogoType.toString(16).padStart(2, "0"), logoType.toString(16).padStart(2, "0"));
+                    return;
+                }
+            }
+        }
+
+        const receivingKey = `${downloadDataId}_${logoType}`;
+        let receiving = logoData.receivingData.get(receivingKey);
+
+        if (!receiving) {
+            receiving = {
+                logoType,
+                lastSectionNumber,
+                receivedSections: new Set<number>(),
+                sections: new Map<number, Buffer>()
+            };
+            logoData.receivingData.set(receivingKey, receiving);
+        }
+
+        receiving.receivedSections.add(sectionNumber);
+        receiving.sections.set(sectionNumber, dataModule.data_byte);
+
+        const sortedSections = Array.from(receiving.sections.entries()).sort((a, b) => a[0] - b[0]);
+        const combinedData = Buffer.concat(sortedSections.map(([, buf]) => buf));
+
+        // Verify PNG signature (89 50 4E 47 0D 0A 1A 0A)
+        const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        if (combinedData.length < 8 || !combinedData.subarray(0, 8).equals(pngSignature)) {
+            return;
+        }
+
+        // Check for PNG IEND chunk at the end (49 45 4E 44 AE 42 60 82)
+        const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
+        if (combinedData.length < 8 || !combinedData.subarray(-8).equals(iendSignature)) {
+            return;
+        }
+
+        // Complete PNG received - save
+        logoData.receivingData.delete(receivingKey);
+
+        log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d, logoType=0x%s, size=%d)", networkId, logoId, logoType.toString(16).padStart(2, "0"), combinedData.length);
+
+        logoData.savedLogoType = logoType;
+
+        // logo_type 0x05 uses fixed CLUT, needs TsLogo.decode to add PLTE/tRNS chunks
+        // logo_type 0x06/0x07 already contains PLTE chunk, use as-is
+        const pngData = logoType === 0x05 ? TsLogo.decode(combinedData) : combinedData;
+        Service.saveLogoData(networkId, logoId, pngData);
     }
 
     private _onDSMCC(pid: number, data: any): void {
@@ -766,10 +917,12 @@ export default class TSFilter extends EventEmitter {
                     if (descriptor.descriptor_tag !== 0x02) {
                         continue;
                     }
-                    // find LOGO-05 or CS_LOGO-05
+                    // find LOGO-05 or CS_LOGO-05 or CATV_LOGO-05 or JCHITS_LOGO-05
                     if (
                         !LOGO_DATA_NAME_BS.equals(descriptor.text_char) &&
-                        !LOGO_DATA_NAME_CS.equals(descriptor.text_char)
+                        !LOGO_DATA_NAME_CS.equals(descriptor.text_char) &&
+                        !LOGO_DATA_NAME_CATV.equals(descriptor.text_char) &&
+                        !LOGO_DATA_NAME_JCHITS.equals(descriptor.text_char)
                     ) {
                         continue;
                     }
@@ -804,8 +957,29 @@ export default class TSFilter extends EventEmitter {
         this._close();
     }
 
+    private _resolveEssServices(essServiceIds?: number[], networkName?: string): void {
+        if (essServiceIds && essServiceIds.length > 0) {
+            for (const sid of essServiceIds) {
+                const pmtPid = this._patMap.get(sid);
+                if (pmtPid !== undefined) {
+                    this._essMap.set(sid, pmtPid);
+                    this._parsePids.add(pmtPid);
+                    log.info("TSFilter#_resolveEssServices: resolved ESS service (serviceId=%d, PMT PID=%d, network='%s')", sid, pmtPid, networkName);
+                }
+            }
+
+            if (this._logoDataReady && this._essMap.size > 0) {
+                log.debug("TSFilter#_resolveEssServices: ESS services detected, starting logo data standby");
+                this._standbyLogoData();
+            }
+        }
+    }
+
     private async _standbyLogoData(): Promise<void> {
         if (this._closed) {
+            return;
+        }
+        if (!this._logoDataReady) {
             return;
         }
         if (this._logoDataTimer) {
@@ -821,12 +995,18 @@ export default class TSFilter extends EventEmitter {
             targetServices.push(..._.service.findByNetworkId(this._targetNetworkId));
         } else if (this._enableParseCDT) {
             targetServices.push(_.service.get(this._targetNetworkId, this._provideServiceId));
-        } else if (this._enableParseDSMCC && this._targetNetworkId === 4) {
+        } else if (this._enableParseDSMCC && this._targetNetworkId === 4 ) {
             targetServices.push(
                 ..._.service.findByNetworkId(4),
                 ..._.service.findByNetworkId(6),
                 ..._.service.findByNetworkId(7)
             );
+        } else if (this._enableParseDSMCC) {
+            if (catvNetworkIds.includes(this._targetNetworkId)) {
+                targetServices.push(
+                    ..._.service.findByNetworkId(this._targetNetworkId)
+                );
+            }
         }
 
         const logoIdNetworkMap: { [networkId: number]: Set<number> } = {};
@@ -873,8 +1053,8 @@ export default class TSFilter extends EventEmitter {
                         }, 1000 * 60 * 30); // 30 mins
 
                         log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=%d, logoId=%d)", this._targetNetworkId, logoId);
-                    } else if (this._enableParseDSMCC) {
-                        // for BS/CS
+                    } else if (this._enableParseDSMCC && this._essMap.size > 0) {
+                        // for BS/CS/CATV
                         for (const essPmtPid of this._essMap.values()) {
                             this._parsePids.add(essPmtPid); // ESS PMT PID
                         }
@@ -891,10 +1071,18 @@ export default class TSFilter extends EventEmitter {
                             }
                             this._parser.removeAllListeners("dsmcc");
 
-                            log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[4,6,7])");
+                            if (this._targetNetworkId === 4) {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[4,6,7])");
+                            } else if (catvNetworkIds.includes(this._targetNetworkId)) {
+                                log.info("TSFilter#_standbyLogoData: stopped waiting for logo data (networkId=[%d])", this._targetNetworkId);
+                            }
                         }, 1000 * 60 * 30); // 30 mins
 
-                        log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[4,6,7])");
+                        if (this._targetNetworkId === 4) {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[4,6,7])");
+                        } else if (catvNetworkIds.includes(this._targetNetworkId)) {
+                            log.info("TSFilter#_standbyLogoData: waiting for logo data for 30 minutes... (networkId=[%d])", this._targetNetworkId);
+                        }
                     }
 
                     return; // break all loops

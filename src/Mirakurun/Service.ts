@@ -71,6 +71,29 @@ export class Service {
         }
     }
 
+    static async getLogoType(networkId: number, logoId: number): Promise<number | null> {
+        try {
+            const data = await readFile(Service.getLogoDataPath(networkId, logoId));
+
+            if (data.length < 24 || data[0] !== 0x89 || data[1] !== 0x50 || data[2] !== 0x4E || data[3] !== 0x47) {
+                return null;
+            }
+
+            const width = data.readUInt32BE(16);
+            const height = data.readUInt32BE(20);
+
+            if (width === 64 && height === 36) {
+                return 0x05;
+            } else if (width === 256 && height === 144) {
+                return 0x07;
+            }
+
+            return null;
+        } catch (e) {
+            return null;
+        }
+    }
+
     static async saveLogoData(networkId: number, logoId: number, data: Uint8Array, retrying = false): Promise<void> {
         log.info("Service.saveLogoData(): saving... (networkId=%d logoId=%d)", networkId, logoId);
 
