@@ -311,6 +311,9 @@ export default class TLVFilter extends EventEmitter {
     }
 
     private _onNIT(nit: TLVNetworkInformationTable): void {
+        if (!this._parseNIT) {
+            return;
+        }
         if (nit.tableId !== "TLV-NIT[actual]") {
             return;
         }
@@ -366,7 +369,11 @@ export default class TLVFilter extends EventEmitter {
     }
 
     private _onSDT(sdt: MHServiceDescriptionTable): void {
-        if (this._remoteControlKeyIdMap === null) {
+        // Logo transmission info is carried only in SDT, so keep reading it while gathering EPG.
+        if (!this._parseSDT && !this._parseEIT) {
+            return;
+        }
+        if (this._parseNIT && this._remoteControlKeyIdMap === null) {
             return;
         }
 
@@ -375,7 +382,7 @@ export default class TLVFilter extends EventEmitter {
         }
 
         // SDT[actual] uniquely identifies the currently received TLV stream.
-        if (!this._streamInfoEmitted) {
+        if (this._parseSDT && !this._streamInfoEmitted) {
             this._streamInfoEmitted = true;
             this.emit("streamInfo", {
                 streamId: sdt.tlvStreamId,
@@ -432,12 +439,14 @@ export default class TLVFilter extends EventEmitter {
                     type,
                     isFree: !service.freeCAMode,
                     logoId,
-                    remoteControlKeyId: this._remoteControlKeyIdMap.get(service.serviceId)
+                    remoteControlKeyId: this._remoteControlKeyIdMap?.get(service.serviceId)
                 });
             }
         }
 
-        this.emit("services", _services);
+        if (this._parseSDT) {
+            this.emit("services", _services);
+        }
     }
 
     private _onEIT(eit: MHEventInformationTable): void {
