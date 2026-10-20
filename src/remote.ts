@@ -28,14 +28,7 @@ const opt = {
     port: parseInt(process.argv[3], 10),
     type: process.argv[4] as apid.ChannelType,
     channel: process.argv[5],
-    decode: process.argv.includes("decode") === true,
-    // What to ask the upstream for. **A relay has to pull the richest form
-    // there is**: TLV becomes TS here through `tlvToTsDecoder`, and TS never
-    // becomes TLV again. A relay that asks for TS makes `?format=tlv`
-    // impossible for every caller downstream -- which is what it did,
-    // answering them 200 with a transport stream under
-    // `application/octet-stream`.
-    format: (process.argv.includes("tlv") ? "tlv" : undefined) as apid.StreamFormat | undefined
+    decode: process.argv.includes("decode") === true
 };
 
 console.error("remote:", opt);
@@ -50,8 +43,7 @@ client.userAgent = "Mirakurun (Remote)";
 client.getChannelStream({
     type: opt.type,
     channel: opt.channel,
-    decode: opt.decode,
-    format: opt.format
+    decode: opt.decode
 })
     .then(_stream => {
         stream = _stream;
