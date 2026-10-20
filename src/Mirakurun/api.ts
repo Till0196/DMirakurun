@@ -18,6 +18,47 @@ import * as yieldableJSON from "yieldable-json";
 const stringifyAsync = promisify(yieldableJSON.stringifyAsync);
 import * as express from "express";
 
+import { OutputFormat } from "./common";
+
+export function requestedStreamFormat(query: unknown): OutputFormat | undefined {
+    return query === "tlv" || query === "ts" ? query : undefined;
+}
+
+export function streamContentType(format: OutputFormat | undefined): string {
+    return format === "tlv" ? "application/octet-stream" : "video/MP2T";
+}
+
+export interface StreamSink {
+    readonly outputFormat?: OutputFormat | null;
+    once(event: string, listener: (...args: any[]) => void): unknown;
+}
+
+export function respondStream(res: express.Response, filter: StreamSink, userId: string): void {
+    const start = (format: OutputFormat) => {
+        if (res.headersSent) {
+            return;
+        }
+        res.setHeader("Content-Type", streamContentType(format));
+        res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
+        res.status(200);
+    };
+    if (filter.outputFormat) {
+        start(filter.outputFormat);
+        return;
+    }
+    if (filter.outputFormat === undefined) {
+        // A sink without detection only ever carries TS.
+        start("ts");
+        return;
+    }
+    filter.once("outputFormat", start);
+    filter.once("unavailable", (reason: string) => {
+        if (!res.headersSent) {
+            responseError(res, 406, reason);
+        }
+    });
+}
+
 export interface Error {
     readonly code: number;
     readonly reason: string;

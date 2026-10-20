@@ -70,6 +70,7 @@ export default class StreamFilter extends EventEmitter {
     private _closed = false;
     private _detected = false;
     private _format: StreamFormat | null = null;
+    private _outputFormat: OutputFormat | null = null;
     private _options: StreamFilterOptions;
     private _innerFilter: TSFilter | TLVFilter = null;
     private _tsmfFilter: TSMFFilter = null;
@@ -80,8 +81,7 @@ export default class StreamFilter extends EventEmitter {
 
     // Multi-relTs auto-detect scan state (TSMF scan — TS and/or TLV)
     private _relStreams: Array<{
-        relTs?: number;
-        relTlv?: number;
+        relTs: number;
         slot: TSMFSlotFilter;
         filter: TSFilter | TLVFilter;
         gotServices: boolean;
@@ -103,6 +103,10 @@ export default class StreamFilter extends EventEmitter {
 
     get detectedFormat(): StreamFormat | null {
         return this._format;
+    }
+
+    get outputFormat(): OutputFormat | null {
+        return this._outputFormat;
     }
 
     get tsmfFilter(): TSMFFilter | null {
@@ -182,6 +186,14 @@ export default class StreamFilter extends EventEmitter {
         this._tsmfBonding?.releaseCarriers();
     }
 
+    private _setOutputFormat(format: OutputFormat): void {
+        if (this._outputFormat !== null || !this._options.output) {
+            return;
+        }
+        this._outputFormat = format;
+        this.emit("outputFormat", format);
+    }
+
     private _detect(): void {
         if (this._detected) {
             return;
@@ -193,7 +205,7 @@ export default class StreamFilter extends EventEmitter {
 
         const result = this._detectStreamFormat(buffer);
         this._format = result.format;
-        log.debug("StreamFilter: detected format: %s%s (%d bytes inspected)",
+        log.debug("StreamFilter: detected format %s%s (%d bytes inspected)",
             this._format,
             result.tsmfHeader ? " (TSMF)" : "",
             buffer.length);
@@ -233,10 +245,12 @@ export default class StreamFilter extends EventEmitter {
 
     private _createTlvFilter(): TLVFilter {
         const opts = this._options;
+        const wanted: OutputFormat = opts.outputFormat ?? _.config.server.defaultTlvStreamFormat ?? "tlv";
+        this._setOutputFormat(wanted === "ts" && opts.tlvToTsDecoder ? "ts" : "tlv");
         return new TLVFilter({
             output: TLVDecoder.create({
                 output: opts.output,
-                outputFormat: opts.outputFormat,
+                outputFormat: wanted,
                 tlvDecoder: opts.tlvDecoder,
                 tlvToTsDecoder: opts.tlvToTsDecoder,
                 disableDecoder: opts.disableDecoder
@@ -252,6 +266,14 @@ export default class StreamFilter extends EventEmitter {
     }
 
     private _initTs(buffered: Buffer, slot?: TSMFSlotFilter): void {
+        if (this._options.output && this._options.outputFormat === "tlv") {
+            // TS never becomes TLV. Tell the caller before anything is written.
+            log.warn("StreamFilter: %s delivers TS but TLV was requested", this._options.channel.channel);
+            this.emit("unavailable", "Requested Stream Format Unavailable");
+            this.close();
+            return;
+        }
+        this._setOutputFormat("ts");
         const tsFilter = this._createTsFilter();
         this._innerFilter = tsFilter;
         this._proxyEvents(tsFilter);
@@ -259,6 +281,7 @@ export default class StreamFilter extends EventEmitter {
         if (!slot) {
             const ch = this._options.channel;
             const streamKey = 0;
+            ch.setStreamFormat(streamKey, false);
             tsFilter.once("streamInfo", ({ tsid, networkId }: { tsid: number; networkId: number }) => {
                 ch.setStream(streamKey, tsid, networkId, false);
             });
@@ -291,6 +314,7 @@ export default class StreamFilter extends EventEmitter {
             ch.tsmfRelTs !== undefined && ch.tsmfRelTs !== null
             ? ch.tsmfRelTs
             : 0;
+        ch.setStreamFormat(streamKey, true);
         tlvFilter.once("streamInfo", ({ streamId, networkId }: { streamId: number; networkId: number }) => {
             ch.setStream(streamKey, streamId, networkId, true, streamKey >= 1 ? streamKey : undefined);
         });
@@ -307,9 +331,7 @@ export default class StreamFilter extends EventEmitter {
         const opts = this._options;
         const ch = opts.channel;
 
-        if (header.groupId !== 0 && header.groupId !== 255) {
-            ch.setTsmfGroupId(header.groupId);
-        }
+        ch.setTsmfGroupId(header.groupId !== 0 && header.groupId !== 255 ? header.groupId : undefined);
 
         for (const relTs of TSMFFilter.getActiveRelTs(header)) {
             const isTlv = TSMFFilter.isTLVStream(header.streamTypeBits, relTs);
@@ -320,7 +342,7 @@ export default class StreamFilter extends EventEmitter {
             header.numberOfCarriers > 1 &&
             header.groupId !== 0 && header.groupId !== 255) {
             log.info(
-                "StreamFilter TSMF discovery: groupId=%d numberOfCarriers=%d → emit discovery on %s",
+                "StreamFilter: TSMF discovery detected groupId=%d numberOfCarriers=%d on %s",
                 header.groupId, header.numberOfCarriers, ch.channel
             );
             if (_.service) {
@@ -343,28 +365,27 @@ export default class StreamFilter extends EventEmitter {
 
         switch (decision.kind) {
             case "empty":
-                log.warn("StreamFilter TSMF slot map empty on %s — closing", ch.channel);
+                log.warn("StreamFilter: TSMF slot map empty on %s — closing", ch.channel);
                 this.close();
                 return;
 
             case "tsmf-tlv":
-                log.info("StreamFilter TSMF route: %s relTs=%d → tsmf-tlv on %s",
+                log.info("StreamFilter: routing %s relTs=%d to tsmf-tlv on %s",
                     decision.pinned ? "pinned" : "auto", decision.relTs, ch.channel);
                 this._initTsmfTlv(buffered, decision.relTs);
                 return;
 
             case "tsmf-ts":
-                log.info("StreamFilter TSMF route: %s relTs=%d → tsmf-ts on %s (active=[%s])",
+                log.info("StreamFilter: routing %s relTs=%d to tsmf-ts on %s",
                     decision.pinned ? "pinned" : "auto",
                     decision.relTs,
-                    ch.channel,
-                    [...decision.activeStreams].sort((a, b) => a - b).join(","));
+                    ch.channel);
                 this._initTs(buffered, new TSMFSlotFilter(decision.relTs, !opts.serviceId));
                 return;
 
             case "tsmf-scan": {
                 const hasGroupId = header.groupId !== 0 && header.groupId !== 255;
-                log.info("StreamFilter TSMF scan started: %d relTs groupId=%s on %s",
+                log.info("StreamFilter: TSMF scan started %d relTs groupId=%s on %s",
                     decision.activeStreams.size,
                     hasGroupId ? header.groupId : "none",
                     ch.channel);
@@ -407,17 +428,13 @@ export default class StreamFilter extends EventEmitter {
             slot.on("data", (chunk: Buffer) => filter.write(chunk));
 
             const entry: (typeof this._relStreams)[number] = {
+                relTs,
                 slot,
                 filter,
                 gotServices: false,
                 gotNetwork: false,
                 services: null
             };
-            if (isTlv) {
-                entry.relTlv = relTs;
-            } else {
-                entry.relTs = relTs;
-            }
 
             filter.on("network", (net: any) => {
                 if (entry.gotNetwork) {
@@ -494,19 +511,16 @@ export default class StreamFilter extends EventEmitter {
                 }
                 seen.add(key);
                 merged.push(svc);
-                if (e.relTs !== undefined) {
-                    // fromConfig locks are honoured inside addServiceId.
-                    ch.addServiceId(svc.serviceId, e.relTs);
-                }
+                ch.addServiceId(svc.serviceId, e.relTs);
             }
         }
 
         const gotCount = this._relStreams.filter(e => e.gotServices).length;
         if (partial) {
-            log.info("StreamFilter TSMF auto-detect partial emit: %d/%d relTs, %d services on %s",
+            log.info("StreamFilter: TSMF auto-detect partial emit %d/%d relTs, %d services on %s",
                 gotCount, this._relStreams.length, merged.length, this._options.channel.channel);
         } else {
-            log.info("StreamFilter TSMF auto-detect emit: %d relTs, %d services on %s",
+            log.info("StreamFilter: TSMF auto-detect emit %d relTs, %d services on %s",
                 this._relStreams.length, merged.length, this._options.channel.channel);
         }
 
@@ -521,7 +535,7 @@ export default class StreamFilter extends EventEmitter {
         const ch = opts.channel;
 
         log.info(
-            "StreamFilter TSMF-TLV %s (tsmfRelTs=%d, groupId=%s)",
+            "StreamFilter: TSMF-TLV %s (tsmfRelTs=%d, groupId=%s)",
             opts.tsmfDiscovery ? "discovery" : "bonded scan",
             relTs,
             ch.tsmfGroupId ?? "none"
@@ -547,7 +561,7 @@ export default class StreamFilter extends EventEmitter {
                     return;
                 }
                 ch.setTsmfGroupId(groupId);
-                log.info("StreamFilter TSMF-TLV discovery: groupId=%d numberOfCarriers=%d on %s",
+                log.info("StreamFilter: TSMF-TLV discovery groupId=%d numberOfCarriers=%d on %s",
                     groupId, numberOfCarriers, ch.channel);
                 if (_.service) {
                     _.service.save();
@@ -621,7 +635,7 @@ export default class StreamFilter extends EventEmitter {
             const tsmfHeader = TSMFFilter.findFirstExtendedHeader(buffer, tsStart);
             if (tsmfHeader) {
                 log.debug(
-                    "StreamFilter TSMF header: slotMap counts %j, streamTypeBits=0x%s, groupId=%d",
+                    "StreamFilter: TSMF header slotMap counts %j, streamTypeBits=0x%s, groupId=%d",
                     TSMFFilter.countSlots(tsmfHeader.slotMap),
                     tsmfHeader.streamTypeBits.toString(16),
                     tsmfHeader.groupId

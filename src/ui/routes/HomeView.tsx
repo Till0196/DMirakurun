@@ -175,7 +175,7 @@ const ServicesSection: React.FC<{
                                     }>();
                                     for (const channel of channels) {
                                         const route = channel.route ?? channel.type;
-                                        const rel = channel.tsmfRelTs ?? channel.tsmfRelTlv;
+                                        const rel = channel.tsmfRelTs;
                                         const key = `${route}|${channel.type}|${rel ?? ""}|${channel.tsmfGroupId ?? ""}`;
                                         const group = groups.get(key);
                                         if (group) {
@@ -407,16 +407,16 @@ const TunersSection: React.FC<{
             const user = tuner.users[i];
             const isMirakurun = /Mirakurun/.test(user.id);
             const channel = user.streamSetting?.channel;
-            const relTlv = user.streamSetting?.tsmfRelTlv;
             const relTs = user.streamSetting?.tsmfRelTs ?? channel?.tsmfRelTs;
             const groupId = channel?.tsmfGroupId;
+            const streamId = user.streamSetting?.streamId;
+            const streamFormat = user.streamSetting?.streamFormat;
+            const outputFormat = user.outputFormat;
             const channelMeta: string[] = [];
             if (channel?.route && multiRouteTypes.has(channel.type)) {
                 channelMeta.push(channel.route);
             }
-            if (relTlv !== undefined) {
-                channelMeta.push(`RelTlv=${relTlv}`);
-            } else if (relTs !== undefined) {
+            if (relTs !== undefined) {
                 channelMeta.push(`RelTs=${relTs}`);
             }
             if (groupId !== undefined) {
@@ -439,11 +439,24 @@ const TunersSection: React.FC<{
                         {channelMeta.length > 0 ? ` (${channelMeta.join(" | ")})` : ""}
                     </span>
                 </span>,
-                <span key="sid" className="tuner-user-info-item">
+                <span key="sid" className="tuner-user-info-item" title="Service ID">
                     <Icon icon="filter" className="bp5-text-muted" size={12} />
-                    <span>{user.streamSetting?.serviceId ? `0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}</span>
+                    <span>{user.streamSetting?.serviceId !== undefined ? `0x${user.streamSetting.serviceId.toString(16).toUpperCase()} (${user.streamSetting.serviceId})` : "-"}</span>
+                </span>,
+                <span key="stream-id" className="tuner-user-info-item" title="Stream ID">
+                    <Icon icon="data-lineage" className="bp5-text-muted" size={12} />
+                    <span>{streamId !== undefined ? `0x${streamId.toString(16).toUpperCase()} (${streamId})` : "-"}</span>
                 </span>
             ];
+
+            if (streamFormat && outputFormat && streamFormat !== outputFormat) {
+                userInfoItems.push(
+                    <span key="format" className="tuner-user-info-item">
+                        <Icon icon="exchange" className="bp5-text-muted" size={12} />
+                        <span>{streamFormat.toUpperCase()} → {outputFormat.toUpperCase()}</span>
+                    </span>
+                );
+            }
 
             // stream info
             if (!isEmptyStreamInfo(user.streamInfo)) {

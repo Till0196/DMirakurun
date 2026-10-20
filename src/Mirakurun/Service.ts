@@ -489,17 +489,20 @@ export class Service {
     }
 
     private async _scan(channel: ChannelItem, add: boolean, tsmfDiscovery = true): Promise<void> {
-        log.info("ChannelItem#'%s' service scan has started (tsmfDiscovery=%s)", channel.name, tsmfDiscovery);
+        log.info("ChannelItem#'%s' service scan has started", channel.name);
 
         let result: Awaited<ReturnType<typeof _.tuner.discoverServices>>;
+        channel.beginStreamScan();
         try {
             result = await _.tuner.discoverServices(channel, { tsmfDiscovery });
         } catch (e) {
+            channel.rollbackStreamScan();
             log.warn("ChannelItem#'%s' service scan has failed [%s]", channel.name, e);
             throw new Error("Service scan failed");
         }
 
         if (isDiscoveryResult(result)) {
+            channel.commitStreamScan(false);
             const { groupId, numberOfCarriers } = result;
             log.info("ChannelItem#'%s' discovered groupId=%d numberOfCarriers=%d",
                 channel.name, groupId, numberOfCarriers);
@@ -514,6 +517,7 @@ export class Service {
             return;
         }
 
+        channel.commitStreamScan(true);
         this._applyScannedServices(channel, result, add);
 
         // propagate groupId to sibling channels
@@ -573,6 +577,10 @@ export class Service {
         services.forEach(service => {
             const item = this.get(service.networkId, service.serviceId);
             if (item !== null) {
+                const streamEntry = channel.getStreamForService(service.serviceId);
+                if (streamEntry && streamEntry.streamId !== 0) {
+                    item.streamId = streamEntry.streamId;
+                }
                 item.name = service.name;
                 item.type = service.type;
                 item.isFree = service.isFree;

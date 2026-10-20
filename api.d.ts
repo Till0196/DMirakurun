@@ -46,7 +46,6 @@ export interface Channel {
     name?: string;
     route?: ChannelRoute;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
     tsmfGroupId?: number;
     isMultiCarrier?: boolean;
     services?: Service[];
@@ -55,6 +54,15 @@ export interface Channel {
 export type ChannelType = "GR" | "BS" | "CS" | "SKY" | "BS4K";
 
 export type ChannelRoute = "TER" | "SAT" | "CATV" | "HIKARI";
+
+export type StreamFormat = "ts" | "tlv";
+
+export interface StreamID {
+    networkId: NetworkId;
+    streamId: StreamId;
+    streamFormat?: StreamFormat;
+    channels: Channel[];
+}
 
 export interface Service {
     id: ServiceItemId;
@@ -72,7 +80,6 @@ export interface Service {
     channels?: Channel[];
     channel?: Channel;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
 }
 
 export interface Program {
@@ -234,6 +241,7 @@ export interface TunerUser {
     agent?: string;
     url?: string;
     disableDecoder?: boolean;
+    outputFormat?: StreamFormat;
     streamSetting?: StreamSetting;
     streamInfo?: StreamInfo;
 }
@@ -241,6 +249,8 @@ export interface TunerUser {
 interface StreamSetting {
     channel: ConfigChannelsItem;
     networkId?: number;
+    streamId?: number;
+    streamFormat?: StreamFormat;
     serviceId?: number;
     eventId?: number;
     noProvide?: boolean;
@@ -248,7 +258,6 @@ interface StreamSetting {
     parseSDT?: boolean;
     parseEIT?: boolean;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
 }
 
 export interface StreamInfo {
@@ -327,6 +336,7 @@ export interface ConfigServer {
     allowOrigins: string[];
     allowPNA: boolean;
     tsplayEndpoint: string;
+    defaultTlvStreamFormat?: StreamFormat;
 }
 
 /**

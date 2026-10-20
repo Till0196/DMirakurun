@@ -23,6 +23,7 @@ import ChannelItem from "./ChannelItem";
 import ServiceItem from "./ServiceItem";
 import TSFilter from "./TSFilter";
 import StreamFilter, { DiscoveryResult } from "./StreamFilter";
+import { streamFormatOf } from "./Channel";
 // skip stale DVR ring contents from the previous tune
 const STALE_DVR_DRAIN_BYTES = 32 * 1024;
 
@@ -111,6 +112,7 @@ export class Tuner {
 
     initChannelStream(channel: ChannelItem, userReq: common.UserRequest, output: Writable, tsmfRelTs?: number, altChannels?: ChannelItem[]): Promise<StreamFilter | TSFilter> {
         let networkId: number;
+        const streamEntry = channel.getStreams().get(tsmfRelTs ?? 0);
 
         const services = channel.getServices();
         if (services.length !== 0) {
@@ -122,20 +124,42 @@ export class Tuner {
             streamSetting: {
                 channel,
                 channels: altChannels && altChannels.length > 1 ? altChannels : undefined,
-                networkId,
+                networkId: streamEntry?.networkId ?? networkId,
+                streamId: streamEntry?.streamId,
+                streamFormat: streamFormatOf(streamEntry?.isTlv),
                 parseEIT: true,
                 tsmfRelTs
             }
         }, output);
     }
 
-    initServiceStream(service: ServiceItem, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
-        const channels = _.channel.findByService(service.networkId, service.serviceId);
+    initStreamIDStream(networkId: number, streamId: number, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
+        const channels = _.channel.findByStreamId(networkId, streamId);
         return this._initTS({
             ...userReq,
             streamSetting: {
-                channel: channels[0] ?? service.channel,
-                channels: channels.length > 0 ? channels : undefined,
+                channel: channels[0],
+                channels,
+                networkId,
+                streamId,
+                streamFormat: _.channel.getStreamID(networkId, streamId)?.streamFormat,
+                parseEIT: true
+            }
+        }, output);
+    }
+
+    initServiceStream(service: ServiceItem, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
+        const channels = _.channel.findByStreamId(service.networkId, service.streamId);
+        const fallbackChannels = channels.length > 0
+            ? channels
+            : _.channel.findByService(service.networkId, service.serviceId);
+        return this._initTS({
+            ...userReq,
+            streamSetting: {
+                channel: fallbackChannels[0] ?? service.channel,
+                channels: fallbackChannels.length > 0 ? fallbackChannels : undefined,
+                streamId: service.streamId,
+                streamFormat: _.channel.getStreamID(service.networkId, service.streamId)?.streamFormat,
                 serviceId: service.serviceId,
                 networkId: service.networkId,
                 parseEIT: true
@@ -145,12 +169,17 @@ export class Tuner {
 
     initProgramStream(program: apid.Program, userReq: common.UserRequest, output: Writable): Promise<StreamFilter | TSFilter> {
         const service = _.service.get(program.networkId, program.serviceId);
-        const channels = _.channel.findByService(service.networkId, service.serviceId);
+        const channels = _.channel.findByStreamId(service.networkId, service.streamId);
+        const fallbackChannels = channels.length > 0
+            ? channels
+            : _.channel.findByService(service.networkId, service.serviceId);
         return this._initTS({
             ...userReq,
             streamSetting: {
-                channel: channels[0] ?? service.channel,
-                channels: channels.length > 0 ? channels : undefined,
+                channel: fallbackChannels[0] ?? service.channel,
+                channels: fallbackChannels.length > 0 ? fallbackChannels : undefined,
+                streamId: service.streamId,
+                streamFormat: _.channel.getStreamID(service.networkId, service.streamId)?.streamFormat,
                 serviceId: program.serviceId,
                 eventId: program.eventId,
                 networkId: program.networkId,
@@ -414,6 +443,11 @@ export class Tuner {
                 Object.defineProperty(user, "streamInfo", {
                     get: () => streamFilter.streamInfo
                 });
+                // known only once the input has been seen
+                const requestedOutputFormat = user.outputFormat;
+                Object.defineProperty(user, "outputFormat", {
+                    get: () => streamFilter.outputFormat ?? requestedOutputFormat
+                });
 
                 try {
                     await device.startStream(user, streamFilter, pickedChannel, {
@@ -436,24 +470,24 @@ export class Tuner {
     }
 
     private _resolveTsmfSlot(setting: common.User["streamSetting"], pickedChannel: ChannelItem): void {
-        if (setting.tsmfRelTs === undefined && setting.tsmfRelTlv === undefined) {
+        if (setting.tsmfRelTs === undefined) {
             let entry = setting.serviceId !== undefined && setting.serviceId !== null
                 ? pickedChannel.getStreamForService(setting.serviceId)
                 : undefined;
+            if (!entry && setting.networkId !== undefined && setting.streamId !== undefined) {
+                entry = [...pickedChannel.getStreams().values()].find(stream =>
+                    stream.networkId === setting.networkId && stream.streamId === setting.streamId
+                );
+            }
             if (!entry && pickedChannel.tsmfRelTs !== undefined && pickedChannel.tsmfRelTs !== null) {
                 entry = pickedChannel.getStreams().get(pickedChannel.tsmfRelTs);
             }
             if (entry?.relTs !== undefined) {
-                if (entry.isTlv) {
-                    setting.tsmfRelTlv = entry.relTs;
-                } else {
-                    setting.tsmfRelTs = entry.relTs;
-                }
+                setting.tsmfRelTs = entry.relTs;
             }
         }
 
-        if (setting.drainBytes === undefined &&
-            (setting.tsmfRelTs !== undefined || setting.tsmfRelTlv !== undefined)) {
+        if (setting.drainBytes === undefined && setting.tsmfRelTs !== undefined) {
             setting.drainBytes = STALE_DVR_DRAIN_BYTES;
         }
     }

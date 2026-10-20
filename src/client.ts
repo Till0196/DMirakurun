@@ -307,12 +307,13 @@ export class Client {
         }, { priority, signal });
     }
 
-    async getChannelStream(opt: { type: apid.ChannelType, channel: string, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
-    async getChannelStream(type: apid.ChannelType, channel: string, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getChannelStream(opt: { type: apid.ChannelType, channel: string, decode?: boolean, format?: apid.StreamFormat, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getChannelStream(type: apid.ChannelType, channel: string, decode?: boolean, priority?: number, format?: apid.StreamFormat): Promise<http.IncomingMessage>;
     async getChannelStream(...args: any[]): Promise<http.IncomingMessage> {
         let type: apid.ChannelType;
         let channel: string;
         let decode: boolean;
+        let format: apid.StreamFormat;
         let priority: number;
         let signal: AbortSignal;
 
@@ -321,6 +322,7 @@ export class Client {
             type = opt.type;
             channel = opt.channel;
             decode = opt.decode;
+            format = opt.format;
             priority = opt.priority;
             signal = opt.signal;
         } else {
@@ -328,11 +330,59 @@ export class Client {
             channel = args[1];
             decode = args[2];
             priority = args[3];
+            format = args[4];
         }
 
         return this.call("getChannelStream", {
             type,
             channel,
+            decode: decode ? 1 : 0,
+            // only when given; older servers lack this parameter
+            ...(format ? { format } : {})
+        }, { priority, signal });
+    }
+
+    async getStreamIDs(): Promise<apid.StreamID[]> {
+        const res = await this.call("getStreamIDs");
+        return res.body as apid.StreamID[];
+    }
+
+    async getStreamIDsByNetworkId(networkId: apid.NetworkId): Promise<apid.StreamID[]> {
+        const res = await this.call("getStreamIDsByNetworkId", { networkId });
+        return res.body as apid.StreamID[];
+    }
+
+    async getStreamID(networkId: apid.NetworkId, streamId: apid.StreamId): Promise<apid.StreamID> {
+        const res = await this.call("getStreamID", { networkId, streamId });
+        return res.body as apid.StreamID;
+    }
+
+    async getStreamIDStream(opt: { networkId: apid.NetworkId, streamId: apid.StreamId, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getStreamIDStream(networkId: apid.NetworkId, streamId: apid.StreamId, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getStreamIDStream(...args: any[]): Promise<http.IncomingMessage> {
+        let networkId: apid.NetworkId;
+        let streamId: apid.StreamId;
+        let decode: boolean;
+        let priority: number;
+        let signal: AbortSignal;
+
+        if (typeof args[0] === "object") {
+            const opt = args[0];
+            networkId = opt.networkId;
+            streamId = opt.streamId;
+            decode = opt.decode;
+            priority = opt.priority;
+            signal = opt.signal;
+        } else {
+            networkId = args[0];
+            streamId = args[1];
+            decode = args[2];
+            priority = args[3];
+        }
+
+        return this.call("getStreamIDStream", {
+            networkId,
+            streamId,
             decode: decode ? 1 : 0
         }, { priority, signal });
     }

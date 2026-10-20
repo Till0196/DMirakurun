@@ -78,6 +78,14 @@ export default class ServiceItem {
         return this._streamId;
     }
 
+    set streamId(streamId: number) {
+        if (this._streamId !== streamId) {
+            this._streamId = streamId;
+            _.service.save();
+            this._updated();
+        }
+    }
+
     get name(): string {
         return this._name || "";
     }
@@ -206,11 +214,7 @@ export default class ServiceItem {
                 route: ch.route
             };
             if (entry?.relTs !== undefined) {
-                if (entry.isTlv) {
-                    c.tsmfRelTlv = entry.relTs;
-                } else {
-                    c.tsmfRelTs = entry.relTs;
-                }
+                c.tsmfRelTs = entry.relTs;
             }
             if (ch.tsmfGroupId !== null && ch.tsmfGroupId !== undefined && ch.tsmfGroupId !== 255) {
                 c.tsmfGroupId = ch.tsmfGroupId;
@@ -220,14 +224,9 @@ export default class ServiceItem {
 
         const all = this.channels;
         if (all.length > 0) {
-            // streamId as channel string keeps the primary identifier stable
-            // across route changes for clients that store one channel per service.
-            ret.channel = {
-                type: all[0].type,
-                channel: String(this._streamId)
-            };
+            ret.channel = serialize(all[0]);
         }
-        if (all.length >= 2) {
+        if (all.length >= 1) {
             ret.channels = all.map(serialize);
         }
 

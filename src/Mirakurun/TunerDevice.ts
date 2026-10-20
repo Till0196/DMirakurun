@@ -117,6 +117,7 @@ export default class TunerDevice extends EventEmitter {
                 agent: user.agent,
                 url: user.url,
                 disableDecoder: user.disableDecoder,
+                outputFormat: user.outputFormat,
                 streamSetting: ss ? {
                     channel: ss.channel ? {
                         type: ss.channel.type,
@@ -126,13 +127,14 @@ export default class TunerDevice extends EventEmitter {
                             ss.channel.tsmfGroupId !== 255 && { tsmfGroupId: ss.channel.tsmfGroupId })
                     } : undefined,
                     networkId: ss.networkId,
+                    streamId: ss.streamId,
+                    streamFormat: ss.streamFormat,
                     serviceId: ss.serviceId,
                     eventId: ss.eventId,
                     parseNIT: ss.parseNIT,
                     parseSDT: ss.parseSDT,
                     parseEIT: ss.parseEIT,
-                    ...(ss.tsmfRelTs !== undefined && { tsmfRelTs: ss.tsmfRelTs }),
-                    ...(ss.tsmfRelTlv !== undefined && { tsmfRelTlv: ss.tsmfRelTlv })
+                    ...(ss.tsmfRelTs !== undefined && { tsmfRelTs: ss.tsmfRelTs })
                 } : undefined,
                 streamInfo: user.streamInfo
             };
@@ -422,9 +424,7 @@ export default class TunerDevice extends EventEmitter {
             const broadcastSink = new stream.Writable({
                 highWaterMark: 8 * 1024 * 1024,
                 write: (chunk: Buffer, _encoding: string, callback: () => void) => {
-                    for (const user of this._users) {
-                        user._stream.write(chunk);
-                    }
+                    this._writeToUsers(chunk);
                     callback();
                 }
             });
@@ -495,8 +495,21 @@ export default class TunerDevice extends EventEmitter {
             chunk = chunk.subarray(this._drainRemaining);
             this._drainRemaining = 0;
         }
-        for (const user of this._users) {
-            user._stream.write(chunk);
+        this._writeToUsers(chunk);
+    }
+
+    private _writeToUsers(chunk: Buffer): void {
+        for (const user of [...this._users]) {
+            try {
+                user._stream.write(chunk);
+            } catch (err: any) {
+                // keep a joining consumer's failure off the shared sink
+                log.warn(
+                    "TunerDevice#%d stream write failed for user `%s`: %s",
+                    this._index, user.id, err?.message || err
+                );
+                user._stream.close();
+            }
         }
     }
 

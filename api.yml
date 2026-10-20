@@ -68,6 +68,30 @@ definitions:
 
   # channel -------------------------------------------------------------------
 
+  StreamID:
+    type: object
+    required:
+      - networkId
+      - streamId
+      - channels
+    properties:
+      networkId:
+        $ref: '#/definitions/NetworkId'
+      streamId:
+        $ref: '#/definitions/StreamId'
+      streamFormat:
+        $ref: '#/definitions/StreamFormat'
+      channels:
+        type: array
+        items:
+          $ref: '#/definitions/Channel'
+
+  StreamFormat:
+    type: string
+    enum:
+      - ts
+      - tlv
+
   Channel:
     type: object
     required:
@@ -80,10 +104,14 @@ definitions:
         type: string
       name:
         type: string
+      route:
+        $ref: '#/definitions/ChannelRoute'
       tsmfRelTs:
         type: integer
       tsmfGroupId:
         type: integer
+      isMultiCarrier:
+        type: boolean
       services:
         type: array
         items:
@@ -130,6 +158,8 @@ definitions:
         type: string
       type:
         type: integer
+      isFree:
+        type: boolean
       logoId:
         type: integer
       hasLogoData:
@@ -140,8 +170,14 @@ definitions:
         type: boolean
       epgUpdatedAt:
         $ref: '#/definitions/UnixtimeMS'
+      channels:
+        type: array
+        items:
+          $ref: '#/definitions/Channel'
       channel:
         $ref: '#/definitions/Channel'
+      tsmfRelTs:
+        type: integer
 
   # program -------------------------------------------------------------------
 
@@ -414,6 +450,8 @@ definitions:
         type: string
       disableDecoder:
         type: boolean
+      outputFormat:
+        $ref: '#/definitions/StreamFormat'
       streamSetting:
         type: object
         required:
@@ -423,6 +461,10 @@ definitions:
             $ref: '#/definitions/ConfigChannelsItem'
           networkId:
             type: integer
+          streamId:
+            type: integer
+          streamFormat:
+            $ref: '#/definitions/StreamFormat'
           serviceId:
             type: integer
           eventId:
@@ -626,6 +668,11 @@ definitions:
         type: array
         items:
           type: string
+      defaultTlvStreamFormat:
+        type: string
+        enum:
+          - ts
+          - tlv
 
   ConfigTuners:
     type: array

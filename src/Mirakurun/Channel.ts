@@ -19,13 +19,33 @@ import * as apid from "../../api";
 import _ from "./_";
 import * as db from "./db";
 import status from "./status";
-import ChannelItem from "./ChannelItem";
+import ChannelItem, { StreamEntry } from "./ChannelItem";
 import { JobItem } from "./Job";
+
+export function streamFormatOf(isTlv: boolean | undefined): apid.StreamFormat | undefined {
+    if (isTlv === undefined) {
+        return undefined;
+    }
+    return isTlv ? "tlv" : "ts";
+}
+
+export interface StreamIDIndexItem {
+    readonly networkId: number;
+    readonly streamId: number;
+    /** `undefined` until the stream has been seen once. */
+    streamFormat?: apid.StreamFormat;
+    readonly channels: Array<{
+        channel: ChannelItem;
+        entry: StreamEntry;
+    }>;
+}
 
 export class Channel {
     private _items: ChannelItem[] = [];
     private _startup: boolean = true;
     private _saveTimerId: NodeJS.Timeout = null;
+    private _streamIDIndex = new Map<number, Map<number, StreamIDIndexItem>>();
+    private _streamIDIndexDirty = true;
 
     constructor() {
         this._load();
@@ -60,6 +80,7 @@ export class Channel {
     add(item: ChannelItem): void {
         if (this.get(item.type, item.channel) === null) {
             this._items.push(item);
+            this.invalidateStreamIDIndex();
         }
     }
 
@@ -88,54 +109,46 @@ export class Channel {
     }
 
     findByStreamId(networkId: number, streamId: number): ChannelItem[] {
-        const results: ChannelItem[] = [];
-        for (const channel of this._items) {
-            for (const entry of channel.getStreams().values()) {
-                if (entry.networkId === networkId && entry.streamId === streamId) {
-                    results.push(channel);
-                    break;
-                }
-            }
-        }
-        return results;
+        const item = this.getStreamID(networkId, streamId);
+        return item ? item.channels.map(value => value.channel) : [];
     }
 
-    findByTypeAndStreamId(type: apid.ChannelType, streamId: number): ChannelItem[] {
-        const results: ChannelItem[] = [];
-        for (const channel of this._items) {
-            if (channel.type !== type) {
-                continue;
-            }
-            for (const entry of channel.getStreams().values()) {
-                if (entry.streamId === streamId) {
-                    results.push(channel);
-                    break;
-                }
-            }
+    getStreamIDs(networkId?: number): StreamIDIndexItem[] {
+        this._ensureStreamIDIndex();
+        if (networkId !== undefined) {
+            const streams = this._streamIDIndex.get(networkId);
+            return streams ? [...streams.values()] : [];
         }
-        return results;
+        const items: StreamIDIndexItem[] = [];
+        for (const streams of this._streamIDIndex.values()) {
+            items.push(...streams.values());
+        }
+        return items;
     }
 
-    /**
-     * Resolve the channels that can tune a given service.
-     *
-     * Returns channels whose stream entries include `serviceId` under the
-     * matching `networkId`. Unscanned channels (empty streams map) are
-     * included for backward compatibility with fresh installs.
-     */
+    getStreamID(networkId: number, streamId: number): StreamIDIndexItem | undefined {
+        this._ensureStreamIDIndex();
+        return this._streamIDIndex.get(networkId)?.get(streamId);
+    }
+
+    invalidateStreamIDIndex(): void {
+        this._streamIDIndexDirty = true;
+    }
+
     findByService(networkId: number, serviceId: number): ChannelItem[] {
-        const results: ChannelItem[] = [];
+        const carrying: ChannelItem[] = [];
+        const unscanned: ChannelItem[] = [];
         for (const channel of this._items) {
             if (channel.getStreams().size === 0) {
-                results.push(channel);
+                unscanned.push(channel);
                 continue;
             }
             const entry = channel.getStreamForService(serviceId);
             if (entry && entry.networkId === networkId) {
-                results.push(channel);
+                carrying.push(channel);
             }
         }
-        return results;
+        return [...carrying, ...unscanned];
     }
 
     save(): void {
@@ -159,22 +172,15 @@ export class Channel {
             if (record.streams) {
                 for (const entry of record.streams) {
                     let streamKey: number;
-                    let isTlv: boolean;
                     let relTs: number | undefined;
                     if (entry.relTs !== undefined) {
                         streamKey = entry.relTs;
-                        isTlv = false;
                         relTs = entry.relTs;
-                    } else if (entry.relTlv !== undefined) {
-                        streamKey = entry.relTlv;
-                        isTlv = true;
-                        relTs = entry.relTlv;
                     } else {
                         streamKey = 0;
-                        isTlv = false;
                         relTs = undefined;
                     }
-                    channel.setStream(streamKey, entry.streamId, entry.networkId, isTlv, relTs);
+                    channel.setStream(streamKey, entry.streamId, entry.networkId, entry.isTlv, relTs);
                     if (entry.serviceIds) {
                         for (const sid of entry.serviceIds) {
                             channel.addServiceId(sid, streamKey);
@@ -219,11 +225,10 @@ export class Channel {
                         networkId: info.networkId
                     };
                     if (info.relTs !== undefined) {
-                        if (info.isTlv) {
-                            entry.relTlv = info.relTs;
-                        } else {
-                            entry.relTs = info.relTs;
-                        }
+                        entry.relTs = info.relTs;
+                    }
+                    if (info.isTlv !== undefined) {
+                        entry.isTlv = info.isTlv;
                     }
                     if (info.serviceIds.size > 0) {
                         entry.serviceIds = [...info.serviceIds];
@@ -239,6 +244,41 @@ export class Channel {
         }
         db.saveChannels(records, _.configIntegrity.channels)
             .catch(e => log.error("channels db save failed: %s", (e as Error).message));
+    }
+
+    private _ensureStreamIDIndex(): void {
+        if (!this._streamIDIndexDirty) {
+            return;
+        }
+
+        const index = new Map<number, Map<number, StreamIDIndexItem>>();
+        for (const channel of this._items) {
+            for (const entry of channel.getStreams().values()) {
+                if (entry.streamId === 0) {
+                    continue;
+                }
+                let streams = index.get(entry.networkId);
+                if (!streams) {
+                    streams = new Map<number, StreamIDIndexItem>();
+                    index.set(entry.networkId, streams);
+                }
+                let item = streams.get(entry.streamId);
+                if (!item) {
+                    item = {
+                        networkId: entry.networkId,
+                        streamId: entry.streamId,
+                        streamFormat: streamFormatOf(entry.isTlv),
+                        channels: []
+                    };
+                    streams.set(entry.streamId, item);
+                }
+                if (!item.channels.some(value => value.channel === channel)) {
+                    item.channels.push({ channel, entry });
+                }
+            }
+        }
+        this._streamIDIndex = index;
+        this._streamIDIndexDirty = false;
     }
 
     private _load(): void {

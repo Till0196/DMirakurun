@@ -26,7 +26,8 @@ const CID_TYPE_NO_COMPRESSED_HEADER = 0x61;
 const OFFSET_MIN_SFS = 10;
 const OFFSET_RETRY_SFS = 60;
 const OFFSET_MIN_CID_PACKETS = 16;
-const OFFSET_VALID_RATIO_MIN = 0.999;
+const OFFSET_VALID_RATIO_FLOOR = 0.9;
+const OFFSET_VALID_RATIO_MARGIN = 0.02;
 const OFFSET_MAX_PROBE_FAILURES = 3;
 // bounds memory while offset detection is pending
 const OFFSET_MAX_KEEP = 600;
@@ -214,7 +215,6 @@ export default class TLVAssembler extends EventEmitter {
     private _commitOffsets(offsets: number[]): void {
         this._offsets = offsets;
         this._offsetsApplied = false;
-        log.info("TunerDevice#%d TSMF offsets finalized: %s", this._tunerIndex, offsets.join(","));
         if (this._buffer.length) {
             this._buffer.length = 0;
         }
@@ -222,6 +222,8 @@ export default class TLVAssembler extends EventEmitter {
 
     private _probeOffsets(carriers: CarrierBucket[]): number[] | null {
         const candidates = this._buildOffsetCandidates(carriers);
+        const results: { offsets: number[]; validRatio: number }[] = [];
+
         for (let i = 0; i < candidates.length; i++) {
             if (this._closed || this._closing) {
                 return null;
@@ -237,21 +239,31 @@ export default class TLVAssembler extends EventEmitter {
                 continue;
             }
             const stats = this._measureTlvIntegrity(tlv, syncStart);
-            if (stats.validRatio < OFFSET_VALID_RATIO_MIN ||
+            if (stats.validRatio < OFFSET_VALID_RATIO_FLOOR ||
                 stats.cidTotal < OFFSET_MIN_CID_PACKETS ||
                 stats.cidOk !== stats.cidTotal) {
                 continue;
             }
-            log.info(
-                "TunerDevice#%d TSMF offsets=%s (valid=%s%%, cid=%d/%d, tried %d/%d)",
-                this._tunerIndex, offsets.join(","),
-                (stats.validRatio * 100).toFixed(1),
-                stats.cidOk, stats.cidTotal,
-                i + 1, candidates.length
-            );
-            return offsets;
+            results.push({ offsets, validRatio: stats.validRatio });
         }
-        return null;
+
+        if (results.length === 0) {
+            return null;
+        }
+        results.sort((a, b) => b.validRatio - a.validRatio);
+        const [best, runnerUp] = results;
+        // the margin only disambiguates skew between carriers
+        if (carriers.length > 1 && runnerUp && best.validRatio - runnerUp.validRatio < OFFSET_VALID_RATIO_MARGIN) {
+            log.debug(
+                "TunerDevice#%d TSMF offset probe ambiguous: best=%s (valid=%s%%) vs runner-up=%s (valid=%s%%) — retrying with more data",
+                this._tunerIndex,
+                best.offsets.join(","), (best.validRatio * 100).toFixed(2),
+                runnerUp.offsets.join(","), (runnerUp.validRatio * 100).toFixed(2)
+            );
+            return null;
+        }
+
+        return best.offsets;
     }
 
     // base = sfCounts - minSf, ±1 single/two-axis, ±2 single-axis
@@ -262,11 +274,15 @@ export default class TLVAssembler extends EventEmitter {
         const seen = new Set<string>();
         const candidates: number[][] = [];
 
+        // dedupe on the relative skew between carriers (absolute shift for a single carrier)
+        const keyOf = (offsets: number[]): string =>
+            carriers.length > 1 ? offsets.map(v => v - offsets[0]).join(",") : offsets.join(",");
+
         const add = (offsets: number[]): void => {
             if (offsets.some(v => v < 0)) {
                 return;
             }
-            const key = offsets.join(",");
+            const key = keyOf(offsets);
             if (seen.has(key)) {
                 return;
             }

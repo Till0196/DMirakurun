@@ -36,13 +36,14 @@ interface StreamSetting {
     channel: ChannelItem;
     channels?: ChannelItem[];
     networkId?: number;
+    streamId?: number;
+    streamFormat?: apid.StreamFormat;
     serviceId?: number;
     eventId?: number;
     parseNIT?: boolean;
     parseSDT?: boolean;
     parseEIT?: boolean;
     tsmfRelTs?: number;
-    tsmfRelTlv?: number;
     tsmfDiscovery?: boolean;
     drainBytes?: number;
 }

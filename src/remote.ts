@@ -40,7 +40,11 @@ client.host = opt.host;
 client.port = opt.port;
 client.userAgent = "Mirakurun (Remote)";
 
-client.getChannelStream(opt.type, opt.channel, opt.decode)
+client.getChannelStream({
+    type: opt.type,
+    channel: opt.channel,
+    decode: opt.decode
+})
     .then(_stream => {
         stream = _stream;
         stream.pipe(process.stdout);

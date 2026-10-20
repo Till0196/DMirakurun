@@ -49,7 +49,7 @@ export interface ChannelStreamEntry {
     streamId: number;
     networkId: number;
     relTs?: number;
-    relTlv?: number;
+    isTlv?: boolean;
     serviceIds?: number[];
 }
 

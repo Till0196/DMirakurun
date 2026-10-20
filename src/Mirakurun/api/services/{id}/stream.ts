@@ -15,7 +15,6 @@
 */
 import { Operation } from "express-openapi";
 import * as api from "../../../api";
-import { OutputFormat } from "../../../common";
 import _ from "../../../_";
 
 export const parameters = [
@@ -55,14 +54,17 @@ export const get: Operation = (req, res) => {
         return;
     }
 
+    const streamID = _.channel.getStreamID(service.networkId, service.streamId);
+    if (req.query.format === "tlv" && streamID?.streamFormat === "ts") {
+        api.responseError(res, 406, "Requested Stream Format Unavailable");
+        return;
+    }
+
     const userId = (req.ip || "unix") + ":" + (req.socket.remotePort || Date.now());
+    const outputFormat = api.requestedStreamFormat(req.query.format);
 
-    const contentType = req.query.format === "tlv" ? "application/octet-stream" : "video/MP2T";
-    const outputFormat = (req.query.format === "tlv" ? "tlv" : undefined) as OutputFormat | undefined;
-
-    // HEAD request support
     if (req.method === "HEAD") {
-        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Type", api.streamContentType(outputFormat ?? streamID?.streamFormat));
         res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
         res.status(200).end();
         return;
@@ -70,7 +72,6 @@ export const get: Operation = (req, res) => {
 
     let requestAborted = false;
     req.once("close", () => requestAborted = true);
-
     (<any> res.socket)._writableState.highWaterMark = Math.max(res.writableHighWaterMark, 1024 * 1024 * 16);
     res.socket.setNoDelay(true);
 
@@ -81,25 +82,19 @@ export const get: Operation = (req, res) => {
         url: req.url,
         disableDecoder: (<number> <any> req.query.decode === 0),
         outputFormat
-    }, res)
-        .then(tsFilter => {
-            if (requestAborted === true || req.aborted === true) {
-                return tsFilter.close();
-            }
-
-            req.once("close", () => tsFilter.close());
-
-            res.setHeader("Content-Type", contentType);
-            res.setHeader("X-Mirakurun-Tuner-User-ID", userId);
-            res.status(200);
-        })
-        .catch((err) => api.responseStreamErrorHandler(res, err));
+    }, res).then(tsFilter => {
+        if (requestAborted === true || req.aborted === true) {
+            return tsFilter.close();
+        }
+        req.once("close", () => tsFilter.close());
+        api.respondStream(res, tsFilter, userId);
+    }).catch(err => api.responseStreamErrorHandler(res, err));
 };
 
 get.apiDoc = {
     tags: ["services", "stream"],
     operationId: "getServiceStream",
-    produces: ["video/MP2T"],
+    produces: ["video/MP2T", "application/octet-stream"],
     responses: {
         200: {
             description: "OK",
@@ -111,6 +106,9 @@ get.apiDoc = {
         },
         404: {
             description: "Not Found"
+        },
+        406: {
+            description: "Requested Stream Format Unavailable"
         },
         503: {
             description: "Tuner Resource Unavailable"
