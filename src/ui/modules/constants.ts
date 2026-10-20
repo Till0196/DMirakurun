@@ -18,6 +18,7 @@ import { IconName } from "@blueprintjs/core";
 export const channelTypeMap = {
     GR: "地上",
     BS: "BS",
+    BS4K: "BS4K",
     CS: "CS",
     SKY: "SKY",
 };
@@ -61,13 +62,39 @@ export const audioModeMap = {
     "01011": "2/0/0-2/0/2-0.1モード",
     "01100": "5/2.1モード",
     "01101": "3/2/2.1モード",
-    "01110": "2/0/0-3/0/2-0.1モード",
+    "01110": "7.1ch",
     "01111": "0/2/0-3/0/2-0.1モード",
     "10000": "2/0/0-3/2/3-0.2モード",
+    "10001": "22.2ch",
+};
+
+export const audioModeDetailMap = {
+    "00011": "2/0モード",
+    "01001": "3/2＋LFEモード（3/2.1モード）",
+    "01110": "2/0/0-3/0/2-0.1モード",
     "10001": "3/3/3-5/2/3-3/0/0.2モード",
 };
 
 export const ProgramAttributeMap = {
+    "3D": "3DTV", // 3Dテレビ放送
+    "2nd Screen": "セカンドスクリーン", // セカンドスクリーン
+    "2K": "2K放送", // 2K放送
+    "4K": "4K", // 4K放送
+    "8K": "8K", // 8K放送
+    "5.1ch": "5.1ch", // 5.1chサラウンド音声
+    "7.1ch": "7.1ch", // 7.1chサラウンド音声
+    "22.2ch": "22.2ch", // 22.2chサラウンド音声
+    "60P": "60Hzプログレッシブスキャン放送", // 60Hzプログレッシブスキャン放送
+    "120P": "120Hzプログレッシブスキャン放送", // 120Hzプログレッシブスキャン放送
+    d: "データ放送", // データ放送
+    HC: "Hybridcast", // Hybridcast
+    HDR: "HDR", // ハイダイナミックレンジ
+    "Hi-Res": "ハイレゾ音声", // ハイレゾ音声
+    Lossless: "ロスレス音声", // ロスレス音声
+    SHV: "SHV放送", // SHV放送
+    UHD: "UHDTV", // UHDTV
+    VOD: "VOD", // ビデオ・オン・デマンド
+    配: "インターネット同時配信", // インターネット同時配信
     字: "字幕放送", // 字幕放送
     新: "新番組", // 新番組
     初: "初回放送", // 初回放送
@@ -85,6 +112,66 @@ export const ProgramAttributeMap = {
     解: "音声解説", // 音声解説
     PPV: "PPV", // PPV
     手: "手話通訳放送", // 手話通訳放送
+};
+
+export const ProgramAttributeNormalizationMap: Record<string, keyof typeof ProgramAttributeMap> = {
+    "🆛": "3D",
+    "🆜": "2nd Screen",
+    "🆝": "2K",
+    "🆞": "4K",
+    "🆟": "8K",
+    "🆠": "5.1ch",
+    "🆡": "7.1ch",
+    "🆢": "22.2ch",
+    "🆣": "60P",
+    "🆤": "120P",
+    "🆥": "d",
+    "🆦": "HC",
+    "🆧": "HDR",
+    "🆨": "Hi-Res",
+    "🆩": "Lossless",
+    "🆪": "SHV",
+    "🆫": "UHD",
+    "🆬": "VOD",
+};
+
+export const ProgramAttributeClassMap: Record<keyof typeof ProgramAttributeMap, string> = {
+    "3D": "3d",
+    "2nd Screen": "second-screen",
+    "2K": "2k",
+    "4K": "4k",
+    "8K": "8k",
+    "5.1ch": "5-1ch",
+    "7.1ch": "7-1ch",
+    "22.2ch": "22-2ch",
+    "60P": "60p",
+    "120P": "120p",
+    d: "data-broadcasting",
+    HC: "hybridcast",
+    HDR: "hdr",
+    "Hi-Res": "hi-res",
+    Lossless: "lossless",
+    SHV: "shv",
+    UHD: "uhd",
+    VOD: "vod",
+    配: "配",
+    字: "字",
+    新: "新",
+    初: "初",
+    終: "終",
+    再: "再",
+    デ: "デ",
+    双: "双",
+    無: "無",
+    二: "二",
+    多: "多",
+    SS: "surround",
+    生: "生",
+    前: "前",
+    後: "後",
+    解: "解",
+    PPV: "ppv",
+    手: "手",
 };
 
 export const Genre1Map = {

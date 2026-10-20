@@ -14,8 +14,12 @@
    limitations under the License.
 */
 import * as React from "react";
-import { langMap, audioModeMap } from "../modules/constants";
-import { ProgramVideo, ProgramAudio } from "../../../api.d";;
+import { langMap, audioModeDetailMap, audioModeMap } from "../modules/constants";
+import {
+    ProgramVideo,
+    ProgramAudio,
+    ProgramVideoTransferCharacteristics,
+} from "../../../api.d";
 
 import "./ProgramAVInfo.sass";
 
@@ -23,16 +27,32 @@ type ProgramAVInfoProps = {
     video: ProgramVideo;
     audios: ProgramAudio[];
 };
+
+const transferCharacteristicsMap: Record<ProgramVideoTransferCharacteristics, string> = {
+    bt709: "BT.709",
+    iec61966: "IEC 61966",
+    bt2020: "BT.2020",
+    "bt2100-pq": "BT.2100 PQ",
+    "bt2100-hlg": "BT.2100 HLG",
+};
+
 export const ProgramAVInfo: React.FC<ProgramAVInfoProps> = ({ video, audios }) => {
     // console.debug("components", "ProgramAVInfo");
 
     const labels: JSX.Element[] = [];
 
     if (video) {
-        if (video.type !== "mpeg2") {
-            labels.push(<span key="video.type" className="video type">{video.type}</span>);
-        }
         labels.push(<span key="video.resolution" className="video resolution">{video.resolution}</span>);
+        if (video.frameRate) {
+            labels.push(<span key="video.frameRate" className="video frame-rate">{video.frameRate}fps</span>);
+        }
+        if (video.transferCharacteristics) {
+            labels.push(
+                <span key="video.transferCharacteristics" className="video transfer-characteristics">
+                    {transferCharacteristicsMap[video.transferCharacteristics]}
+                </span>
+            );
+        }
     }
 
     if (audios) {
@@ -41,11 +61,13 @@ export const ProgramAVInfo: React.FC<ProgramAVInfoProps> = ({ video, audios }) =
             const trackPrefix = count === 0 ? "主" : "副";
             const type8 = audio.componentType.toString(2).padStart(8, "0");
 
-            const mode = audioModeMap[type8.slice(-5)] || "不明なモード";
+            const modeKey = type8.slice(-5);
+            const mode = audioModeMap[modeKey] || "不明なモード";
+            const modeDetail = audioModeDetailMap[modeKey];
             const lang = audio.langs.map(lang => langMap[lang]).join("＋");
 
             labels.push(
-                <span key={`audios.${count}`} className="audio">
+                <span key={`audios.${count}`} className="audio" title={modeDetail}>
                     {audios.length > 1 && <>{trackPrefix}:&nbsp;</>}
                     {mode}
                     {lang !== "日本語" && <>&nbsp;/&nbsp;{lang}</>}

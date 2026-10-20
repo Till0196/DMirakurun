@@ -165,6 +165,7 @@ export const EPGView: React.FC = () => {
                                     { value: "ALL", label: "全波" },
                                     { value: "GR", label: "地上" },
                                     { value: "BS" },
+                                    { value: "BS4K", label: "BS4K" },
                                     { value: "CS" },
                                     { value: "SKY" },
                                 ]}

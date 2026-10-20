@@ -175,6 +175,7 @@ export default class EPG {
                         eventId: e.event_id,
                         serviceId: eit.service_id,
                         networkId: networkId,
+                        streamId: eit.transport_stream_id,
                         startAt: getTimeFromMJD(e.start_time),
                         duration: UNKNOWN_DURATION.compare(e.duration) === 0 ? 1 : getTimeFromBCD24(e.duration),
                         isFree: e.free_CA_mode === 0,
@@ -184,6 +185,9 @@ export default class EPG {
                     };
                     _.program.add(programItem);
                 }
+                _.program.set(id, {
+                    streamId: eit.transport_stream_id
+                });
 
                 state = {
                     version: {},
@@ -229,6 +233,7 @@ export default class EPG {
                             startAt: getTimeFromMJD(e.start_time),
                             duration: UNKNOWN_DURATION.compare(e.duration) === 0 ? 1 : getTimeFromBCD24(e.duration),
                             isFree: e.free_CA_mode === 0,
+                            streamId: eit.transport_stream_id,
                             _pf: isPF || undefined, // for compatibility
                             _isPresent: isP || undefined,
                             _isFollowing: isF || undefined
@@ -411,8 +416,12 @@ export default class EPG {
                         state.group.version[eit.table_id][d.group_type] = eit.version_number;
 
                         state.group._groups[d.group_type] = d.group_type < 4 ?
-                            d.events.map(getRelatedProgramItem.bind(d)) :
-                            d.other_network_events.map(getRelatedProgramItem.bind(d));
+                            d.events.map(event => getRelatedProgramItem(
+                                event, d.group_type, networkId, eit.transport_stream_id
+                            )) :
+                            d.other_network_events.map(event => getRelatedProgramItem(
+                                event, d.group_type, networkId, eit.transport_stream_id
+                            ));
 
                         _.program.set(state.programId, {
                             relatedItems: state.group._groups.flat()
@@ -474,13 +483,19 @@ function getLangCode(buffer: Buffer): apid.ProgramAudioLanguageCode {
     return "etc";
 }
 
-function getRelatedProgramItem(event: any): apid.ProgramRelatedItem {
+function getRelatedProgramItem(
+    event: any,
+    groupType: number,
+    networkId: number,
+    streamId: number
+): apid.ProgramRelatedItem {
     return {
         type: (
-            this.group_type === 1 ? "shared" :
-                (this.group_type === 2 || this.group_type === 4) ? "relay" : "movement"
+            groupType === 1 ? "shared" :
+                (groupType === 2 || groupType === 4) ? "relay" : "movement"
         ),
-        networkId: event.original_network_id,
+        networkId: event.original_network_id ?? networkId,
+        streamId: event.transport_stream_id ?? streamId,
         serviceId: event.service_id,
         eventId: event.event_id
     };

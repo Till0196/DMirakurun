@@ -22,25 +22,44 @@ import ChannelItem, { StreamEntry } from "./ChannelItem";
 import TSFilter from "./TSFilter";
 import StreamFilter from "./StreamFilter";
 
+export interface ServiceItemOptions {
+    name?: string;
+    type?: number;
+    isFree?: boolean;
+    logoId?: number;
+    remoteControlKeyId?: number;
+    epgReady?: boolean;
+    epgUpdatedAt?: number;
+}
+
 export default class ServiceItem {
     static getId(networkId: number, serviceId: number): number {
         return parseInt(networkId + (serviceId / 100000).toFixed(5).slice(2), 10);
     }
 
     private _id: number;
+    private _name?: string;
+    private _type?: number;
+    private _isFree?: boolean;
+    private _logoId?: number;
+    private _remoteControlKeyId?: number;
+    private _epgReady: boolean;
+    private _epgUpdatedAt: number;
 
     constructor(
         private _streamId: number,
         private _networkId: number,
         private _serviceId: number,
-        private _name?: string,
-        private _type?: number,
-        private _logoId?: number,
-        private _remoteControlKeyId?: number,
-        private _epgReady: boolean = false,
-        private _epgUpdatedAt: number = 0
+        options: ServiceItemOptions = {}
     ) {
         this._id = ServiceItem.getId(_networkId, _serviceId);
+        this._name = options.name;
+        this._type = options.type;
+        this._isFree = options.isFree;
+        this._logoId = options.logoId;
+        this._remoteControlKeyId = options.remoteControlKeyId;
+        this._epgReady = options.epgReady ?? false;
+        this._epgUpdatedAt = options.epgUpdatedAt ?? 0;
     }
 
     get id(): number {
@@ -79,6 +98,19 @@ export default class ServiceItem {
     set type(type: number) {
         if (this._type !== type) {
             this._type = type;
+
+            _.service.save();
+            this._updated();
+        }
+    }
+
+    get isFree(): boolean | undefined {
+        return this._isFree;
+    }
+
+    set isFree(isFree: boolean | undefined) {
+        if (this._isFree !== isFree) {
+            this._isFree = isFree;
 
             _.service.save();
             this._updated();
@@ -153,6 +185,7 @@ export default class ServiceItem {
             streamId: this._streamId,
             name: this._name || "",
             type: this._type,
+            isFree: this._isFree,
             logoId: this._logoId,
             remoteControlKeyId: this._remoteControlKeyId,
             epgReady: this._epgReady,

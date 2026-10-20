@@ -59,6 +59,7 @@ export interface ChannelsQuery {
 
 export interface ProgramsQuery {
     networkId?: apid.NetworkId;
+    streamId?: apid.StreamId;
     serviceId?: apid.ServiceId;
     eventId?: apid.EventId;
 }
@@ -71,6 +72,7 @@ export interface EventsQuery {
 export interface ServicesQuery {
     serviceId?: apid.ServiceId;
     networkId?: apid.NetworkId;
+    streamId?: apid.StreamId;
     name?: string;
     type?: number;
     "channel.type"?: apid.ChannelType;

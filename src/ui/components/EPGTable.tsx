@@ -36,6 +36,7 @@ const scrollState = {
     left: {
         GR: -1,
         BS: -1,
+        BS4K: -1,
         CS: -1,
         SKY: -1,
     },
@@ -324,7 +325,10 @@ export const EPGTable: React.FC<EPGTableProps> = ({ date, channelType, globalSer
                     // オリジナルイベントのみをカウント
                     count++;
                     // イベントグループ被参照対象
-                    programMap.set(`${program.serviceId}.${program.eventId}`, program);
+                    programMap.set(
+                        `${program.networkId}.${program.streamId}.${program.serviceId}.${program.eventId}`,
+                        program
+                    );
                 }
                 servicePrograms.push(program);
             }
@@ -376,6 +380,7 @@ export const EPGTable: React.FC<EPGTableProps> = ({ date, channelType, globalSer
                 eventId: last.eventId + 0.1,
                 serviceId: last.serviceId,
                 networkId: last.networkId,
+                streamId: last.streamId,
                 startAt: last.startAt + last.duration,
                 duration: 60 * 15 * 1000,
                 isFree: false,
@@ -402,6 +407,7 @@ export const EPGTable: React.FC<EPGTableProps> = ({ date, channelType, globalSer
                         eventId: prev.eventId + 0.1,
                         serviceId: prev.serviceId,
                         networkId: prev.networkId,
+                        streamId: prev.streamId,
                         startAt: prev.startAt + prev.duration,
                         duration: program.startAt - (prev.startAt + prev.duration),
                         isFree: false,
@@ -464,7 +470,10 @@ export const EPGTable: React.FC<EPGTableProps> = ({ date, channelType, globalSer
                 if (program.relatedItems && program.relatedItems.filter(item => item.type === "shared").length === 1) {
                     className += " event-group-shared";
 
-                    const ref = programMap.get(`${program.relatedItems[0].serviceId}.${program.relatedItems[0].eventId}`)
+                    const relatedItem = program.relatedItems[0];
+                    const ref = programMap.get(
+                        `${relatedItem.networkId}.${relatedItem.streamId}.${relatedItem.serviceId}.${relatedItem.eventId}`
+                    );
                     if (ref) {
                         program.name = program.name || ref.name;
                         program.genres = program.genres || ref.genres;

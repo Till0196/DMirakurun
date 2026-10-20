@@ -189,6 +189,7 @@ export const ProgramView: React.FC = () => {
                     <p className="meta">
                         Program ID: {program.id}<br />
                         event_id: {getIdWithHex(program.eventId)}<br />
+                        StreamID: {getIdWithHex(program.streamId)}<br />
                         SID: {getIdWithHex(program.serviceId)}<br />
                         NID: {getIdWithHex(program.networkId)}
                     </p>

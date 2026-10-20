@@ -177,6 +177,7 @@ export default class MHEPG {
                         eventId: e.eventId,
                         serviceId: eit.serviceId,
                         networkId: networkId,
+                        streamId: eit.tlvStreamId,
                         startAt: mjdBCDToUnixEpoch(e.startTime) * 1000,
                         duration: e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
                         isFree: !e.freeCAMode,
@@ -184,6 +185,9 @@ export default class MHEPG {
                     };
                     _.program.add(programItem);
                 }
+                _.program.set(id, {
+                    streamId: eit.tlvStreamId
+                });
 
                 state = {
                     version: {},
@@ -216,6 +220,7 @@ export default class MHEPG {
                             startAt: mjdBCDToUnixEpoch(e.startTime) * 1000,
                             duration: e.duration === undefined ? 1 : bcdTimeToSeconds(e.duration) * 1000,
                             isFree: !e.freeCAMode,
+                            streamId: eit.tlvStreamId,
                             _pf: isPF || undefined
                         });
                     }
@@ -281,9 +286,10 @@ export default class MHEPG {
                         const resolutionMap = d.videoScanFlag ? VIDEO_RESOLUTION_P : VIDEO_RESOLUTION_I;
                         _.program.set(state.programId, {
                             video: {
-                                type: "h.265",
+                                // MH-EIT has no stream_content; normalize as generic video (0x01)
+                                type: "mpeg2",
                                 resolution: resolutionMap[d.videoResolution] || null,
-                                streamContent: 0x09,
+                                streamContent: 0x01,
                                 componentType: d.componentTag,
                                 frameRate: VIDEO_FRAME_RATE[d.videoFrameRate] || undefined,
                                 transferCharacteristics: VIDEO_TRANSFER_CHARACTERISTICS[d.videoTransferCharacteristics] || undefined
@@ -374,6 +380,7 @@ export default class MHEPG {
                         const relItems: apid.ProgramRelatedItem[] = d.events.map(event => ({
                             type: relType,
                             networkId: eit.originalNetworkId,
+                            streamId: eit.tlvStreamId,
                             serviceId: event.serviceId,
                             eventId: event.eventId
                         }));
@@ -384,6 +391,7 @@ export default class MHEPG {
                                 relItems.push({
                                     type: relType,
                                     networkId: other.originalNetworkId,
+                                    streamId: other.tlvStreamId,
                                     serviceId: other.serviceId,
                                     eventId: other.eventId
                                 });

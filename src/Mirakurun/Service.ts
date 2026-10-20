@@ -228,12 +228,15 @@ export class Service {
                     service.streamId,
                     service.networkId,
                     service.serviceId,
-                    service.name,
-                    service.type,
-                    service.logoId,
-                    service.remoteControlKeyId,
-                    service.epgReady,
-                    service.epgUpdatedAt
+                    {
+                        name: service.name,
+                        type: service.type,
+                        isFree: service.isFree,
+                        logoId: service.logoId,
+                        remoteControlKeyId: service.remoteControlKeyId,
+                        epgReady: service.epgReady,
+                        epgUpdatedAt: service.epgUpdatedAt
+                    }
                 )
             );
         }
@@ -379,6 +382,9 @@ export class Service {
                 if (s.remoteControlKeyId !== undefined) {
                     rec.remoteControlKeyId = s.remoteControlKeyId;
                 }
+                if (s.isFree !== undefined) {
+                    rec.isFree = s.isFree;
+                }
                 if (s.epgReady !== undefined) {
                     rec.epgReady = s.epgReady;
                 }
@@ -465,7 +471,17 @@ export class Service {
         }
 
         this.add(
-            new ServiceItem(streamEntry.streamId, service.networkId, service.serviceId, service.name, service.type, service.logoId)
+            new ServiceItem(
+                streamEntry.streamId,
+                service.networkId,
+                service.serviceId,
+                {
+                    name: service.name,
+                    type: service.type,
+                    isFree: service.isFree,
+                    logoId: service.logoId
+                }
+            )
         );
         _.channel.save();
 
@@ -559,6 +575,7 @@ export class Service {
             if (item !== null) {
                 item.name = service.name;
                 item.type = service.type;
+                item.isFree = service.isFree;
                 if (service.logoId > -1) {
                     item.logoId = service.logoId;
                 }
@@ -575,10 +592,13 @@ export class Service {
                         streamEntry.streamId,
                         service.networkId,
                         service.serviceId,
-                        service.name,
-                        service.type,
-                        service.logoId,
-                        service.remoteControlKeyId
+                        {
+                            name: service.name,
+                            type: service.type,
+                            isFree: service.isFree,
+                            logoId: service.logoId,
+                            remoteControlKeyId: service.remoteControlKeyId
+                        }
                     )
                 );
             }

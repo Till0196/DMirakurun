@@ -55,6 +55,10 @@ definitions:
     type: integer
     maximum: 65535
 
+  StreamId:
+    type: integer
+    maximum: 65535
+
   ServiceItemId:
     type: integer
     maximum: 6553565535
@@ -110,6 +114,7 @@ definitions:
       - id
       - serviceId
       - networkId
+      - streamId
       - name
       - type
     properties:
@@ -119,6 +124,8 @@ definitions:
         $ref: '#/definitions/ServiceId'
       networkId:
         $ref: '#/definitions/NetworkId'
+      streamId:
+        $ref: '#/definitions/StreamId'
       name:
         type: string
       type:
@@ -145,6 +152,7 @@ definitions:
       - eventId
       - serviceId
       - networkId
+      - streamId
       - startAt
       - duration
       - isFree
@@ -157,6 +165,8 @@ definitions:
         $ref: '#/definitions/ServiceId'
       networkId:
         $ref: '#/definitions/NetworkId'
+      streamId:
+        $ref: '#/definitions/StreamId'
       startAt:
         $ref: '#/definitions/UnixtimeMS'
       duration:
@@ -186,6 +196,10 @@ definitions:
             type: integer
           componentType:
             type: integer
+          frameRate:
+            $ref: '#/definitions/ProgramVideoFrameRate'
+          transferCharacteristics:
+            $ref: '#/definitions/ProgramVideoTransferCharacteristics'
       audios:
         type: array
         items:
@@ -270,6 +284,29 @@ definitions:
       - 2160p
       - 4320p
 
+  ProgramVideoFrameRate:
+    type: string
+    enum:
+      - '23.976'
+      - '24'
+      - '25'
+      - '29.97'
+      - '30'
+      - '50'
+      - '59.94'
+      - '60'
+      - '119.88'
+      - '120'
+
+  ProgramVideoTransferCharacteristics:
+    type: string
+    enum:
+      - bt709
+      - iec61966
+      - bt2020
+      - bt2100-pq
+      - bt2100-hlg
+
   ProgramAudioSamplingRate:
     type: integer
     enum:
@@ -309,6 +346,8 @@ definitions:
           - relay
           - movement
       networkId:
+        type: integer
+      streamId:
         type: integer
       serviceId:
         type: integer
